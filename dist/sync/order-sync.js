@@ -1,6 +1,6 @@
 import { fetchAllEbayOrders } from '../ebay/fulfillment.js';
 import { createShopifyOrder, findExistingShopifyOrder, } from '../shopify/orders.js';
-import { getDb } from '../db/client.js';
+import { getDb, getRawDb } from '../db/client.js';
 import { orderMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
@@ -51,6 +51,32 @@ const mapEbayOrderToShopify = (ebayOrder) => {
         suppress_notifications: true,
     };
 };
+/**
+ * Read the go-live cutoff for eBay order import (set when switching off
+ * Marketplace Connect). Empty/missing = import not enabled.
+ */
+export async function getOrderImportCutoff() {
+    try {
+        const db = await getRawDb();
+        const row = db
+            .prepare(`SELECT value FROM settings WHERE key = 'ebay_order_import_cutoff'`)
+            .get();
+        const value = row?.value?.trim();
+        return value ? value : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Clamp a createdAfter date to the go-live cutoff: never look at orders
+ * created before the cutoff. Pure — exported for tests.
+ */
+export function applyCutoff(createdAfter, cutoff) {
+    if (!cutoff)
+        return createdAfter;
+    return new Date(cutoff).getTime() > new Date(createdAfter).getTime() ? cutoff : createdAfter;
+}
 /**
  * Sync eBay orders to Shopify.
  *
@@ -114,6 +140,27 @@ export const syncOrders = async (ebayAccessToken, shopifyAccessToken, options = 
             `Clamping to ${new Date(oldestAllowed).toISOString()}`);
         createdAfter = new Date(oldestAllowed).toISOString();
     }
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ GO-LIVE CUTOFF (Marketplace Connect cutover guard)              ║
+    // ║ Live import refuses to run until ebay_order_import_cutoff is    ║
+    // ║ set, and never touches orders created before it — those belong  ║
+    // ║ to Marketplace Connect.                                         ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    const cutoff = await getOrderImportCutoff();
+    if (!isDryRun && !cutoff) {
+        const reason = 'eBay order import is not enabled: ebay_order_import_cutoff is not set. ' +
+            'Enable import (which records the go-live cutoff) before running live syncs.';
+        warn(`[OrderSync] SAFETY BLOCK: ${reason}`);
+        result.safetyBlocks.push({ ebayOrderId: '*', reason });
+        return result;
+    }
+    if (cutoff) {
+        const clamped = applyCutoff(createdAfter, cutoff);
+        if (clamped !== createdAfter) {
+            info(`[OrderSync] SAFETY: Clamping lookback to go-live cutoff ${cutoff}`);
+            createdAfter = clamped;
+        }
+    }
     info(`[OrderSync] SAFETY: Only syncing orders created after ${createdAfter} (max ${MAX_LOOKBACK_DAYS} day lookback)`);
     const db = await getDb();
     // Fetch eBay orders
@@ -124,6 +171,13 @@ export const syncOrders = async (ebayAccessToken, shopifyAccessToken, options = 
     info(`Found ${ebayOrders.length} eBay orders (since ${createdAfter})`);
     for (const ebayOrder of ebayOrders) {
         try {
+            // ── Layer 0: Hard-skip anything created before the go-live cutoff ─────
+            // (belt-and-suspenders in case the eBay API date filter misbehaves)
+            if (cutoff && new Date(ebayOrder.creationDate).getTime() < new Date(cutoff).getTime()) {
+                info(`[OrderSync] SKIP (pre-cutoff): ${ebayOrder.orderId} created ${ebayOrder.creationDate} < cutoff ${cutoff}`);
+                result.skipped++;
+                continue;
+            }
             // ── Layer 1: Check local DB (fast dedup) ──────────────────────────────
             const existing = await db
                 .select()

@@ -326,8 +326,23 @@ export async function processProductImages(
 
 const PIPELINE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minute max per pipeline run
 
+export interface AutoListOptions {
+  /**
+   * Reuse a previously generated AI description/category if one exists
+   * instead of calling OpenAI again. Used when the pipeline re-runs because
+   * photos arrived after the product was first processed.
+   */
+  reuseExistingDescription?: boolean;
+  /**
+   * Never auto-publish — always leave the draft for manual review.
+   * Set when the photo→product match is low-confidence.
+   */
+  requireReview?: boolean;
+}
+
 export async function autoListProduct(
   shopifyProductId: string,
+  options: AutoListOptions = {},
 ): Promise<{
   success: boolean;
   jobId?: string;
@@ -447,6 +462,7 @@ export async function autoListProduct(
     // ── Step 3: Search drive for product photos ─────────────────────
     await updatePipelineStep(jobId, 'drive_search', 'running');
     let driveImages: string[] = [];
+    let drivePresetName: string | null = null;
     try {
       const { searchDriveForProduct, isDriveMounted, getSignedUrls } = await import('../watcher/drive-search.js');
       if (isDriveMounted()) {
@@ -455,6 +471,7 @@ export async function autoListProduct(
         const driveResult = await searchDriveForProduct(product.title || '', skuSuffix);
         if (driveResult) {
           driveImages = await getSignedUrls(driveResult.imagePaths);
+          drivePresetName = driveResult.presetName;
           info(`[AutoList] Found ${driveImages.length} photos on drive: ${driveResult.presetName}/${driveResult.folderName}`);
           await updatePipelineStep(jobId, 'drive_search', 'done', `Found ${driveImages.length} photos in ${driveResult.presetName}/${driveResult.folderName}`);
         } else {
@@ -471,42 +488,65 @@ export async function autoListProduct(
 
     // ── Step 4: Generate description + category ────────────────────────
     await updatePipelineStep(jobId, 'generate_description', 'running');
-    emitProgress(jobId, 'generate_description', 0, 2, 'Looking up TIM condition...');
 
-    const result = await processNewProduct(product);
+    let description = '';
+    let ebayCategory = '';
 
-    // Emit TIM condition visibility
-    const lastTimCond = (processNewProduct as any).__lastTimCondition;
-    if (lastTimCond && lastTimCond !== 'error') {
-      emitProgress(jobId, 'generate_description', 1, 2, `Found condition: ${lastTimCond} (from TIM)`);
-    } else {
-      emitProgress(jobId, 'generate_description', 1, 2, 'TIM condition: not available');
+    // When re-running because photos arrived, reuse the description that was
+    // already generated instead of paying for (and waiting on) OpenAI again.
+    if (options.reuseExistingDescription) {
+      const statusRow = db
+        .prepare(`SELECT ai_description, ai_category_id FROM product_pipeline_status WHERE shopify_product_id = ? AND ai_description_generated = 1`)
+        .get(shopifyProductId) as { ai_description: string | null; ai_category_id: string | null } | undefined;
+      if (statusRow?.ai_description) {
+        description = statusRow.ai_description;
+        ebayCategory = statusRow.ai_category_id ?? '';
+        info(`[AutoList] Reusing existing AI description for ${shopifyProductId} (${description.length} chars)`);
+        await updatePipelineStep(jobId, 'generate_description', 'done', `Reused existing description (${description.length} chars)`);
+      }
     }
 
-    if (!result.ready) {
-      warn(`[AutoList] AI processing incomplete for product ${shopifyProductId}`);
-      await updatePipelineStep(jobId, 'generate_description', 'error', 'Incomplete AI results');
-      return {
-        success: false,
+    if (!description) {
+      emitProgress(jobId, 'generate_description', 0, 2, 'Looking up TIM condition...');
+
+      const result = await processNewProduct(product);
+
+      // Emit TIM condition visibility
+      const lastTimCond = (processNewProduct as any).__lastTimCondition;
+      if (lastTimCond && lastTimCond !== 'error') {
+        emitProgress(jobId, 'generate_description', 1, 2, `Found condition: ${lastTimCond} (from TIM)`);
+      } else {
+        emitProgress(jobId, 'generate_description', 1, 2, 'TIM condition: not available');
+      }
+
+      if (!result.ready) {
+        warn(`[AutoList] AI processing incomplete for product ${shopifyProductId}`);
+        await updatePipelineStep(jobId, 'generate_description', 'error', 'Incomplete AI results');
+        return {
+          success: false,
+          jobId,
+          description: result.description || undefined,
+          categoryId: result.ebayCategory || undefined,
+          error: 'AI processing did not return complete results',
+        };
+      }
+
+      description = result.description;
+      ebayCategory = result.ebayCategory;
+
+      const descPreview = description.substring(0, 100) + (description.length > 100 ? '...' : '');
+      await updatePipelineStep(
         jobId,
-        description: result.description || undefined,
-        categoryId: result.ebayCategory || undefined,
-        error: 'AI processing did not return complete results',
-      };
+        'generate_description',
+        'done',
+        `${description.length} chars — "${descPreview}"`,
+      );
+      await upsertPipelineStatus({
+        aiDescriptionGenerated: true,
+        aiDescription: description,
+        aiCategoryId: ebayCategory,
+      });
     }
-
-    const descPreview = result.description.substring(0, 100) + (result.description.length > 100 ? '...' : '');
-    await updatePipelineStep(
-      jobId,
-      'generate_description',
-      'done',
-      `${result.description.length} chars — "${descPreview}"`,
-    );
-    await upsertPipelineStatus({
-      aiDescriptionGenerated: true,
-      aiDescription: result.description,
-      aiCategoryId: result.ebayCategory,
-    });
 
     // ── Step 5: Process images via PhotoRoom ───────────────────────────
     await updatePipelineStep(jobId, 'process_images', 'running');
@@ -516,6 +556,28 @@ export async function autoListProduct(
       if (driveImages.length > 0) {
         // Process drive photos through PhotoRoom (bg removal + template)
         const { uploadProcessedImage } = await import('../watcher/drive-search.js');
+
+        // Use the saved photo template for this StyleShoots preset when one
+        // exists; otherwise fall back to the standard defaults.
+        let imageParams = { minPadding: 400, shadow: true, canvasSize: 4000 };
+        if (drivePresetName) {
+          try {
+            const { getDefaultForCategory } = await import('../services/photo-templates.js');
+            const template = await getDefaultForCategory(drivePresetName);
+            if (template) {
+              const params = template.params as any;
+              const canvasSize = typeof params.canvasSize === 'number' ? params.canvasSize : 4000;
+              const minPadding = typeof params.minPadding === 'number'
+                ? params.minPadding
+                : Math.round((typeof params.padding === 'number' ? params.padding : 0.1) * canvasSize);
+              imageParams = { minPadding, shadow: params.shadow ?? true, canvasSize };
+              info(`[AutoList] Using saved template "${template.name}" for preset "${drivePresetName}": ${JSON.stringify(imageParams)}`);
+            }
+          } catch (tplErr) {
+            warn(`[AutoList] Template lookup failed (non-fatal), using defaults: ${tplErr}`);
+          }
+        }
+
         try {
           const imageService = await getImageService();
           for (let i = 0; i < driveImages.length; i++) {
@@ -526,11 +588,7 @@ export async function autoListProduct(
                 const attemptLabel = attempt > 1 ? ` (retry ${attempt}/${MAX_RETRIES})` : '';
                 emitProgress(jobId, 'process_images', i + 1, driveImages.length, `Processing photo ${i + 1}/${driveImages.length}${attemptLabel}...`);
                 info(`[AutoList] Processing drive photo ${i + 1}/${driveImages.length}${attemptLabel}: ${driveImages[i].substring(0, 80)}`);
-                const result = await imageService.processWithUniformPadding(driveImages[i], {
-                  minPadding: 400,
-                  shadow: true,
-                  canvasSize: 4000,
-                });
+                const result = await imageService.processWithUniformPadding(driveImages[i], imageParams);
                 const buf = result.buffer;
                 info(`[AutoList] PhotoRoom returned ${buf.length} bytes for image ${i + 1}`);
                 // Save clean version (no watermarks) for photo editor
@@ -586,8 +644,8 @@ export async function autoListProduct(
     await updatePipelineStep(jobId, 'create_ebay_listing', 'running');
 
     // Save overrides for eBay listing use
-    await saveProductOverride(shopifyProductId, 'listing', 'description', result.description);
-    await saveProductOverride(shopifyProductId, 'listing', 'primary_category', result.ebayCategory);
+    await saveProductOverride(shopifyProductId, 'listing', 'description', description);
+    await saveProductOverride(shopifyProductId, 'listing', 'primary_category', ebayCategory);
 
     // Check what the product currently has on Shopify
     const existingContent = await checkExistingContent(shopifyProductId);
@@ -604,7 +662,7 @@ export async function autoListProduct(
     // Create a draft with processed content + original content for comparison
     const draftId = await createDraft(shopifyProductId, {
       title: product.title || '',
-      description: result.description,
+      description,
       // Only pass images if we actually have processed ones — otherwise let COALESCE
       // preserve any images saved by an earlier step (e.g. the trigger endpoint's raw drive photos)
       images: processedImages.length > 0 ? processedImages : undefined,
@@ -617,11 +675,12 @@ export async function autoListProduct(
     // Auto-publish logic:
     // If product has NO existing content AND auto-publish is enabled → publish directly
     // If product HAS existing content → always save as draft, never overwrite
+    // If requireReview is set (low-confidence photo match) → always save as draft
     const productType = product.productType || 'default';
     const autoPublishEnabled = await getAutoPublishSetting(productType);
     const hasExistingContent = existingContent.hasPhotos || existingContent.hasDescription;
 
-    if (!hasExistingContent && autoPublishEnabled) {
+    if (!hasExistingContent && autoPublishEnabled && !options.requireReview) {
       info(`[AutoList] Product ${shopifyProductId} has no existing content and auto-publish is ON — publishing directly`);
       const approveResult = await approveDraft(draftId, { photos: true, description: true });
       if (approveResult.success) {
@@ -630,23 +689,25 @@ export async function autoListProduct(
         await updatePipelineStep(jobId, 'create_ebay_listing', 'done', `Draft created (#${draftId}) — auto-publish failed: ${approveResult.error}`);
       }
     } else {
-      const reason = hasExistingContent
-        ? 'product has existing content — requires manual review'
-        : 'auto-publish disabled for this product type';
+      const reason = options.requireReview
+        ? 'low-confidence photo match — requires manual review'
+        : hasExistingContent
+          ? 'product has existing content — requires manual review'
+          : 'auto-publish disabled for this product type';
       await updatePipelineStep(jobId, 'create_ebay_listing', 'done', `Draft created (#${draftId}) — ${reason}`);
       info(`[AutoList] Draft #${draftId} saved for review — ${reason}`);
     }
 
     info(
-      `[AutoList] ✅ Product ${shopifyProductId} processed (job ${jobId}) — category=${result.ebayCategory}, description=${result.description.length} chars, images=${processedImages.length}, draft=#${draftId}`,
+      `[AutoList] ✅ Product ${shopifyProductId} processed (job ${jobId}) — category=${ebayCategory}, description=${description.length} chars, images=${processedImages.length}, draft=#${draftId}`,
     );
 
     clearTimeout(timeoutId);
     return {
       success: true,
       jobId,
-      description: result.description,
-      categoryId: result.ebayCategory,
+      description,
+      categoryId: ebayCategory,
       images: processedImages,
     };
   } catch (err) {

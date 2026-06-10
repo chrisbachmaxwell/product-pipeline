@@ -153,10 +153,11 @@ router.post('/api/drafts/:id/approve', async (req, res) => {
             return;
         }
         const { photos = true, description = true, publish } = req.body || {};
-        info(`[DraftsAPI] Approving draft ${draftId} — photos=${photos}, description=${description}, publish=${publish}`);
+        info(`[Wizard] Approving draft ${draftId} — photos=${photos}, description=${description}, publish=${publish}`);
         const result = await approveDraft(draftId, { photos, description, publish });
+        info(`[Wizard] Approve result for draft ${draftId}: ${JSON.stringify(result)}`);
         if (result.success) {
-            res.json({ success: true, message: 'Draft approved and pushed to Shopify' });
+            res.json({ success: true, message: 'Draft approved and pushed to Shopify', published: result.published, publishError: result.publishError });
         }
         else {
             res.status(400).json({ success: false, error: result.error });
@@ -299,8 +300,9 @@ router.post('/api/drafts/:id/list-on-ebay', async (req, res) => {
             overrides.description = description;
         if (Array.isArray(imageUrls) && imageUrls.length > 0)
             overrides.imageUrls = imageUrls;
-        info(`[DraftsAPI] List draft ${draftId} on eBay (explicit user action, overrides: ${JSON.stringify(Object.keys(overrides))})`);
+        info(`[Wizard] List draft ${draftId} on eBay (explicit user action, overrides: ${JSON.stringify(Object.keys(overrides))})`);
         const result = await listDraftOnEbay(draftId, overrides);
+        info(`[Wizard] eBay listing result for draft ${draftId}: ${JSON.stringify(result)}`);
         if (result.success) {
             res.json({
                 success: true,
@@ -317,8 +319,12 @@ router.post('/api/drafts/:id/list-on-ebay', async (req, res) => {
         }
     }
     catch (err) {
-        logError(`[DraftsAPI] List on eBay error: ${err}`);
-        res.status(500).json({ error: 'Failed to list on eBay' });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errStack = err instanceof Error ? err.stack : undefined;
+        logError(`[Wizard] List on eBay error: ${errMsg}`);
+        if (errStack)
+            logError(`[Wizard] Stack: ${errStack}`);
+        res.status(500).json({ error: errMsg || 'Failed to list on eBay' });
     }
 });
 export default router;

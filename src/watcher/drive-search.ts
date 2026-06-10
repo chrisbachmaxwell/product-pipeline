@@ -18,7 +18,10 @@ import { info, warn } from '../utils/logger.js';
 
 const DEFAULT_DRIVE_PATH = '/Volumes/StyleShootsDrive/UsedCameraGear/';
 const DRIVE_MODE = process.env.DRIVE_MODE ?? 'local';
-const GCS_BUCKET = process.env.GCS_BUCKET ?? 'pictureline-product-photos';
+export function isCloudMode(): boolean {
+  return DRIVE_MODE === 'cloud';
+}
+export const GCS_BUCKET = process.env.GCS_BUCKET ?? 'pictureline-product-photos';
 const GCS_PREFIX = process.env.GCS_PREFIX ?? 'UsedCameraGear/';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -100,7 +103,7 @@ async function getGcsStorage() {
   return _gcsStorage;
 }
 
-interface GcsFolder {
+export interface GcsFolder {
   presetName: string;
   folderName: string;
   prefix: string;
@@ -110,7 +113,7 @@ interface GcsFolder {
  * List all product folders in GCS by scanning prefixes.
  * Structure: GCS_PREFIX/<preset>/<product_folder>/<images>
  */
-async function listGcsFolders(): Promise<GcsFolder[]> {
+export async function listGcsFolders(): Promise<GcsFolder[]> {
   const storage = await getGcsStorage();
   const bucket = storage.bucket(GCS_BUCKET);
 
@@ -146,7 +149,7 @@ async function listGcsFolders(): Promise<GcsFolder[]> {
   return folders;
 }
 
-async function listGcsImages(prefix: string): Promise<string[]> {
+export async function listGcsImages(prefix: string): Promise<string[]> {
   const storage = await getGcsStorage();
   const bucket = storage.bucket(GCS_BUCKET);
 

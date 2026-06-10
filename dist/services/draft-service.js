@@ -145,6 +145,11 @@ export async function listPendingDrafts(options) {
     if (status === 'all') {
         whereClause = '1=1';
     }
+    else if (status.includes(',')) {
+        const statuses = status.split(',').map(s => s.trim());
+        whereClause = `status IN (${statuses.map(() => '?').join(',')})`;
+        params.push(...statuses);
+    }
     else {
         whereClause = 'status = ?';
         params.push(status);
@@ -210,16 +215,17 @@ export async function approveDraft(draftId, options) {
                         'Content-Type': 'application/json',
                         'X-Shopify-Access-Token': tokenRow.access_token,
                     },
-                    body: JSON.stringify({ product: { id: draft.shopify_product_id, published: true } }),
+                    body: JSON.stringify({ product: { id: draft.shopify_product_id, status: 'active', published_at: new Date().toISOString() } }),
                 });
+                const pubText = await pubResponse.text();
+                info(`[Wizard] Shopify publish request for product ${draft.shopify_product_id} — status=${pubResponse.status}, body=${pubText.slice(0, 500)}`);
                 if (pubResponse.ok) {
                     published = true;
-                    info(`[DraftService] ✅ Published product ${draft.shopify_product_id} on Shopify`);
+                    info(`[Wizard] ✅ Published product ${draft.shopify_product_id} on Shopify (status: active)`);
                 }
                 else {
-                    const text = await pubResponse.text();
                     publishError = `Publish failed: ${pubResponse.status}`;
-                    warn(`[DraftService] Publish failed (non-fatal): ${pubResponse.status} — ${text}`);
+                    warn(`[Wizard] Publish failed (non-fatal): ${pubResponse.status} — ${pubText}`);
                 }
             }
             catch (err) {
@@ -367,95 +373,13 @@ function parseDraft(row) {
     };
 }
 /**
- * Upload draft images to Shopify product.
+ * Upload draft images to Shopify product (replace semantics).
  * Supports both local file paths and URLs.
  */
 async function uploadDraftImagesToShopify(accessToken, storeDomain, productId, images) {
-    let uploaded = 0;
-    let failed = 0;
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    // Step 0: Delete existing images to prevent duplicates
-    try {
-        const listUrl = `https://${storeDomain}/admin/api/2024-01/products/${productId}/images.json`;
-        const listRes = await fetch(listUrl, {
-            headers: { 'X-Shopify-Access-Token': accessToken },
-        });
-        if (listRes.ok) {
-            const listData = await listRes.json();
-            for (const existing of listData.images) {
-                const delUrl = `https://${storeDomain}/admin/api/2024-01/products/${productId}/images/${existing.id}.json`;
-                await fetch(delUrl, {
-                    method: 'DELETE',
-                    headers: { 'X-Shopify-Access-Token': accessToken },
-                });
-                await new Promise((r) => setTimeout(r, 300)); // rate limit
-            }
-            if (listData.images.length > 0) {
-                info(`[DraftService] Deleted ${listData.images.length} existing images before uploading new ones`);
-            }
-        }
-    }
-    catch (err) {
-        warn(`[DraftService] Failed to clear existing images (non-fatal): ${err}`);
-    }
-    for (let i = 0; i < images.length; i++) {
-        const img = images[i];
-        try {
-            let body;
-            if (img.startsWith('http://') || img.startsWith('https://')) {
-                // URL-based image
-                body = {
-                    image: {
-                        src: img,
-                        position: i + 1,
-                    },
-                };
-            }
-            else {
-                // Local file — base64 encode
-                if (!fs.existsSync(img)) {
-                    warn(`[DraftService] Image file not found: ${img}`);
-                    failed++;
-                    continue;
-                }
-                const base64 = fs.readFileSync(img).toString('base64');
-                body = {
-                    image: {
-                        attachment: base64,
-                        filename: path.basename(img),
-                        position: i + 1,
-                    },
-                };
-            }
-            const url = `https://${storeDomain}/admin/api/2024-01/products/${productId}/images.json`;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Shopify-Access-Token': accessToken,
-                },
-                body: JSON.stringify(body),
-            });
-            if (response.ok) {
-                uploaded++;
-            }
-            else {
-                const text = await response.text();
-                warn(`[DraftService] Image upload failed: ${response.status} — ${text}`);
-                failed++;
-            }
-            // Rate limit: ~2 req/sec for Shopify REST
-            if (i < images.length - 1) {
-                await new Promise((resolve) => setTimeout(resolve, 600));
-            }
-        }
-        catch (err) {
-            logError(`[DraftService] Image upload error: ${err}`);
-            failed++;
-        }
-    }
-    return { uploaded, failed };
+    const { replaceProductImages } = await import('../shopify/images.js');
+    const result = await replaceProductImages(accessToken, storeDomain, productId, images);
+    return { uploaded: result.uploaded, failed: result.failed };
 }
 /**
  * Check if a Shopify product has existing content (photos and/or description).

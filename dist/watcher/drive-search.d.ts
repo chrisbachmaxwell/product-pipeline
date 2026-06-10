@@ -10,6 +10,8 @@
  *   GCS_BUCKET=pictureline-product-photos
  *   GCS_PREFIX=UsedCameraGear/
  */
+export declare function isCloudMode(): boolean;
+export declare const GCS_BUCKET: string;
 export interface DriveSearchResult {
     folderPath: string;
     presetName: string;
@@ -18,6 +20,17 @@ export interface DriveSearchResult {
     /** When mode=cloud, these are GCS URLs for downloading */
     imageUrls?: string[];
 }
+export interface GcsFolder {
+    presetName: string;
+    folderName: string;
+    prefix: string;
+}
+/**
+ * List all product folders in GCS by scanning prefixes.
+ * Structure: GCS_PREFIX/<preset>/<product_folder>/<images>
+ */
+export declare function listGcsFolders(): Promise<GcsFolder[]>;
+export declare function listGcsImages(prefix: string): Promise<string[]>;
 export declare function isDriveMounted(drivePath?: string): boolean;
 /**
  * Search for product photos, using the configured mode (local or cloud).

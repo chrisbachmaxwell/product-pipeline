@@ -16,7 +16,10 @@ import { parseFolderName, isImageFile } from './folder-parser.js';
 import { info, warn } from '../utils/logger.js';
 const DEFAULT_DRIVE_PATH = '/Volumes/StyleShootsDrive/UsedCameraGear/';
 const DRIVE_MODE = process.env.DRIVE_MODE ?? 'local';
-const GCS_BUCKET = process.env.GCS_BUCKET ?? 'pictureline-product-photos';
+export function isCloudMode() {
+    return DRIVE_MODE === 'cloud';
+}
+export const GCS_BUCKET = process.env.GCS_BUCKET ?? 'pictureline-product-photos';
 const GCS_PREFIX = process.env.GCS_PREFIX ?? 'UsedCameraGear/';
 // ── Tokenization & Matching ────────────────────────────────────────────
 function extractSerial(str) {
@@ -87,7 +90,7 @@ async function getGcsStorage() {
  * List all product folders in GCS by scanning prefixes.
  * Structure: GCS_PREFIX/<preset>/<product_folder>/<images>
  */
-async function listGcsFolders() {
+export async function listGcsFolders() {
     const storage = await getGcsStorage();
     const bucket = storage.bucket(GCS_BUCKET);
     // List "preset" level prefixes
@@ -118,7 +121,7 @@ async function listGcsFolders() {
     }
     return folders;
 }
-async function listGcsImages(prefix) {
+export async function listGcsImages(prefix) {
     const storage = await getGcsStorage();
     const bucket = storage.bucket(GCS_BUCKET);
     const [files] = await bucket.getFiles({ prefix });

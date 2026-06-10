@@ -94,4 +94,28 @@ router.post('/api/watcher/link', async (req, res) => {
         res.status(500).json({ error: msg });
     }
 });
+/** GET /api/watcher/cloud/status — GCS photo-arrival watcher status */
+router.get('/api/watcher/cloud/status', async (_req, res) => {
+    try {
+        const { getCloudWatcherStatus } = await import('../../watcher/cloud-watcher.js');
+        res.json({ ok: true, ...getCloudWatcherStatus() });
+    }
+    catch (err) {
+        res.status(500).json({ error: String(err) });
+    }
+});
+/** POST /api/watcher/cloud/poll — force an immediate GCS scan */
+router.post('/api/watcher/cloud/poll', async (_req, res) => {
+    try {
+        const { pollOnce, getCloudWatcherStatus } = await import('../../watcher/cloud-watcher.js');
+        await pollOnce();
+        res.json({ ok: true, ...getCloudWatcherStatus() });
+        info('[WatcherAPI] Manual cloud poll triggered');
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logError(`[WatcherAPI] Cloud poll error: ${msg}`);
+        res.status(500).json({ error: msg });
+    }
+});
 export default router;

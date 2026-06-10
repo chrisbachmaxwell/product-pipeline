@@ -50,16 +50,37 @@ export async function processProductImages(
 }
 
 /**
- * Upload processed images back to Shopify.
- *
- * TODO: Implement actual Shopify image upload via Admin API.
+ * Upload processed images back to Shopify, replacing the product's
+ * existing images so raw originals don't linger next to processed copies.
+ * Returns the new image URLs from Shopify.
  */
 export async function uploadToShopify(
   productId: string,
   imageBuffers: Buffer[],
 ): Promise<string[]> {
-  info(
-    `[ImageProcessor] uploadToShopify stub called for product ${productId} with ${imageBuffers.length} images — not yet implemented`,
+  const { getRawDb } = await import('../db/client.js');
+  const { loadShopifyCredentials } = await import('../config/credentials.js');
+  const { replaceProductImages, listProductImages } = await import('../shopify/images.js');
+
+  const db = await getRawDb();
+  const tokenRow = db
+    .prepare(`SELECT access_token FROM auth_tokens WHERE platform = 'shopify'`)
+    .get() as { access_token: string } | undefined;
+  if (!tokenRow?.access_token) {
+    throw new Error('Shopify access token not found — cannot upload images');
+  }
+  const creds = await loadShopifyCredentials();
+
+  const result = await replaceProductImages(
+    tokenRow.access_token,
+    creds.storeDomain,
+    productId,
+    imageBuffers.map((buffer, i) => ({ buffer, filename: `processed-${productId}-${i + 1}.png` })),
   );
-  return [];
+  info(
+    `[ImageProcessor] Uploaded ${result.uploaded}/${imageBuffers.length} processed images to product ${productId} (${result.failed} failed)`,
+  );
+
+  const uploaded = await listProductImages(tokenRow.access_token, creds.storeDomain, productId);
+  return uploaded.sort((a, b) => a.position - b.position).map((img) => img.src);
 }
