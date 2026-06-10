@@ -79,7 +79,7 @@ const InlineDraftApproval: React.FC<InlineDraftApprovalProps> = ({ productId }) 
   // Approve mutation
   const approveMutation = useMutation({
     mutationFn: ({ draftId, photos, description }: { draftId: number; photos: boolean; description: boolean }) =>
-      apiClient.post(`/api/drafts/${draftId}/approve`, { photos, description }),
+      apiClient.post(`/drafts/${draftId}/approve`, { photos, description }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['draft-by-product', productId] });
       queryClient.invalidateQueries({ queryKey: ['product-info', productId] });
@@ -102,7 +102,7 @@ const InlineDraftApproval: React.FC<InlineDraftApprovalProps> = ({ productId }) 
 
   // Reject/dismiss mutation
   const rejectMutation = useMutation({
-    mutationFn: (draftId: number) => apiClient.post(`/api/drafts/${draftId}/reject`),
+    mutationFn: (draftId: number) => apiClient.post(`/drafts/${draftId}/reject`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['draft-by-product', productId] });
       addNotification({ 
