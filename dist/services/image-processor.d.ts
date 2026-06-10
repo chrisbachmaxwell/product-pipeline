@@ -6,8 +6,8 @@
  */
 export declare function processProductImages(shopifyProduct: any): Promise<string[]>;
 /**
- * Upload processed images back to Shopify.
- *
- * TODO: Implement actual Shopify image upload via Admin API.
+ * Upload processed images back to Shopify, replacing the product's
+ * existing images so raw originals don't linger next to processed copies.
+ * Returns the new image URLs from Shopify.
  */
 export declare function uploadToShopify(productId: string, imageBuffers: Buffer[]): Promise<string[]>;

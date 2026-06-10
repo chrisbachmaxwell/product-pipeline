@@ -137,6 +137,13 @@ const AppNavigation: React.FC = () => {
           {
             label: 'Analytics',
             icon: ChartVerticalFilledIcon,
+            selected: isSelected('/analytics'),
+            onClick: () => navigate('/analytics'),
+            url: '/analytics',
+          },
+          {
+            label: 'Logs',
+            icon: ChartVerticalFilledIcon,
             selected: isSelected('/logs'),
             onClick: () => navigate('/logs'),
             url: '/logs',

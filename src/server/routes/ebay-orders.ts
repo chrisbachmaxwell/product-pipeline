@@ -77,6 +77,28 @@ router.get('/api/ebay/orders', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/ebay/orders/import-status — Marketplace Connect cutover status.
+ * Shows whether live order import is enabled and the go-live cutoff date.
+ * (Must be registered before /api/ebay/orders/:id.)
+ */
+router.get('/api/ebay/orders/import-status', async (_req: Request, res: Response) => {
+  try {
+    const db = await getRawDb();
+    const get = (key: string) =>
+      (db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as any)?.value ?? '';
+
+    const cutoff = (get('ebay_order_import_cutoff') || '').trim();
+    res.json({
+      enabled: cutoff.length > 0 && get('auto_sync_enabled') === 'true',
+      cutoff: cutoff || null,
+      autoSyncEnabled: get('auto_sync_enabled') === 'true',
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to read import status', detail: String(err) });
+  }
+});
+
 /** GET /api/ebay/orders/:id — single order detail */
 router.get('/api/ebay/orders/:id', async (req: Request, res: Response) => {
   try {
@@ -172,6 +194,71 @@ router.post('/api/ebay/orders/import', async (req: Request, res: Response) => {
   } catch (err) {
     logError(`[EbayOrders] Import failed: ${err}`);
     res.status(500).json({ error: 'Import failed', detail: String(err) });
+  }
+});
+
+/**
+ * POST /api/ebay/orders/enable-import — Go live with eBay order import.
+ *
+ * Records the go-live cutoff (now, unless a `cutoff` ISO date is provided)
+ * and turns on the auto-sync scheduler. Orders created BEFORE the cutoff are
+ * never imported — they belong to Marketplace Connect.
+ *
+ * ⚠️  Turn off Marketplace Connect order sync FIRST, then call this, so no
+ *     order is claimed by both apps.
+ *
+ * Body: { confirm: true, cutoff?: string }
+ */
+router.post('/api/ebay/orders/enable-import', async (req: Request, res: Response) => {
+  try {
+    const { confirm, cutoff } = req.body || {};
+    if (confirm !== true) {
+      res.status(400).json({
+        error: 'confirm must be true',
+        warning:
+          'Enabling import sets the go-live cutoff and starts creating real Shopify orders for new eBay orders. ' +
+          'Make sure Marketplace Connect order sync is OFF first.',
+      });
+      return;
+    }
+
+    const cutoffDate = cutoff ? new Date(cutoff) : new Date();
+    if (isNaN(cutoffDate.getTime())) {
+      res.status(400).json({ error: `Invalid cutoff date: ${cutoff}` });
+      return;
+    }
+
+    const db = await getRawDb();
+    const upsert = db.prepare(
+      `INSERT INTO settings (key, value, updatedAt) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = datetime('now')`,
+    );
+    upsert.run('ebay_order_import_cutoff', cutoffDate.toISOString());
+    upsert.run('auto_sync_enabled', 'true');
+
+    info(`[EbayOrders] ✅ Order import ENABLED — go-live cutoff: ${cutoffDate.toISOString()}`);
+    res.json({ ok: true, enabled: true, cutoff: cutoffDate.toISOString() });
+  } catch (err) {
+    logError(`[EbayOrders] Enable import failed: ${err}`);
+    res.status(500).json({ error: 'Failed to enable import', detail: String(err) });
+  }
+});
+
+/**
+ * POST /api/ebay/orders/disable-import — Stop live order import.
+ * Keeps the cutoff so re-enabling doesn't backfill the gap by accident.
+ */
+router.post('/api/ebay/orders/disable-import', async (_req: Request, res: Response) => {
+  try {
+    const db = await getRawDb();
+    db.prepare(
+      `INSERT INTO settings (key, value, updatedAt) VALUES ('auto_sync_enabled', 'false', datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = 'false', updatedAt = datetime('now')`,
+    ).run();
+    info('[EbayOrders] Order import DISABLED');
+    res.json({ ok: true, enabled: false });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to disable import', detail: String(err) });
   }
 });
 

@@ -21,8 +21,6 @@ import { parseFolderName, isImageFile } from './folder-parser.js';
 import { FolderStabilizer } from './stabilizer.js';
 import { initWatcherTable, isProcessed, hasRecord, recordDetection, updateMatch, updateUploading, updateDone, updateError, getWatcherStats, getUnmatched, getRecent, } from './watcher-db.js';
 import { searchShopifyProduct } from './shopify-matcher.js';
-import { getDefaultForCategory } from '../services/photo-templates.js';
-import { createDraft, checkExistingContent, getAutoPublishSetting, approveDraft, } from '../services/draft-service.js';
 // ── Configuration ──────────────────────────────────────────────────────
 const DEFAULT_WATCH_PATH = '/Volumes/StyleShootsDrive/UsedCameraGear/';
 const DEFAULT_STABILIZE_MS = 30_000; // 30 seconds
@@ -328,50 +326,30 @@ async function handleNewFolder(folderPath, presetName, folderName) {
         }
         info(`[Watcher] Matched to Shopify product: ${match.title} (ID: ${match.id}, confidence: ${match.confidence})`);
         await updateMatch(recordId, match.id, match.title, match.confidence);
-        // Save images to draft system instead of uploading directly to Shopify.
-        // CRITICAL: Never overwrite live Shopify product data automatically.
+        // Run the unified auto-listing pipeline: it finds these photos on the
+        // drive itself, processes them with the saved template (background,
+        // shadow, watermark), pushes them to Shopify via the draft system, and
+        // auto-publishes only when safe. Reuses an existing AI description if
+        // the products/create webhook already generated one.
         await updateUploading(recordId);
         try {
-            // Check existing content on Shopify
-            const existingContent = await checkExistingContent(match.id);
-            // Create a draft with the local image paths
-            const draftId = await createDraft(match.id, {
-                title: match.title,
-                images: imagePaths,
-                originalTitle: existingContent.title,
-                originalDescription: existingContent.description,
-                originalImages: existingContent.images,
+            const { autoListProduct } = await import('../sync/auto-listing-pipeline.js');
+            const result = await autoListProduct(match.id, {
+                reuseExistingDescription: true,
+                requireReview: match.confidence !== 'exact',
             });
-            info(`[Watcher] Draft #${draftId} created for ${folderName} → ${match.title} (${imagePaths.length} images)`);
-            // Auto-publish if product has no existing photos and auto-publish is enabled
-            const autoPublishEnabled = await getAutoPublishSetting(presetName);
-            const hasExistingContent = existingContent.hasPhotos || existingContent.hasDescription;
-            if (!hasExistingContent && autoPublishEnabled) {
-                info(`[Watcher] Auto-publishing draft #${draftId} — no existing content`);
-                const approveResult = await approveDraft(draftId, { photos: true, description: false });
-                if (approveResult.success) {
-                    await updateDone(recordId, imagePaths.length);
-                    info(`[Watcher] ✅ Done: ${folderName} → ${match.title} (auto-published ${imagePaths.length} images)`);
-                }
-                else {
-                    await updateDone(recordId, imagePaths.length);
-                    warn(`[Watcher] Draft saved but auto-publish failed: ${approveResult.error}`);
-                }
+            if (result.success) {
+                await updateDone(recordId, imagePaths.length);
+                info(`[Watcher] ✅ Done: ${folderName} → ${match.title} (job ${result.jobId}, ${result.images?.length ?? 0} images processed)`);
             }
             else {
-                await updateDone(recordId, imagePaths.length);
-                const reason = hasExistingContent
-                    ? 'product has existing content — draft awaiting review'
-                    : 'auto-publish disabled — draft awaiting review';
-                info(`[Watcher] ✅ Done: ${folderName} → ${match.title} (${reason})`);
+                await updateError(recordId, result.error ?? 'auto-listing pipeline failed');
+                warn(`[Watcher] Pipeline failed for ${folderName}: ${result.error}`);
             }
-            // Phase 3: Auto-apply default template for this category (process images in background)
-            await autoApplyTemplate(presetName, match.id);
         }
-        catch (draftErr) {
-            // Fallback: if draft system fails, log the error
-            await updateError(recordId, `Draft creation failed: ${String(draftErr)}`);
-            logError(`[Watcher] ❌ Draft creation failed for ${folderName}: ${draftErr}`);
+        catch (pipelineErr) {
+            await updateError(recordId, `Pipeline failed: ${String(pipelineErr)}`);
+            logError(`[Watcher] ❌ Pipeline failed for ${folderName}: ${pipelineErr}`);
         }
     }
     catch (err) {
@@ -392,40 +370,6 @@ async function handleNewFolder(folderPath, presetName, folderName) {
     }
     finally {
         processingFolders.delete(folderPath);
-    }
-}
-/**
- * Phase 3: Auto-apply the default photo template for a category after upload.
- *
- * Looks up the default template for the given preset (category) name.
- * If one exists, triggers a reprocess-all on the Shopify product using
- * the template's PhotoRoom params.
- */
-async function autoApplyTemplate(presetName, shopifyProductId) {
-    try {
-        const template = await getDefaultForCategory(presetName);
-        if (!template) {
-            info(`[Watcher] No default template for category "${presetName}" — skipping auto-apply`);
-            return;
-        }
-        info(`[Watcher] Auto-applying template "${template.name}" to product ${shopifyProductId}`);
-        const port = parseInt(process.env.PORT || '3000', 10);
-        const response = await fetch(`http://localhost:${port}/api/templates/${template.id}/apply/${shopifyProductId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        });
-        if (response.ok) {
-            const data = (await response.json());
-            info(`[Watcher] ✅ Template auto-applied: "${template.name}" → product ${shopifyProductId} (${data.succeeded}/${data.total} images)`);
-        }
-        else {
-            const text = await response.text();
-            warn(`[Watcher] ⚠️ Template auto-apply failed (${response.status}): ${text}`);
-        }
-    }
-    catch (err) {
-        warn(`[Watcher] ⚠️ Template auto-apply error: ${err}`);
-        // Non-fatal — images are already uploaded, template apply is a bonus
     }
 }
 /**

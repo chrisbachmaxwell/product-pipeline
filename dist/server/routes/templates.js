@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { info, error as logError } from '../../utils/logger.js';
 import { getRawDb } from '../../db/client.js';
 import { getImageService, timedImageCall } from '../../services/image-service-factory.js';
+import { replaceProductImages, listProductImages } from '../../shopify/images.js';
 import { promises as fs } from 'fs';
 import { createTemplate, getTemplate, listTemplates, updateTemplate, deleteTemplate, setDefaultForCategory, } from '../../services/photo-templates.js';
 const router = Router();
@@ -18,37 +19,9 @@ async function getShopifyToken() {
 }
 // ── Helper: fetch product images from Shopify ──────────────────────────
 async function fetchShopifyProductImages(accessToken, productId) {
-    const res = await fetch(`https://usedcameragear.myshopify.com/admin/api/2024-01/products/${productId}/images.json`, { headers: { 'X-Shopify-Access-Token': accessToken } });
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Shopify image fetch failed (${res.status}): ${text}`);
-    }
-    const data = (await res.json());
-    return (data.images ?? []).map((img) => ({
-        id: img.id,
-        src: img.src,
-        position: img.position,
-        alt: img.alt ?? null,
-    }));
+    return listProductImages(accessToken, SHOPIFY_STORE_DOMAIN, productId);
 }
-// ── Helper: upload processed image to Shopify ──────────────────────────
-async function uploadProcessedImageToShopify(accessToken, productId, imageBuffer, filename) {
-    const base64 = imageBuffer.toString('base64');
-    const res = await fetch(`https://usedcameragear.myshopify.com/admin/api/2024-01/products/${productId}/images.json`, {
-        method: 'POST',
-        headers: {
-            'X-Shopify-Access-Token': accessToken,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ image: { attachment: base64, filename } }),
-    });
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Shopify image upload failed (${res.status}): ${text}`);
-    }
-    const data = (await res.json());
-    return data.image;
-}
+const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN ?? 'usedcameragear.myshopify.com';
 // ────────────────────────────────────────────────────────────────────────
 // GET /api/templates — List all templates
 // ────────────────────────────────────────────────────────────────────────
@@ -240,6 +213,10 @@ router.post('/api/templates/:id/apply/:productId', async (req, res) => {
         const db = await getRawDb();
         const imageService = await getImageService();
         const results = [];
+        // Process every image first, then replace the product's image set in one
+        // pass. Failed images keep their original URL so nothing is lost.
+        const replacementImages = [];
+        const replacementAlts = [];
         for (const img of shopifyImages) {
             const now = Math.floor(Date.now() / 1000);
             const insertResult = db.prepare(`INSERT INTO image_processing_log (product_id, image_url, original_url, status, params_json, created_at, updated_at)
@@ -248,18 +225,14 @@ router.post('/api/templates/:id/apply/:productId', async (req, res) => {
             try {
                 const { buffer, dataUrl } = await timedImageCall(`template="${template.name}" product=${productId} image=${img.id}`, () => imageService.processWithParams(img.src, template.params));
                 db.prepare(`UPDATE image_processing_log SET status = 'completed', processed_url = ?, updated_at = ? WHERE id = ?`).run(dataUrl, Math.floor(Date.now() / 1000), logId);
-                // Upload to Shopify
-                try {
-                    await uploadProcessedImageToShopify(accessToken, productId, buffer, `template-${template.id}-${img.id}-${Date.now()}.png`);
-                }
-                catch (uploadErr) {
-                    // Non-fatal
-                    logError(`[Templates API] Shopify upload failed for image ${img.id}: ${uploadErr}`);
-                }
+                replacementImages.push({ buffer, filename: `template-${template.id}-${img.id}-${Date.now()}.png` });
+                replacementAlts.push(img.alt);
                 results.push({ originalUrl: img.src, processedUrl: dataUrl, status: 'completed' });
             }
             catch (processErr) {
                 db.prepare(`UPDATE image_processing_log SET status = 'error', error = ?, updated_at = ? WHERE id = ?`).run(String(processErr), Math.floor(Date.now() / 1000), logId);
+                replacementImages.push(img.src);
+                replacementAlts.push(img.alt);
                 results.push({
                     originalUrl: img.src,
                     processedUrl: null,
@@ -270,6 +243,18 @@ router.post('/api/templates/:id/apply/:productId', async (req, res) => {
         }
         const succeeded = results.filter((r) => r.status === 'completed').length;
         const failed = results.filter((r) => r.status === 'error').length;
+        // Replace the product images (delete originals, upload processed set in
+        // original order) — but only if at least one image actually processed.
+        if (succeeded > 0) {
+            try {
+                await replaceProductImages(accessToken, SHOPIFY_STORE_DOMAIN, productId, replacementImages, {
+                    alts: replacementAlts,
+                });
+            }
+            catch (uploadErr) {
+                logError(`[Templates API] Shopify image replace failed: ${uploadErr}`);
+            }
+        }
         res.json({
             ok: true,
             templateId: template.id,

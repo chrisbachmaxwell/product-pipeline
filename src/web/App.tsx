@@ -17,6 +17,7 @@ const ShopifyProducts = React.lazy(() => import('./pages/ShopifyProducts'));
 const Orders = React.lazy(() => import('./pages/Orders'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const Analytics = React.lazy(() => import('./pages/Analytics'));
+const Logs = React.lazy(() => import('./pages/Logs'));
 const Mappings = React.lazy(() => import('./pages/Mappings'));
 const ImageProcessor = React.lazy(() => import('./pages/ImageProcessor'));
 const Pipeline = React.lazy(() => import('./pages/Pipeline'));
@@ -103,7 +104,8 @@ const ShopifyNavMenu: React.FC = () => (
     <Link to="/review">Review Queue</Link>
     <Link to="/images">Images</Link>
     <Link to="/category-mapping">Category Mapping</Link>
-    <Link to="/logs">Analytics</Link>
+    <Link to="/analytics">Analytics</Link>
+    <Link to="/logs">Logs</Link>
     <Link to="/settings">Settings</Link>
     <Link to="/help">Help</Link>
     <Link to="/features">Feature Requests</Link>
@@ -171,7 +173,8 @@ const AppFrame: React.FC = () => {
               <Route path="/images" element={<ImageProcessor />} />
               <Route path="/category-mapping" element={<CategoryMapping />} />
               <Route path="/settings" element={<Settings />} />
-              <Route path="/logs" element={<Analytics />} />
+              <Route path="/analytics" element={<Analytics />} />
+              <Route path="/logs" element={<Logs />} />
               <Route path="/help" element={<HelpCenter />}>
                 <Route path="article/:id" element={<HelpArticlePage />} />
                 <Route path="category/:category" element={<HelpCategoryPage />} />

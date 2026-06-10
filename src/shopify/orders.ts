@@ -134,13 +134,17 @@ export const findExistingShopifyOrder = async (
   
   if (recentResponse.ok) {
     const recentData = (await recentResponse.json()) as {
-      orders: Array<{ id: number; name: string; note?: string; source_name?: string }>;
+      orders: Array<{ id: number; name: string; note?: string; tags?: string; source_name?: string }>;
     };
-    
+
     for (const order of recentData.orders) {
-      // Check if this is an eBay order and contains our order ID
-      if (order.source_name === 'ebay' || 
-          (order.note && order.note.includes(ebayOrderId))) {
+      // Only a match if THIS eBay order's ID appears in the note or tags.
+      // (A bare source_name === 'ebay' check used to falsely flag every new
+      // order as a duplicate once any eBay-sourced order existed.)
+      if (
+        (order.note && order.note.includes(ebayOrderId)) ||
+        (order.tags && order.tags.includes(ebayOrderId))
+      ) {
         return { id: order.id, name: order.name };
       }
     }

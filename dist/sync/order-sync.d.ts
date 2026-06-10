@@ -13,6 +13,16 @@ export interface SyncResult {
     }>;
 }
 /**
+ * Read the go-live cutoff for eBay order import (set when switching off
+ * Marketplace Connect). Empty/missing = import not enabled.
+ */
+export declare function getOrderImportCutoff(): Promise<string | null>;
+/**
+ * Clamp a createdAfter date to the go-live cutoff: never look at orders
+ * created before the cutoff. Pure — exported for tests.
+ */
+export declare function applyCutoff(createdAfter: string, cutoff: string | null): string;
+/**
  * Sync eBay orders to Shopify.
  *
  * ╔══════════════════════════════════════════════════════════════════════════╗

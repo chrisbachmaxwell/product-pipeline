@@ -101,12 +101,14 @@ export async function findDuplicateByTotalDateBuyer(accessToken, params) {
         const ebayDate = new Date(params.createdAt);
         const minDate = new Date(ebayDate.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
         const maxDate = new Date(ebayDate.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString();
+        // NOTE: deliberately NOT filtered by source_name — orders created by
+        // other apps (Marketplace Connect, Codisto) carry their own source_name,
+        // and the whole point of this layer is to catch those.
         const url = new URL(`https://${creds.storeDomain}/admin/api/2024-01/orders.json`);
         url.searchParams.set('status', 'any');
-        url.searchParams.set('source_name', 'ebay');
         url.searchParams.set('created_at_min', minDate);
         url.searchParams.set('created_at_max', maxDate);
-        url.searchParams.set('limit', '50');
+        url.searchParams.set('limit', '250');
         const response = await fetch(url.toString(), {
             headers: { 'X-Shopify-Access-Token': accessToken },
         });

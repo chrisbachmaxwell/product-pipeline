@@ -33,6 +33,9 @@ import {
   useEbayOrders,
   useEbayOrderStats,
   useImportEbayOrders,
+  useEbayOrderImportStatus,
+  useEnableEbayOrderImport,
+  useDisableEbayOrderImport,
   type EbayOrderItem,
 } from '../hooks/useApi';
 
@@ -192,6 +195,73 @@ const OrderDetail: React.FC<{ order: EbayOrderItem }> = ({ order }) => {
   );
 };
 
+/* ────────────────── Marketplace Connect Cutover ────────────────── */
+
+const ImportCutoverCard: React.FC = () => {
+  const { data: status, isLoading } = useEbayOrderImportStatus();
+  const enableMutation = useEnableEbayOrderImport();
+  const disableMutation = useDisableEbayOrderImport();
+  const [confirmText, setConfirmText] = useState('');
+
+  if (isLoading || !status) return null;
+
+  if (status.enabled) {
+    return (
+      <Banner tone="success" title="Automatic order import is ON">
+        <BlockStack gap="200">
+          <Text as="p">
+            New eBay orders created after{' '}
+            <strong>{status.cutoff ? new Date(status.cutoff).toLocaleString() : '—'}</strong>{' '}
+            are imported into Shopify automatically. Orders before the cutoff are never touched
+            (they belong to Marketplace Connect).
+          </Text>
+          <InlineStack gap="200">
+            <Button
+              tone="critical"
+              onClick={() => disableMutation.mutate()}
+              loading={disableMutation.isPending}
+            >
+              Turn off automatic import
+            </Button>
+          </InlineStack>
+        </BlockStack>
+      </Banner>
+    );
+  }
+
+  return (
+    <Banner tone="warning" title="Automatic order import is OFF (Marketplace Connect cutover)">
+      <BlockStack gap="200">
+        <Text as="p">
+          When you're ready to replace Marketplace Connect:{' '}
+          <strong>1)</strong> turn off order sync in the Marketplace Connect app first, then{' '}
+          <strong>2)</strong> enable import here. The moment you enable it becomes the go-live
+          cutoff — only eBay orders created <em>after</em> that moment will ever be imported,
+          so historical orders and orders Marketplace Connect already created stay untouched.
+        </Text>
+        <InlineStack gap="200" blockAlign="end">
+          <Box minWidth="260px">
+            <TextField
+              label='Type "ENABLE" to confirm'
+              value={confirmText}
+              onChange={setConfirmText}
+              autoComplete="off"
+            />
+          </Box>
+          <Button
+            variant="primary"
+            disabled={confirmText !== 'ENABLE'}
+            onClick={() => { enableMutation.mutate(); setConfirmText(''); }}
+            loading={enableMutation.isPending}
+          >
+            Enable order import from now
+          </Button>
+        </InlineStack>
+      </BlockStack>
+    </Banner>
+  );
+};
+
 /* ────────────────── EbayOrders Page ────────────────── */
 
 const EbayOrders: React.FC = () => {
@@ -286,6 +356,9 @@ const EbayOrders: React.FC = () => {
             </Text>
           </BlockStack>
         </Banner>
+
+        {/* Marketplace Connect cutover control */}
+        <ImportCutoverCard />
 
         {/* Stats + Import */}
         <Layout>

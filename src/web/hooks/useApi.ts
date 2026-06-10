@@ -560,6 +560,74 @@ export const useImportEbayOrders = () => {
   });
 };
 
+export interface EbayOrderImportStatus {
+  enabled: boolean;
+  cutoff: string | null;
+  autoSyncEnabled: boolean;
+}
+
+export const useEbayOrderImportStatus = () => {
+  return useQuery({
+    queryKey: ['ebay-order-import-status'],
+    queryFn: () => apiClient.get<EbayOrderImportStatus>('/ebay/orders/import-status'),
+    refetchInterval: 30000,
+  });
+};
+
+export const useEnableEbayOrderImport = () => {
+  const queryClient = useQueryClient();
+  const { addNotification } = useAppStore();
+
+  return useMutation({
+    mutationFn: () =>
+      apiClient.post<{ ok: boolean; enabled: boolean; cutoff: string }>('/ebay/orders/enable-import', {
+        confirm: true,
+      }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['ebay-order-import-status'] });
+      addNotification({
+        type: 'success',
+        title: 'eBay order import enabled',
+        message: `Only orders created after ${new Date(data.cutoff).toLocaleString()} will be imported`,
+        autoClose: 8000,
+      });
+    },
+    onError: (error) => {
+      addNotification({
+        type: 'error',
+        title: 'Failed to enable order import',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        autoClose: 8000,
+      });
+    },
+  });
+};
+
+export const useDisableEbayOrderImport = () => {
+  const queryClient = useQueryClient();
+  const { addNotification } = useAppStore();
+
+  return useMutation({
+    mutationFn: () => apiClient.post<{ ok: boolean; enabled: boolean }>('/ebay/orders/disable-import', {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ebay-order-import-status'] });
+      addNotification({
+        type: 'success',
+        title: 'eBay order import disabled',
+        autoClose: 6000,
+      });
+    },
+    onError: (error) => {
+      addNotification({
+        type: 'error',
+        title: 'Failed to disable order import',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        autoClose: 8000,
+      });
+    },
+  });
+};
+
 // ---------------------------------------------------------------------------
 // Product Notes
 // ---------------------------------------------------------------------------

@@ -48,8 +48,16 @@ app.use(cors({
     const allowedOrigins = [
       'https://admin.shopify.com',
       'https://usedcameragear.myshopify.com',
-      'https://ebay-sync-app-production.up.railway.app', // Our own domain
+      'https://ebay-sync-app-production.up.railway.app', // Legacy domain
     ];
+
+    // Our own deployed domain(s) from environment
+    if (process.env.APP_URL) {
+      allowedOrigins.push(process.env.APP_URL.replace(/\/$/, ''));
+    }
+    if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+      allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+    }
     
     // Allow Shopify domains
     if (origin.match(/\.shopify\.com$/)) {
@@ -213,6 +221,10 @@ async function start() {
     // Start background sync scheduler
     startSyncScheduler(rawDb);
 
+    // Start the GCS photo-arrival watcher (no-op unless DRIVE_MODE=cloud)
+    const { startCloudWatcher } = await import('../watcher/cloud-watcher.js');
+    await startCloudWatcher();
+
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);
     process.exit(1);
@@ -269,6 +281,11 @@ function seedDefaultSettings(db: import('better-sqlite3').Database) {
     auto_list: 'false',
     sync_interval_minutes: '5',
     auto_sync_enabled: 'false',  // MUST be explicitly enabled
+    // eBay order import go-live cutoff (ISO timestamp). Empty = live order
+    // import refuses to run. Set when switching off Marketplace Connect.
+    ebay_order_import_cutoff: '',
+    // GCS photo-arrival watcher (only active when DRIVE_MODE=cloud)
+    cloud_watcher_enabled: 'true',
     item_location: '305 W 700 S, Salt Lake City, UT 84101',
     // AI Listing Management
     listing_management_enabled: 'false',  // MUST be explicitly enabled
