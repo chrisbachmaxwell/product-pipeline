@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getRawDb } from '../../db/client.js';
 import { getValidEbayToken } from '../../ebay/token-manager.js';
-import { info } from '../../utils/logger.js';
+import { info, error as logError } from '../../utils/logger.js';
 import { fetchAllShopifyProductsOverview, fetchDetailedShopifyProduct } from '../../shopify/products.js';
 import { GRADE_DESCRIPTIONS } from '../../config/condition-descriptions.js';
 import { CATEGORY_RULES } from '../../sync/category-mapper.js';
@@ -210,6 +210,51 @@ router.get('/api/products/:productId/pipeline-status', async (req, res) => {
     }
     catch (err) {
         res.status(500).json({ error: 'Failed to fetch pipeline status', detail: String(err) });
+    }
+});
+/** POST /api/products/:productId/apply-ai-description — Push the stored AI description to the Shopify product */
+router.post('/api/products/:productId/apply-ai-description', async (req, res) => {
+    try {
+        const db = await getRawDb();
+        const productId = Array.isArray(req.params.productId) ? req.params.productId[0] : req.params.productId;
+        const row = db
+            .prepare(`SELECT ai_description FROM product_pipeline_status WHERE shopify_product_id = ?`)
+            .get(productId);
+        if (!row?.ai_description) {
+            res.status(404).json({ error: 'No AI description stored for this product — run the pipeline first' });
+            return;
+        }
+        const tokenRow = db
+            .prepare(`SELECT access_token FROM auth_tokens WHERE platform = 'shopify'`)
+            .get();
+        if (!tokenRow?.access_token) {
+            res.status(400).json({ error: 'Shopify token not configured' });
+            return;
+        }
+        const { markdownToHtml } = await import('../../services/draft-service.js');
+        const { loadShopifyCredentials } = await import('../../config/credentials.js');
+        const creds = await loadShopifyCredentials();
+        const response = await fetch(`https://${creds.storeDomain}/admin/api/2024-01/products/${productId}.json`, {
+            method: 'PUT',
+            headers: {
+                'X-Shopify-Access-Token': tokenRow.access_token,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                product: { id: productId, body_html: markdownToHtml(row.ai_description) },
+            }),
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            logError(`[API] apply-ai-description failed for ${productId}: ${response.status} — ${errText}`);
+            res.status(500).json({ error: `Shopify update failed (${response.status})`, detail: errText });
+            return;
+        }
+        info(`[API] ✅ Applied AI description to Shopify product ${productId}`);
+        res.json({ ok: true, productId });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Failed to apply AI description', detail: String(err) });
     }
 });
 /** GET /api/orders — Recent imported orders */

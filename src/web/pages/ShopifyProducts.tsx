@@ -811,12 +811,8 @@ export const ShopifyProductDetail: React.FC = () => {
                                 size="slim"
                                 onClick={async () => {
                                   try {
-                                    const htmlContent = markdownToHtml(aiDescription);
-                                    await apiClient.post(`/api/test/update-product`, {
-                                      productId: id,
-                                      body_html: htmlContent
-                                    });
-                                    addNotification({ 
+                                    await apiClient.post(`/products/${id}/apply-ai-description`);
+                                    addNotification({
                                       type: 'success', 
                                       title: 'Description updated', 
                                       message: 'AI description has been applied to your product',

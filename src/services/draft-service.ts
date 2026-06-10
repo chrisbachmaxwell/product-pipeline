@@ -11,7 +11,7 @@ import { loadShopifyCredentials } from '../config/credentials.js';
 
 // ── Markdown → HTML converter ──────────────────────────────────────────
 // Converts the AI-generated markdown descriptions to HTML for Shopify's body_html field.
-function markdownToHtml(md: string): string {
+export function markdownToHtml(md: string): string {
   // Strip unwanted labels from AI output
   let cleaned = md
     .replace(/^\*\*Title line:\*\*\s*/gm, '')

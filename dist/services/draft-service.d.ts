@@ -4,6 +4,7 @@
  * CRITICAL: The pipeline must NEVER overwrite live Shopify product data automatically.
  * All processed content goes through the draft system first.
  */
+export declare function markdownToHtml(md: string): string;
 export interface Draft {
     id: number;
     shopify_product_id: string;
