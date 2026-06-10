@@ -279,9 +279,12 @@ export const listDraftOnEbay = async (draftId, overrides = {}) => {
     const db = await getRawDb();
     const now = Math.floor(Date.now() / 1000);
     // Load draft
+    info(`[Wizard] eBay listing started for draft ${draftId}`);
     const draft = db.prepare(`SELECT * FROM product_drafts WHERE id = ?`).get(draftId);
-    if (!draft)
+    if (!draft) {
+        info(`[Wizard] eBay listing: draft ${draftId} not found`);
         return { success: false, error: 'Draft not found' };
+    }
     // Don't allow re-listing
     if (draft.ebay_listing_id) {
         return {
@@ -298,9 +301,12 @@ export const listDraftOnEbay = async (draftId, overrides = {}) => {
         };
     }
     // Get tokens
+    info(`[Wizard] eBay listing: checking eBay token...`);
     const ebayToken = await getValidEbayToken();
-    if (!ebayToken)
+    if (!ebayToken) {
+        logError(`[Wizard] eBay listing: no valid eBay token`);
         return { success: false, error: 'eBay not authenticated. Connect eBay in Settings.' };
+    }
     const tokenRow = db.prepare(`SELECT access_token FROM auth_tokens WHERE platform = 'shopify'`).get();
     if (!tokenRow?.access_token)
         return { success: false, error: 'Shopify not authenticated.' };
@@ -448,7 +454,10 @@ export const listDraftOnEbay = async (draftId, overrides = {}) => {
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        logError(`[EbayDraftLister] Error listing draft ${draftId} on eBay: ${msg}`);
+        const stack = err instanceof Error ? err.stack : undefined;
+        logError(`[Wizard] eBay listing error for draft ${draftId}: ${msg}`);
+        if (stack)
+            logError(`[Wizard] eBay listing stack: ${stack}`);
         // Log failure to sync_log
         try {
             db.prepare(`INSERT INTO sync_log (direction, entity_type, entity_id, status, detail, created_at)

@@ -145,6 +145,11 @@ export async function listPendingDrafts(options) {
     if (status === 'all') {
         whereClause = '1=1';
     }
+    else if (status.includes(',')) {
+        const statuses = status.split(',').map(s => s.trim());
+        whereClause = `status IN (${statuses.map(() => '?').join(',')})`;
+        params.push(...statuses);
+    }
     else {
         whereClause = 'status = ?';
         params.push(status);
@@ -210,16 +215,17 @@ export async function approveDraft(draftId, options) {
                         'Content-Type': 'application/json',
                         'X-Shopify-Access-Token': tokenRow.access_token,
                     },
-                    body: JSON.stringify({ product: { id: draft.shopify_product_id, published: true } }),
+                    body: JSON.stringify({ product: { id: draft.shopify_product_id, status: 'active', published_at: new Date().toISOString() } }),
                 });
+                const pubText = await pubResponse.text();
+                info(`[Wizard] Shopify publish request for product ${draft.shopify_product_id} — status=${pubResponse.status}, body=${pubText.slice(0, 500)}`);
                 if (pubResponse.ok) {
                     published = true;
-                    info(`[DraftService] ✅ Published product ${draft.shopify_product_id} on Shopify`);
+                    info(`[Wizard] ✅ Published product ${draft.shopify_product_id} on Shopify (status: active)`);
                 }
                 else {
-                    const text = await pubResponse.text();
                     publishError = `Publish failed: ${pubResponse.status}`;
-                    warn(`[DraftService] Publish failed (non-fatal): ${pubResponse.status} — ${text}`);
+                    warn(`[Wizard] Publish failed (non-fatal): ${pubResponse.status} — ${pubText}`);
                 }
             }
             catch (err) {
