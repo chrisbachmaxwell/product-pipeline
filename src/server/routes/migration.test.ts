@@ -60,8 +60,20 @@ describe('migration status projection', () => {
       ]),
     );
     expect(
-      result.responsibilityEvidence.find((entry) => entry.responsibility === 'listingLifecycle'),
+      result.responsibilityEvidence.find((entry) => entry.responsibility === 'listingCreate'),
     ).toEqual(expect.objectContaining({ acceptedOwner: 'unverified', canaryReady: false }));
+    expect(result.responsibilities.map((entry) => entry.responsibility)).toEqual([
+      'orderImport',
+      'price',
+      'inventory',
+      'listingCreate',
+      'listingRevise',
+      'listingEndRelist',
+      'mapping',
+      'fulfillment',
+      'feedback',
+      'reconciliation',
+    ]);
     expect(
       result.responsibilities.find((entry) => entry.responsibility === 'orderImport'),
     ).toEqual(

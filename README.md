@@ -8,6 +8,8 @@
 
 > **Evidence state:** The embedded runtime exposes only authenticated, redacted shadow reads. The operator reconciler accepts strict version-2 offline evidence with independent Shopify, eBay, Marketplace Connect, and ProductPipeline provenance. No authoritative Shopify/eBay snapshot or current Marketplace Connect export has been captured yet, so parity and every canary remain blocked. See [`docs/READ_ONLY_PARITY.md`](docs/READ_ONLY_PARITY.md).
 
+> **Migration state:** The repository contains an unwired, separate control-plane persistence foundation for account-scoped identities, immutable order watermarks, idempotency, approvals, jobs, reconciliation, and audit evidence. Production-scoped state remains intentionally inert: it cannot establish a ProductPipeline watermark, transfer writer ownership, reserve execution, or authorize a canary. See [`docs/MIGRATION_STATE.md`](docs/MIGRATION_STATE.md).
+
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.

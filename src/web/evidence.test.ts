@@ -180,7 +180,7 @@ describe('read-only evidence projection', () => {
         },
       ],
       responsibilityEvidence: {
-        listingLifecycle: {
+        listingRevise: {
           evidenceStatus: 'verified',
           observedOwner: 'marketplace-connect',
           capturedAtUtc: '2026-08-11T18:30:00.000Z',
@@ -196,13 +196,20 @@ describe('read-only evidence projection', () => {
       capturedAt: '2026-08-11',
       critical: true,
     });
-    expect(responsibilities.find((item) => item.responsibility === 'listingLifecycle')).toMatchObject({
+    expect(responsibilities.find((item) => item.responsibility === 'listingRevise')).toMatchObject({
       acceptedOwner: 'unverified',
       observedOwner: 'marketplace-connect',
       evidenceStatus: 'verified',
       critical: false,
     });
-    for (const key of ['mapping', 'fulfillment', 'feedback']) {
+    for (const key of [
+      'listingCreate',
+      'listingEndRelist',
+      'mapping',
+      'fulfillment',
+      'feedback',
+      'reconciliation',
+    ] as const) {
       expect(responsibilities.find((item) => item.responsibility === key)).toMatchObject({
         acceptedOwner: 'unverified',
         evidenceStatus: 'unverified',

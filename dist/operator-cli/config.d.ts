@@ -1,5 +1,6 @@
-export declare const RESPONSIBILITIES: readonly ["listingCreate", "listingRevise", "listingEndRelist", "mapping", "price", "inventory", "orderImport", "fulfillment", "feedback", "reconciliation"];
-export type Responsibility = (typeof RESPONSIBILITIES)[number];
+import { type MigrationResponsibility } from '../safety/responsibilities.js';
+export declare const RESPONSIBILITIES: readonly ["orderImport", "price", "inventory", "listingCreate", "listingRevise", "listingEndRelist", "mapping", "fulfillment", "feedback", "reconciliation"];
+export type Responsibility = MigrationResponsibility;
 export type OperatorLane = 'development' | 'sandbox' | 'production-shadow';
 export type EbayEnvironment = 'sandbox' | 'production';
 export declare const OPERATOR_AUDIT_LOG_PATH = ".local/operator-audit/operator-cli.jsonl";

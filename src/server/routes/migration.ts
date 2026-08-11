@@ -107,7 +107,15 @@ function buildResponsibilityEvidence() {
       summary:
         'Marketplace Connect was observed as the incumbent on 2026-08-11; current authoritative cross-platform parity is unavailable.',
     })),
-    ...(['listingLifecycle', 'mapping', 'fulfillment', 'feedback'] as const).map(
+    ...([
+      'listingCreate',
+      'listingRevise',
+      'listingEndRelist',
+      'mapping',
+      'fulfillment',
+      'feedback',
+      'reconciliation',
+    ] as const).map(
       (responsibility) => ({
         responsibility,
         acceptedOwner: 'unverified',

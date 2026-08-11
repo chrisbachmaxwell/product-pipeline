@@ -2,17 +2,8 @@
  * Pure, intentionally unwired evaluator for a future, separately authorized canary.
  * It has no adapters and can never authorize or perform an external write.
  */
-export const CANARY_RESPONSIBILITIES = [
-    'listingCreate',
-    'listingRevise',
-    'listingEndRelist',
-    'mapping',
-    'price',
-    'inventory',
-    'orderImport',
-    'fulfillment',
-    'feedback',
-];
+import { WRITER_RESPONSIBILITIES, } from './responsibilities.js';
+export const CANARY_RESPONSIBILITIES = WRITER_RESPONSIBILITIES;
 export const CANARY_AUDIT_DESTINATION = 'local-append-only-canary-audit-v1';
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const SHOPIFY_VARIANT_PATTERN = /^gid:\/\/shopify\/ProductVariant\/[0-9]+$/;

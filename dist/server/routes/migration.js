@@ -93,7 +93,15 @@ function buildResponsibilityEvidence() {
             canaryReady: false,
             summary: 'Marketplace Connect was observed as the incumbent on 2026-08-11; current authoritative cross-platform parity is unavailable.',
         })),
-        ...['listingLifecycle', 'mapping', 'fulfillment', 'feedback'].map((responsibility) => ({
+        ...[
+            'listingCreate',
+            'listingRevise',
+            'listingEndRelist',
+            'mapping',
+            'fulfillment',
+            'feedback',
+            'reconciliation',
+        ].map((responsibility) => ({
             responsibility,
             acceptedOwner: 'unverified',
             observedOwner: null,

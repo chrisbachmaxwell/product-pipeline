@@ -3,19 +3,14 @@
  * It has no adapters and can never authorize or perform an external write.
  */
 
-export const CANARY_RESPONSIBILITIES = [
-  'listingCreate',
-  'listingRevise',
-  'listingEndRelist',
-  'mapping',
-  'price',
-  'inventory',
-  'orderImport',
-  'fulfillment',
-  'feedback',
-] as const;
+import {
+  WRITER_RESPONSIBILITIES,
+  type WriterResponsibility,
+} from './responsibilities.js';
 
-export type CanaryResponsibility = (typeof CANARY_RESPONSIBILITIES)[number];
+export const CANARY_RESPONSIBILITIES = WRITER_RESPONSIBILITIES;
+
+export type CanaryResponsibility = WriterResponsibility;
 export type CanaryApprovalAction =
   | 'create-listing'
   | 'revise-listing'

@@ -3,6 +3,10 @@ import type {
   MigrationResponsibilityEvidenceProjection,
   MigrationStatusResponse,
 } from './hooks/useApi';
+import {
+  MIGRATION_RESPONSIBILITIES,
+  type MigrationResponsibility,
+} from '../safety/responsibilities.js';
 
 export const EVIDENCE_SOURCE_KEYS = [
   'productPipeline',
@@ -20,26 +24,21 @@ const SOURCE_LABELS: Record<EvidenceSourceKey, string> = {
   marketplaceConnect: 'Marketplace Connect',
 };
 
-export const RESPONSIBILITY_KEYS = [
-  'orderImport',
-  'price',
-  'inventory',
-  'listingLifecycle',
-  'mapping',
-  'fulfillment',
-  'feedback',
-] as const;
+export const RESPONSIBILITY_KEYS = MIGRATION_RESPONSIBILITIES;
 
-export type ResponsibilityKey = (typeof RESPONSIBILITY_KEYS)[number];
+export type ResponsibilityKey = MigrationResponsibility;
 
 export const RESPONSIBILITY_LABELS: Record<ResponsibilityKey, string> = {
   orderImport: 'eBay → Shopify orders',
   price: 'Price sync',
   inventory: 'Inventory sync',
-  listingLifecycle: 'Listing lifecycle',
+  listingCreate: 'Listing creation',
+  listingRevise: 'Listing revision',
+  listingEndRelist: 'Listing end / relist',
   mapping: 'Listing mapping',
   fulfillment: 'Fulfillment',
   feedback: 'Buyer feedback',
+  reconciliation: 'Reconciliation',
 };
 
 export interface NormalizedEvidenceSource {

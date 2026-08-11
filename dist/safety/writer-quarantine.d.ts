@@ -1,5 +1,11 @@
 import type { NextFunction, Request, Response } from 'express';
-export type QuarantinedResponsibility = 'orderImport' | 'price' | 'inventory' | 'listingLifecycle' | 'fulfillment' | 'externalCommerce';
+import type { WriterResponsibility } from './responsibilities.js';
+/**
+ * `listingLifecycle` is retained only as a coarse legacy denial label for
+ * already-quarantined services. It is not accepted by ownership, approval,
+ * persistence, reconciliation, or canary APIs.
+ */
+export type QuarantinedResponsibility = WriterResponsibility | 'listingLifecycle' | 'externalCommerce';
 export declare const WRITER_QUARANTINE_CODE: "WRITER_QUARANTINED";
 export declare const MARKETPLACE_CONNECT_BASELINE: Readonly<{
     policyVersion: 1;
@@ -25,12 +31,37 @@ export declare const MARKETPLACE_CONNECT_BASELINE: Readonly<{
             productPipelineAccess: "read-only";
             writesAllowed: false;
         }>;
-        listingLifecycle: Readonly<{
+        listingCreate: Readonly<{
+            owner: "unverified";
+            productPipelineAccess: "read-only";
+            writesAllowed: false;
+        }>;
+        listingRevise: Readonly<{
+            owner: "unverified";
+            productPipelineAccess: "read-only";
+            writesAllowed: false;
+        }>;
+        listingEndRelist: Readonly<{
+            owner: "unverified";
+            productPipelineAccess: "read-only";
+            writesAllowed: false;
+        }>;
+        mapping: Readonly<{
             owner: "unverified";
             productPipelineAccess: "read-only";
             writesAllowed: false;
         }>;
         fulfillment: Readonly<{
+            owner: "unverified";
+            productPipelineAccess: "read-only";
+            writesAllowed: false;
+        }>;
+        feedback: Readonly<{
+            owner: "unverified";
+            productPipelineAccess: "read-only";
+            writesAllowed: false;
+        }>;
+        reconciliation: Readonly<{
             owner: "unverified";
             productPipelineAccess: "read-only";
             writesAllowed: false;
@@ -86,6 +117,31 @@ export declare function getMigrationPolicyStatus(servedAt?: string): {
         responsibility: string;
     } | {
         owner: "marketplace-connect";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
         productPipelineAccess: "read-only";
         writesAllowed: false;
         responsibility: string;

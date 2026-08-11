@@ -103,6 +103,10 @@ Version 2 deliberately carries a model-coverage blocker for every operational re
 
 No live collector is mounted in the web application. The legacy remote GETs are unmounted because they lack provenance and include an eBay path that can refresh OAuth and update the token database.
 
+The repository now includes an unwired `src/shadow-read/` fixture boundary for testing the future collector contract. It accepts only explicitly supplied ephemeral read authority, exact account/host/path/query policy, HTTPS `GET`/`HEAD`, bounded pages/records/bytes, and a mandatory opaque creation-date window for Shopify/eBay order paths. The injected fixture dispatcher receives neither a token nor an `Authorization` header, and the module has no default/global fetch, environment, credential-file, database, server, Shopify-client, or eBay-client import. Its output is always labeled fixture-only with `liveProof: false` and `productionParity: false`.
+
+That fixture boundary is test infrastructure, not a live adapter. Arbitrary injected test code is outside its trust boundary, an abort signal cannot force an ignoring dispatcher to stop, and eBay's exact half-open order-window semantics remain unverified. Do not mount or relabel it as authoritative evidence.
+
 Before a live snapshot can be captured, the operator must choose and approve one trusted execution boundary, such as an isolated local command or Railway one-off command, and provide read credentials that:
 
 - identify the exact Used Camera Gear store and `usedcam-0` account;

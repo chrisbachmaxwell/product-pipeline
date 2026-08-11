@@ -1,21 +1,14 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  MIGRATION_RESPONSIBILITIES,
+  type MigrationResponsibility,
+} from '../safety/responsibilities.js';
 
-export const RESPONSIBILITIES = [
-  'listingCreate',
-  'listingRevise',
-  'listingEndRelist',
-  'mapping',
-  'price',
-  'inventory',
-  'orderImport',
-  'fulfillment',
-  'feedback',
-  'reconciliation',
-] as const;
+export const RESPONSIBILITIES = MIGRATION_RESPONSIBILITIES;
 
-export type Responsibility = (typeof RESPONSIBILITIES)[number];
+export type Responsibility = MigrationResponsibility;
 export type OperatorLane = 'development' | 'sandbox' | 'production-shadow';
 export type EbayEnvironment = 'sandbox' | 'production';
 export const OPERATOR_AUDIT_LOG_PATH = '.local/operator-audit/operator-cli.jsonl';

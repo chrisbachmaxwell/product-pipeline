@@ -46,8 +46,10 @@ src/
 ├── config/         # Credential loading (~/.clawdbot/credentials/)
 ├── db/             # SQLite database + Drizzle schema
 ├── ebay/           # eBay API clients (REST: fulfillment, inventory, browse, trading)
+├── migration-store/ # Explicit, separate migration control-plane persistence (unwired)
 ├── operator-cli/   # Isolated local preflight, ownership, reconciliation, audit
 ├── safety/         # Immutable incumbent policy and writer quarantine
+├── shadow-read/    # Fixture-only GET/HEAD and bounded-read contract (unwired)
 ├── server/         # Express server + routes + middleware
 │   ├── routes/     # API endpoints (15+ route modules)
 │   ├── middleware/  # Auth (API key + rate limiting)
@@ -334,6 +336,14 @@ Test files: `src/services/__tests__/`
 10. **Read-collector trust boundary** — Choose a separately reviewed local or Railway one-off execution boundary for no-refresh, GET/HEAD-only authoritative Shopify/eBay evidence; Marketplace Connect still needs a supported export or reviewed attestation
 
 ## Recent Changes
+
+### 2026-08-11: Inert Durable Migration-State and Fixture Read Contracts
+
+- Added a dedicated, explicitly initialized migration-state persistence boundary separate from the legacy application ledger. It models exact platform/account identities, canonical responsibilities, versioned ownership, immutable exclusive order watermarks, separate monotonic cursors, stable idempotency intents, single-use approvals, execution jobs/attempts, reconciliation evidence, and a verified hash-chained audit.
+- Made the production-scoped foundation deliberately inert: it may retain the accepted Marketplace Connect incumbent baseline and shadow evidence, but cannot establish a ProductPipeline order watermark, transfer ownership to ProductPipeline, consume an execution approval, reserve a writer job, or authorize an external write.
+- Added incident-specific SQL and repository invariants for no historical backfill, one intent per account-scoped eBay order, atomic reservation, linked-order denial, post-dispatch outcome-unknown reconciliation, and tamper-detecting reopen checks. The store remains unwired from server startup, webhooks, schedulers, legacy CLI, credentials, and commerce adapters.
+- Added a fixture-only shadow-read contract with exact account/host/path/query policy, HTTPS GET/HEAD-only requests, bounded pages/records/bytes, opaque seven-day order windows, redaction checks, and completeness proof. It has no default network transport or credential source and can never produce live or production-parity evidence.
+- Added `docs/MIGRATION_STATE.md`, canonical shared responsibility names, and matching policy/evidence/UI projections. No live Shopify/eBay/Marketplace Connect access, production-data change, order import, listing mutation, watermark, cutover, or writer activation is part of this slice.
 
 ### 2026-08-11: Provenance-Bearing Parity Workflow and Shadow API Reduction
 

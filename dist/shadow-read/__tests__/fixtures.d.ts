@@ -1,0 +1,10 @@
+import type { FixtureReadTransportConfig } from '../transport.js';
+import { type EphemeralReadTokenPolicy, type ReadProvider, type ValidatedEphemeralReadToken } from '../token.js';
+export declare const NOW_UTC = "2026-08-11T18:00:00.000Z";
+export declare const FIXTURE_SECRET = "fixture-access-token-1234567890";
+export declare const SHOPIFY_SCOPE = "read_products";
+export declare const EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.inventory.readonly";
+export declare function shopifyPolicy(): EphemeralReadTokenPolicy;
+export declare function ebayPolicy(): EphemeralReadTokenPolicy;
+export declare function tokenFor(provider?: ReadProvider): ValidatedEphemeralReadToken;
+export declare function transportConfig(overrides?: Partial<FixtureReadTransportConfig>): FixtureReadTransportConfig;

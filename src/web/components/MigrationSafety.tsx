@@ -9,28 +9,26 @@ import {
   Text,
 } from '@shopify/polaris';
 import { booleanPolicyState } from '../evidence';
+import { MIGRATION_RESPONSIBILITIES } from '../../safety/responsibilities.js';
 import type {
   MigrationResponsibilityStatus,
   MigrationStatusResponse,
 } from '../hooks/useApi';
 
 const BASELINE_RESPONSIBILITIES = ['orderImport', 'price', 'inventory'] as const;
-const ALL_RESPONSIBILITIES = [
-  ...BASELINE_RESPONSIBILITIES,
-  'listingLifecycle',
-  'mapping',
-  'fulfillment',
-  'feedback',
-] as const;
+const ALL_RESPONSIBILITIES = MIGRATION_RESPONSIBILITIES;
 
 const LABELS: Record<string, string> = {
   orderImport: 'eBay → Shopify orders',
   price: 'Price sync',
   inventory: 'Inventory sync',
-  listingLifecycle: 'Listing lifecycle',
+  listingCreate: 'Listing creation',
+  listingRevise: 'Listing revision',
+  listingEndRelist: 'Listing end / relist',
   mapping: 'Listing mapping',
   fulfillment: 'Fulfillment',
   feedback: 'Buyer feedback',
+  reconciliation: 'Reconciliation',
 };
 
 export const humanize = (value: string | null | undefined) => {

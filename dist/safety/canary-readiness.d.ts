@@ -2,8 +2,9 @@
  * Pure, intentionally unwired evaluator for a future, separately authorized canary.
  * It has no adapters and can never authorize or perform an external write.
  */
-export declare const CANARY_RESPONSIBILITIES: readonly ["listingCreate", "listingRevise", "listingEndRelist", "mapping", "price", "inventory", "orderImport", "fulfillment", "feedback"];
-export type CanaryResponsibility = (typeof CANARY_RESPONSIBILITIES)[number];
+import { type WriterResponsibility } from './responsibilities.js';
+export declare const CANARY_RESPONSIBILITIES: readonly ["orderImport", "price", "inventory", "listingCreate", "listingRevise", "listingEndRelist", "mapping", "fulfillment", "feedback"];
+export type CanaryResponsibility = WriterResponsibility;
 export type CanaryApprovalAction = 'create-listing' | 'revise-listing' | 'end-or-relist-listing' | 'update-mapping' | 'update-price' | 'update-inventory' | 'import-order' | 'sync-fulfillment' | 'sync-feedback';
 export type CanaryIncumbent = 'marketplace-connect' | 'manual' | 'paused' | 'unverified';
 export declare const CANARY_AUDIT_DESTINATION: "local-append-only-canary-audit-v1";

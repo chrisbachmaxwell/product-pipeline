@@ -46,7 +46,19 @@ describe('migration status projection', () => {
                 baselineDate: '2026-08-11',
             }),
         ]));
-        expect(result.responsibilityEvidence.find((entry) => entry.responsibility === 'listingLifecycle')).toEqual(expect.objectContaining({ acceptedOwner: 'unverified', canaryReady: false }));
+        expect(result.responsibilityEvidence.find((entry) => entry.responsibility === 'listingCreate')).toEqual(expect.objectContaining({ acceptedOwner: 'unverified', canaryReady: false }));
+        expect(result.responsibilities.map((entry) => entry.responsibility)).toEqual([
+            'orderImport',
+            'price',
+            'inventory',
+            'listingCreate',
+            'listingRevise',
+            'listingEndRelist',
+            'mapping',
+            'fulfillment',
+            'feedback',
+            'reconciliation',
+        ]);
         expect(result.responsibilities.find((entry) => entry.responsibility === 'orderImport')).toEqual(expect.objectContaining({ owner: 'marketplace-connect', productPipelineAccess: 'disabled' }));
     });
     it('does not expose credentials or customer records', () => {

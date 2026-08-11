@@ -80,7 +80,7 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
         canaryReady: boolean;
         summary: string;
     } | {
-        responsibility: "listingLifecycle" | "fulfillment" | "mapping" | "feedback";
+        responsibility: "listingCreate" | "listingRevise" | "listingEndRelist" | "mapping" | "fulfillment" | "feedback" | "reconciliation";
         acceptedOwner: string;
         observedOwner: null;
         evidenceStatus: string;
@@ -133,6 +133,31 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
         responsibility: string;
     } | {
         owner: "marketplace-connect";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
+        productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "unverified";
         productPipelineAccess: "read-only";
         writesAllowed: false;
         responsibility: string;

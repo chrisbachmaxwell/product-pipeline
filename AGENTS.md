@@ -103,9 +103,10 @@ Always assume Shopify order creation has real-world POS consequences.
 4. Add frontend page in `src/web/pages/`, route in `App.tsx`
 
 ### Adding New DB Tables
-1. Add schema in `src/db/schema.ts`
-2. Create migration or update `src/db/migrate.ts`
-3. Document the table in `PROJECT.md` → Database Schema section
+1. Legacy application-ledger tables use `src/db/schema.ts` and `src/db/migrate.ts`.
+2. Marketplace Connect migration safety state belongs only in the separate `src/migration-store/` schema and repository. Never add its watermarks, idempotency, approvals, jobs, ownership, reconciliation, or audit records to the legacy startup-initialized database.
+3. A migration-store schema change requires an explicit versioned migration, schema/catalog verification, incident-specific persistence tests, and documentation in `PROJECT.md` plus `docs/MIGRATION_STATE.md`.
+4. Do not import or initialize the migration store from server startup, webhooks, schedulers, legacy CLI, or commerce adapters without a separately reviewed runtime-wiring slice.
 
 ### Frontend
 - React 19 + Shopify Polaris components — use Polaris for all UI
@@ -131,6 +132,9 @@ Always assume Shopify order creation has real-world POS consequences.
 | `src/server/routes/ebay-orders.ts` | eBay order import (local DB only) + sync-to-shopify |
 | `src/shopify/orders.ts` | `createShopifyOrder`, `findExistingShopifyOrder` |
 | `src/web/pages/EbayOrders.tsx` | eBay Orders UI page |
+| `src/migration-store/` | Dedicated, explicit migration control-plane persistence; not the legacy app ledger and not runtime-wired |
+| `src/shadow-read/` | Unwired fixture-only GET/HEAD, token-policy, order-window, and pagination contracts; never live proof |
+| `src/safety/responsibilities.ts` | Canonical responsibility vocabulary shared by policy, evidence, persistence, UI, and canary rules |
 
 ---
 

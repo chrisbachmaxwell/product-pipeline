@@ -117,6 +117,7 @@ describe('operator preflight', () => {
             'node:fs/promises',
             'node:path',
             'node:url',
+            '../safety/responsibilities.js',
         ]);
         for (const file of runtimeFiles) {
             const source = await fs.readFile(path.join(sourceRoot, file), 'utf8');
@@ -130,6 +131,8 @@ describe('operator preflight', () => {
             }), file).toBe(true);
             expect(source).not.toMatch(/(?:import\s*\(|require\s*\(|fetch\s*\(|getDb\s*\(|loadCredentials|SERVER_URL|syncOrders|node:(?:http|https|net|dns|child_process|worker_threads))/);
         }
+        const responsibilitySource = await fs.readFile(path.resolve(sourceRoot, '../safety/responsibilities.ts'), 'utf8');
+        expect(responsibilitySource).not.toMatch(/(?:from\s+['"]|import\s*\(|require\s*\(|fetch\s*\()/);
     });
     it('defaults to dry-run and rejects a no-dry-run flag', async () => {
         const root = await tempRepo();

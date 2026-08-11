@@ -1,11 +1,14 @@
 import type { NextFunction, Request, Response } from 'express';
+import type { MigrationResponsibility, WriterResponsibility } from './responsibilities.js';
 
+/**
+ * `listingLifecycle` is retained only as a coarse legacy denial label for
+ * already-quarantined services. It is not accepted by ownership, approval,
+ * persistence, reconciliation, or canary APIs.
+ */
 export type QuarantinedResponsibility =
-  | 'orderImport'
-  | 'price'
-  | 'inventory'
+  | WriterResponsibility
   | 'listingLifecycle'
-  | 'fulfillment'
   | 'externalCommerce';
 
 export const WRITER_QUARANTINE_CODE = 'WRITER_QUARANTINED' as const;
@@ -34,7 +37,22 @@ export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
       productPipelineAccess: 'read-only' as const,
       writesAllowed: false as const,
     }),
-    listingLifecycle: Object.freeze({
+    listingCreate: Object.freeze({
+      owner: 'unverified' as const,
+      productPipelineAccess: 'read-only' as const,
+      writesAllowed: false as const,
+    }),
+    listingRevise: Object.freeze({
+      owner: 'unverified' as const,
+      productPipelineAccess: 'read-only' as const,
+      writesAllowed: false as const,
+    }),
+    listingEndRelist: Object.freeze({
+      owner: 'unverified' as const,
+      productPipelineAccess: 'read-only' as const,
+      writesAllowed: false as const,
+    }),
+    mapping: Object.freeze({
       owner: 'unverified' as const,
       productPipelineAccess: 'read-only' as const,
       writesAllowed: false as const,
@@ -44,7 +62,21 @@ export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
       productPipelineAccess: 'read-only' as const,
       writesAllowed: false as const,
     }),
-  }),
+    feedback: Object.freeze({
+      owner: 'unverified' as const,
+      productPipelineAccess: 'read-only' as const,
+      writesAllowed: false as const,
+    }),
+    reconciliation: Object.freeze({
+      owner: 'unverified' as const,
+      productPipelineAccess: 'read-only' as const,
+      writesAllowed: false as const,
+    }),
+  }) satisfies Readonly<Record<MigrationResponsibility, {
+    owner: 'marketplace-connect' | 'unverified';
+    productPipelineAccess: 'disabled' | 'read-only';
+    writesAllowed: false;
+  }>>,
   quarantineChannels: Object.freeze([
     'api',
     'shopify-webhooks',
@@ -108,9 +140,11 @@ export function responsibilityForApiPath(pathname: string): QuarantinedResponsib
   if (/price/i.test(pathname)) return 'price';
   if (/inventory/i.test(pathname)) return 'inventory';
   if (/fulfill/i.test(pathname)) return 'fulfillment';
-  if (/listing|product|draft|mapping|template|image|pipeline|watcher|tim/i.test(pathname)) {
-    return 'listingLifecycle';
-  }
+  if (/feedback/i.test(pathname)) return 'feedback';
+  if (/mapping/i.test(pathname)) return 'mapping';
+  if (/end|relist|withdraw/i.test(pathname)) return 'listingEndRelist';
+  if (/create|publish|draft/i.test(pathname)) return 'listingCreate';
+  if (/listing|product|template|image|pipeline|watcher|tim/i.test(pathname)) return 'listingRevise';
   return 'externalCommerce';
 }
 
