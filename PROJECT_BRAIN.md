@@ -449,7 +449,7 @@ Safest next action:
 
 ## 13. Current Handoff
 
-- Published repository/runtime baseline: `main` at `550cf2384a16e6f57f03d315643f3cc1337b4b7d` through reviewed PR #3. The next authoritative-read-collector increment will be developed on `agent/authoritative-read-collector`.
+- Published application/runtime baseline: reviewed PR #3 merged as `550cf2384a16e6f57f03d315643f3cc1337b4b7d`; later documentation-only evidence commits do not change that runtime behavior. The next authoritative-read-collector increment will be developed on `agent/authoritative-read-collector`.
 - Inspection boundary: repository source/history plus the signed-in Shopify/embedded-app surfaces described above.
 - External access: GitHub repository operations and a credential-free GET of the public Railway health endpoint were used. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway project, Lightspeed, token, credential, or configuration access occurred.
 - Runtime actions for this slice: the authorized `main` push triggered the documented Railway auto-deploy. No order import/sync, product sync, listing mutation, setting change, credential read, direct commerce access, or Marketplace Connect change occurred.
