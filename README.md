@@ -10,6 +10,8 @@
 
 > **Migration state:** The repository contains an unwired, separate control-plane persistence foundation for account-scoped identities, immutable order watermarks, idempotency, approvals, jobs, reconciliation, and audit evidence. Production-scoped state remains intentionally inert: it cannot establish a ProductPipeline watermark, transfer writer ownership, reserve execution, or authorize a canary. See [`docs/MIGRATION_STATE.md`](docs/MIGRATION_STATE.md).
 
+> **Migration administration:** A separate `migration-admin` CLI can preview one explicit local initialization, create the inert store only after exact scope-digest confirmation, and verify it read-only. The existing status endpoint and five-page UI can project that local state only when explicitly configured; they never expose a writer or claim platform parity. See [`docs/MIGRATION_ADMIN.md`](docs/MIGRATION_ADMIN.md).
+
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
@@ -26,6 +28,17 @@ npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 ```
 
 The checked-in example intentionally reports unresolved ownership blockers outside the accepted order/price/inventory baseline. Passing a check proves only the declared local configuration or internally consistent supplied evidence—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
+
+## Inert Migration-State Administration
+
+The separate migration-state administrator has exactly `init` and `verify`. Its checked-in example contains an intentionally invalid seller placeholder and must be copied and corrected before use. `init` previews with no write unless the exact scope digest is repeated; `verify` preserves the existing database and never repairs it.
+
+```bash
+npm run migration-admin -- init --config config/migration-state.json --created-at <canonical-UTC> --json
+npm run migration-admin -- verify --config config/migration-state.json --json
+```
+
+This command has no credentials, network, legacy-database, platform, sync, import, ownership, watermark, or execution adapter. See [`docs/MIGRATION_ADMIN.md`](docs/MIGRATION_ADMIN.md).
 
 ## Features
 

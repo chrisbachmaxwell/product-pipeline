@@ -13,6 +13,7 @@ import {
 } from '@shopify/polaris';
 import { useMigrationStatus } from '../hooks/useApi';
 import { MigrationSafetyBanner } from '../components/MigrationSafety';
+import { DurableMigrationState } from '../components/DurableMigrationState';
 import { booleanPolicyState } from '../evidence';
 
 const Metric: React.FC<{ label: string; value: number | string }> = ({ label, value }) => (
@@ -90,6 +91,8 @@ const Orders: React.FC = () => {
             </Text>
           </BlockStack>
         </Banner>
+
+        <DurableMigrationState status={status} compact="orders" />
 
         {statusQuery.isLoading ? (
           <SkeletonBodyText lines={6} />

@@ -77,6 +77,50 @@ describe('migration status projection', () => {
         }));
         expect(serialized).not.toMatch(/access[_-]?token|refresh[_-]?token|password|buyer|email|address/i);
     });
+    it('adds local durable state without weakening authoritative top-level quarantine fields', () => {
+        const result = buildMigrationStatus({
+            listingMappings: 0,
+            orderMappings: 0,
+            historicalEbayOrders: 0,
+            settings: {},
+        }, '2026-08-11T18:00:00.000Z', {
+            status: 'not-configured',
+            schemaVersion: null,
+            scope: null,
+            access: {
+                writable: false,
+                readOnly: true,
+                externallyWired: false,
+                externalWritesSupported: false,
+                historicalBackfillAllowed: false,
+            },
+            counts: null,
+            ownership: [],
+            orders: {
+                watermarkUtc: null,
+                watermarkEstablished: false,
+                eligibleForCreation: 0,
+                historicalBackfillAllowed: false,
+            },
+            audit: { valid: false, recordCount: 0, headHash: null },
+            readiness: {
+                canaryReady: false,
+                cutoverReady: false,
+                blockers: ['migration-state-not-configured'],
+            },
+            errorCode: 'MIGRATION_STATE_NOT_CONFIGURED',
+        });
+        expect(result.externalWritesAllowed).toBe(false);
+        expect(result.historicalBackfillAllowed).toBe(false);
+        expect(result.cutoverWatermarkUtc).toBeNull();
+        expect(result.reconciliation.orderCreationEligible).toBe(false);
+        expect(result.migrationState).toMatchObject({
+            status: 'not-configured',
+            access: { writable: false, externalWritesSupported: false },
+            orders: { eligibleForCreation: 0, watermarkUtc: null },
+            readiness: { canaryReady: false, cutoverReady: false },
+        });
+    });
     it('never returns a raw protected-setting value in status exceptions', () => {
         const result = buildMigrationStatus({
             listingMappings: 0,

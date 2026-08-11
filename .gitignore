@@ -4,6 +4,7 @@ node_modules/
 .env
 .local/
 config/operator-shadow.json
+config/migration-state.json
 
 # Training data (too large for git)
 image-service/training-data/originals/

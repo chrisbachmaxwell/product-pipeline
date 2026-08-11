@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "project": "product-pipeline",
+  "lane": "production-shadow",
+  "mode": "migration-state-admin",
+  "databasePath": ".local/migration-state/product-pipeline-migration-v1.sqlite",
+  "scope": {
+    "shopifyStoreDomain": "usedcameragear.myshopify.com",
+    "ebayEnvironment": "production",
+    "ebaySellerId": "<replace-with-exact-nonsecret-seller-id>",
+    "ebayMarketplaceId": "EBAY_US"
+  },
+  "safety": {
+    "externalPlatformAccess": false,
+    "externalWrites": false,
+    "historicalBackfill": false,
+    "cutoverWatermarkUtc": null,
+    "ownershipTransferAllowed": false,
+    "credentialsAllowed": false
+  }
+}
