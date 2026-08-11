@@ -12,6 +12,8 @@
 
 > **Migration administration:** A separate `migration-admin` CLI can preview one explicit local initialization, create the inert store only after exact scope-digest confirmation, and verify it read-only. The existing status endpoint and five-page UI can project that local state only when explicitly configured; they never expose a writer or claim platform parity. See [`docs/MIGRATION_ADMIN.md`](docs/MIGRATION_ADMIN.md).
 
+> **Authoritative-read capture foundation:** A separate operator CLI can validate ephemeral read authority, collect one bounded Shopify or eBay source snapshot, and write one signed private local artifact. It has no OAuth acquisition/refresh or commerce writer. The implementation has fixture proof only; no live capture or parity claim exists yet. Marketplace Connect still requires a fresh independently signed UI/support attestation. See [`docs/AUTHORITATIVE_READ_CAPTURE.md`](docs/AUTHORITATIVE_READ_CAPTURE.md).
+
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
@@ -39,6 +41,18 @@ npm run migration-admin -- verify --config config/migration-state.json --json
 ```
 
 This command has no credentials, network, legacy-database, platform, sync, import, ownership, watermark, or execution adapter. See [`docs/MIGRATION_ADMIN.md`](docs/MIGRATION_ADMIN.md).
+
+## Bounded Authoritative-Read Capture
+
+The separate evidence-capture CLI has exactly `preflight`, `collect`, and `verify`. Its checked-in configuration example is deliberately invalid; the real exact-identity configuration and every authority value remain ignored or environment-only.
+
+```bash
+npm run evidence-capture -- preflight --repo-root . --json
+npm run evidence-capture -- collect --source shopify --confirm-scope sha256:<exact-digest> --orders-start <canonical-UTC> --orders-end <canonical-UTC> --repo-root . --json
+npm run evidence-capture -- verify --artifact .local/evidence-capture/<exact-file>.json --repo-root . --json
+```
+
+Shopify uses only pinned static Admin GraphQL read queries. eBay uses only exact GET identity, Inventory, offer, and recent Fulfillment endpoints. Artifacts remain local and non-authorizing; Inventory API coverage is not an all-listings census, and a valid signature is not Marketplace Connect parity or cutover evidence. See [`docs/AUTHORITATIVE_READ_CAPTURE.md`](docs/AUTHORITATIVE_READ_CAPTURE.md).
 
 ## Features
 
