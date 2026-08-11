@@ -346,6 +346,7 @@ Test files: `src/services/__tests__/`
 - Added exact eBay identity, Inventory-item/offer, and bounded Fulfillment `GET` readers with no OAuth acquisition or refresh. Evidence explicitly covers Inventory-model records only and never claims a complete all-listings census.
 - Added canonical signed mode-`0600` local artifacts, exact source-schema verification, streaming response caps, PII/secret rejection, and a strict independently signed Marketplace Connect attestation verifier. Marketplace Connect UI settings remain configuration evidence; price/inventory ownership requires stronger evidence, and order ownership requires Shopify creator attribution or support evidence.
 - No collector configuration, ephemeral authority, or signing key was available in the task environment, so no live Shopify/eBay/Marketplace Connect capture occurred. No runtime route, commerce writer, order import, historical backfill, watermark, or cutover behavior changed. Historical artifact verification still needs an archived original configuration/public-key/build context.
+- PR #4 merged as `57001ed777e5a75076cb159e306706eb7efd7d68`; GitHub reported the Railway deployment successful and the public health endpoint served that exact revision with the existing shadow-read-only/no-backfill/null-watermark policy. This is deployment identity and policy evidence, not source connectivity or parity proof.
 
 ### 2026-08-11: Inert Migration Administration and Read-Only Projection
 
