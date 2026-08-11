@@ -1,4 +1,5 @@
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Fetch inventory levels for specific inventory item IDs.
  */
@@ -32,6 +33,7 @@ export const fetchInventoryLevels = async (accessToken, inventoryItemIds) => {
  * Set inventory level for a specific item at a location.
  */
 export const setInventoryLevel = async (accessToken, inventoryItemId, locationId, available) => {
+    denyExternalWrite('inventory', 'set Shopify inventory level');
     const creds = await loadShopifyCredentials();
     const url = `https://${creds.storeDomain}/admin/api/2024-01/inventory_levels/set.json`;
     const response = await fetch(url, {

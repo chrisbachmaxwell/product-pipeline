@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
 import { loadShopifyCredentials } from '../config/credentials.js';
 import { mapShippingCarrier } from './mapper.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface FulfillmentSyncResult {
   updated: number;
@@ -70,6 +71,7 @@ export const syncFulfillments = async (
   shopifyAccessToken: string,
   options: { dryRun?: boolean } = {},
 ): Promise<FulfillmentSyncResult> => {
+  denyExternalWrite('fulfillment', 'sync Shopify fulfillment to eBay');
   const result: FulfillmentSyncResult = {
     updated: 0,
     skipped: 0,

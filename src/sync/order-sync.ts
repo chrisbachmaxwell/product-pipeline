@@ -15,6 +15,7 @@ import {
   DuplicateOrderError,
   SAFETY_MODE,
 } from './order-safety.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface SyncResult {
   imported: number;
@@ -136,6 +137,7 @@ export const syncOrders = async (
     confirm?: boolean;
   } = {},
 ): Promise<SyncResult> => {
+  denyExternalWrite('orderImport', 'sync eBay orders to Shopify');
   // ─── Determine real/dry-run mode ──────────────────────────────────────────
   // confirm=true is the authoritative flag. dryRun=false is backward-compat.
   // If neither is set, we default to DRY RUN for safety.

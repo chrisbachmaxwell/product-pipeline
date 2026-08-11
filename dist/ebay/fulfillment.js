@@ -1,4 +1,5 @@
 import { ebayRequest } from './client.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Fetch eBay orders using the Fulfillment API.
  */
@@ -60,6 +61,7 @@ export const fetchEbayOrder = async (accessToken, orderId) => {
  * POST /sell/fulfillment/v1/order/{orderId}/shipping_fulfillment
  */
 export const createShippingFulfillment = async (accessToken, orderId, fulfillment) => {
+    denyExternalWrite('fulfillment', 'create eBay shipping fulfillment');
     return ebayRequest({
         method: 'POST',
         path: `/sell/fulfillment/v1/order/${orderId}/shipping_fulfillment`,

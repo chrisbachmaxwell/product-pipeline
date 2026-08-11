@@ -8,6 +8,8 @@
 
 **ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. AI/product-enrichment scope is slated for staged removal.
 
+**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only`. All non-read `/api` requests are denied, background writers are unmounted, webhooks are redacted receipt-only, the legacy CLI is status-only, and low-level commerce writers fail closed. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
+
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
 - Generates AI product descriptions via OpenAI GPT
@@ -44,6 +46,8 @@ src/
 ├── config/         # Credential loading (~/.clawdbot/credentials/)
 ├── db/             # SQLite database + Drizzle schema
 ├── ebay/           # eBay API clients (REST: fulfillment, inventory, browse, trading)
+├── operator-cli/   # Isolated local preflight, ownership, reconciliation, audit
+├── safety/         # Immutable incumbent policy and writer quarantine
 ├── server/         # Express server + routes + middleware
 │   ├── routes/     # API endpoints (15+ route modules)
 │   ├── middleware/  # Auth (API key + rate limiting)
@@ -114,7 +118,7 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 
 ### Feature Status
 
-> Historical implementation inventory, not proof of current production fitness, ownership, or parity. The 2026-08-11 live walkthrough and current target are recorded in `PROJECT_BRAIN.md`.
+> Historical implementation inventory, not proof of current production fitness, ownership, or parity. External mutation features marked “Working” below are legacy code paths currently blocked by the hard writer quarantine; the scheduler/watcher are not mounted, webhooks dispatch no work, and the legacy CLI registers only `status`. The enforced behavior and 2026-08-11 live walkthrough are recorded in `PROJECT_BRAIN.md` and `docs/WRITER_QUARANTINE.md`.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -258,11 +262,15 @@ docker compose up    # or: python server.py
 ### CLI Usage
 
 ```bash
-npm run cli -- status              # Dashboard
-npm run cli -- orders sync         # Sync eBay orders
-npm run cli -- products sync       # Sync products to eBay
-npm run cli -- inventory sync      # Sync inventory
+npm run cli -- status
+
+npm run operator -- preflight --config config/operator-shadow.example.json
+npm run operator -- ownership --config config/operator-shadow.example.json
+npm run operator -- reconcile --config config/operator-shadow.example.json --snapshot .local/operator-reconciliation/snapshot.json
+npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 ```
+
+The legacy CLI exposes no authentication, sync, import, publish, republish, watcher, pipeline, image, settings, or other action command in the current source. Operator reconciliation is strict, local-snapshot-only evidence and never proves live parity.
 
 ### Deploy
 
@@ -276,11 +284,11 @@ railway up
 
 ### Adding New Features
 
-1. Add API route in `src/server/routes/`
-2. Register capability in `src/server/capabilities.ts` (auto-surfaces in chat + UI)
-3. Add frontend page in `src/web/pages/`, route in `App.tsx`
-4. Add nav item in `AppNavigation.tsx`
-5. Update DB schema in `src/db/schema.ts` if needed
+1. Start from the responsibility owner and the immutable policy in `src/safety/writer-quarantine.ts`.
+2. Keep new observation or reconciliation routes read-only and return redacted, source-labeled evidence.
+3. Add operator controls only to the five-page control plane: Overview, Listings, Orders, Reconciliation, and Settings.
+4. Do not add chat-generated internal calls, generic mutation endpoints, or writer-enabling settings.
+5. Treat database schema changes, external adapters, and any responsibility-specific writer as separate reviewed stages with idempotency, audit, canary, and rollback evidence.
 
 ### Testing
 
@@ -306,6 +314,7 @@ Test files: `src/services/__tests__/`
 | **Rename from "ebay-sync-app"** | Scope grew far beyond eBay sync; now a full product pipeline |
 | **TIM integration** | Condition data from trade-ins improves AI description quality |
 | **Replace Marketplace Connect through staged cutover (2026-08-11)** | ProductPipeline is the intended eBay-integration replacement, but Marketplace Connect stays incumbent until each responsibility has parity, single-writer proof, canary, reconciliation, rollback, and operator approval; AI/enrichment is legacy scope |
+| **Hard-coded incumbent writer quarantine (2026-08-11)** | Marketplace Connect remains production owner for order import, price, and inventory; ProductPipeline external writes fail closed with no runtime override, no historical backfill, and no cutover watermark until a separately authorized transfer |
 
 ## 8. Next Steps
 
@@ -326,12 +335,21 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
-### 2026-08-11: Local-Only Operator CLI Foundation (Feature Branch)
+### 2026-08-11: Hard Writer Quarantine and Offline Reconciliation
+
+- Added an immutable Marketplace Connect incumbent policy: ProductPipeline is hard-coded to shadow read-only, with no runtime override, no historical backfill, no order cutover watermark, and no external commerce writes.
+- Denied every non-read `/api` request, unmounted the legacy scheduler/cloud watcher, converted Shopify/eBay webhooks to redacted receipt-only observability, and reduced the legacy CLI to `status`.
+- Gated low-level eBay non-read requests plus Shopify order/inventory adapters and legacy mutation services so direct imports cannot bypass the route and startup controls.
+- Added read-only Overview, Listings, Orders, Reconciliation, and Settings migration surfaces with explicit Marketplace Connect ownership, quarantine status, proof limits, and operator-safe refresh/review actions.
+- Added strict local snapshot reconciliation and hash-chained audit evidence. It uses no credentials, remote clients, or application database; always records zero external writes/no historical backfill/no order eligibility; and cannot establish live parity.
+- Added focused tests and operator/help documentation. Commit, merge, Railway deployment, live-runtime verification, remote parity, and any responsibility cutover remain separate evidence gates.
+
+### 2026-08-11: Local-Only Operator CLI Foundation
 
 - Added a separate operator entrypoint for local preflight, ownership reporting, and audit verification without importing the legacy CLI, credentials, database, server, platform clients, sync modules, schedulers, or watchers.
 - Added strict shadow/read-only configuration validation that rejects writes, order import, historical backfill, an active cutover watermark, ProductPipeline writer ownership, wildcard allowlists, unknown fields, unsafe paths, and credential-like material.
 - Added an append-only-by-tool, hash-chained local audit with lock, filesystem sync, full-chain verification, and explicit local immutability limitations.
-- Added focused tests and operator documentation. No external system was accessed, no deployment was performed, and the feature branch is not production parity or cutover evidence.
+- Added focused tests and operator documentation. The foundation commit by itself was not deployment, production-parity, or cutover evidence.
 
 ### 2026-08-11: Marketplace Connect Replacement Target and Test Lane
 

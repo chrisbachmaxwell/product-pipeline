@@ -18,38 +18,53 @@ const articles = [
         question: 'What is ProductPipeline?',
         category: 'Getting Started',
         sort_order: 1,
-        answer: `ProductPipeline is an automation app that connects your Shopify store to eBay, built for Pictureline — a used camera gear business in Salt Lake City.
+        answer: `ProductPipeline is being rebuilt as a simple, operator-safe replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration.
 
-**What it does:**
-- Syncs Shopify products to eBay with configurable field mappings (title, description, price, images, inventory)
-- Runs an automated pipeline: new products flow from StyleShoots → Shopify → eBay with zero manual work
-- Generates AI-written eBay descriptions using GPT, based on product data and condition grade
-- Processes product images (background removal, cropping) via PhotoRoom before listing
-- Imports eBay orders back into Shopify for unified fulfillment, with safety guards against duplicates
-- Provides a Review Queue so staff can approve products before they go live on eBay
+**Current phase:** ProductPipeline is an observation-only shadow. Marketplace Connect remains the production owner for eBay-to-Shopify order import, price, and inventory. ProductPipeline cannot publish, sync, import, update, or delete external commerce data in this phase.
 
-**Who it's for:** Pictureline staff managing used camera gear listings across Shopify and eBay.`,
+Use ProductPipeline to review the current ownership policy, local listing/order evidence, exceptions, and offline reconciliation results. AI enrichment, automated image processing, pipeline execution, chat actions, and unsafe bulk-sync controls are legacy scope and are not part of the migration target.
+
+Source, deployment, and live proof are separate: a healthy local screen or consistent local snapshot does not prove Shopify/eBay parity or authorize a cutover.`,
+    },
+    {
+        question: 'Why are ProductPipeline write actions quarantined?',
+        category: 'Getting Started',
+        sort_order: 0,
+        answer: `Marketplace Connect is still the accepted production writer for eBay-to-Shopify orders, price, and inventory. ProductPipeline is therefore hard-coded to **shadow read-only** until a separately approved responsibility cutover.
+
+**What operators should see:**
+- Overview, Listings, Orders, Reconciliation, and Settings identify the incumbent owner and shadow status.
+- Non-read requests beneath \`/api\` are denied with a writer-quarantined response.
+- The scheduler and cloud watcher are not mounted.
+- Shopify/eBay webhooks record redacted receipt metadata only and dispatch no work.
+- Historical eBay orders are never eligible for Shopify creation; the cutover watermark is unset.
+
+**Safe commands:**
+\`\`\`sh
+npm run cli -- status
+npm run operator -- preflight --config config/operator-shadow.example.json
+npm run operator -- ownership --config config/operator-shadow.example.json
+npm run operator -- reconcile --config config/operator-shadow.example.json --snapshot .local/operator-reconciliation/snapshot.json
+npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
+\`\`\`
+
+The operator CLI accepts strict, redacted, local snapshots and appends digest/count/decision evidence to a local hash-chained audit. It has no remote client or application-database adapter, performs zero external writes, and never proves live parity.
+
+Do not disable Marketplace Connect, create a cutover watermark, import an order, or try to bypass the quarantine. Those steps require separate review, evidence, and explicit authorization.`,
     },
     {
         question: 'How do I get started?',
         category: 'Getting Started',
-        sort_order: 2,
-        answer: `Getting started with ProductPipeline takes about 10 minutes.
+        sort_order: 3,
+        answer: `Start in observation-only mode; do not connect credentials, enable a writer, or use a real order/listing as a test.
 
-**Step 1 — Connect Shopify**
-Go to **Settings → Shopify**. Enter your store URL and API access token, then click Save. The Dashboard will show a green "Connected" badge when successful.
+1. Open **Overview** and confirm the page reports Marketplace Connect as incumbent and ProductPipeline as shadow read-only.
+2. Review **Listings** and **Orders** as local evidence only. Historical order rows are not import candidates.
+3. Open **Reconciliation** to review local-ledger exceptions and proof limits. A clean local result is not Shopify/eBay parity.
+4. Open **Settings** to confirm the watermark is missing and external writes/historical backfill are denied. Stale legacy toggles do not override the policy.
+5. For repository-local verification, run \`npm run cli -- status\` and the operator CLI commands in the quarantine help article.
 
-**Step 2 — Connect eBay**
-Go to **Settings → eBay**. Click "Connect eBay Account" — you'll be redirected to eBay to authorize the app. Once complete you'll return to Settings with an active token. The token refreshes automatically.
-
-**Step 3 — Review Mappings**
-Visit the **Mappings** page. Default mappings are pre-configured for camera gear (title from Shopify, free shipping, Salt Lake City location). Adjust any field that doesn't match your needs.
-
-**Step 4 — Test with One Product**
-Go to **Products**, find an item, open it, and click **Approve & List**. Verify the resulting eBay listing before listing more products.
-
-**Step 5 — Enable the Pipeline (optional)**
-In **Settings → Pipeline**, turn on Auto-Descriptions and Auto-Images. New Shopify products will now flow automatically through the pipeline and land on eBay without manual work.`,
+Any live read connection, sandbox action, canary, ownership transfer, Marketplace Connect change, or external write requires its own scoped authorization and evidence.`,
     },
     // ─────────────────────────────────────────────
     // Products / Review Queue
@@ -214,20 +229,19 @@ To edit the default templates used for each grade, go to **Settings → Conditio
         question: 'How does eBay order sync work?',
         category: 'eBay',
         sort_order: 4,
-        answer: `eBay orders are imported into ProductPipeline and optionally synced to Shopify for unified fulfillment.
+        answer: `eBay-to-Shopify order sync is **not active in ProductPipeline's current migration phase**. Marketplace Connect remains the sole production importer.
 
-**Import flow:**
-1. eBay orders are fetched via the eBay Fulfillment API and stored locally in the \`ebay_orders\` table.
-2. Each order shows in **eBay → Orders** with status, buyer, total, and line items.
-3. From there, you can sync individual orders to Shopify with the **Sync to Shopify** button.
+ProductPipeline's legacy importer remains in source for historical analysis, but it cannot be triggered: non-read API calls are denied, the scheduler is not mounted, eBay webhooks dispatch no order work, the legacy CLI has no order command, the sync service denies at entry, and Shopify order creation independently fails closed.
 
-**Safety guards (critical):**
-- **Date filter:** Only orders from the last 24 hours are imported by default (max 7 days). This prevents accidentally importing thousands of historical orders.
-- **Dry run default:** Auto-sync runs in dry-run mode unless \`confirm=true\` is explicitly passed. No Shopify orders are created without confirmation.
-- **Three-layer duplicate detection:** Before any Shopify order is created, the system checks (1) the local order_mappings table, (2) Shopify tags, and (3) total+date+buyer matching. If any layer finds a match, creation is refused.
-- **Rate limiter:** Maximum 5 Shopify orders per hour, with a minimum 10-second gap between creations.
+**Non-negotiable order rules:**
+- Never import or backfill historical eBay orders.
+- Never create a Shopify order while the cutover watermark is unset.
+- Never let ProductPipeline and Marketplace Connect create orders concurrently.
+- A local order row or clean offline reconciliation is not live eligibility or parity evidence.
 
-These guards exist because every Shopify order with source "ebay" automatically flows into Lightspeed POS — duplicates require hours of manual cleanup.`,
+ProductPipeline had a 2026-02-11 incident in which historical eBay orders were imported into Shopify and cascaded to Lightspeed, creating duplicates alongside the incumbent integration. A future order importer therefore requires an explicit immutable UTC watermark, durable marketplace/account/order idempotency, one-writer proof, approval, audit, remote reconciliation, canary evidence, and rollback before a separately authorized cutover.
+
+Operators should review **Orders** and **Reconciliation** only; there is no approved sync or import action in this phase.`,
     },
     // ─────────────────────────────────────────────
     // Pipeline

@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 const API_VERSION = '2024-01';
 
@@ -61,6 +62,7 @@ export async function deleteAllProductImages(
   storeDomain: string,
   productId: string,
 ): Promise<number> {
+  denyExternalWrite('listingLifecycle', 'delete Shopify product images');
   let deleted = 0;
   try {
     const existing = await listProductImages(accessToken, storeDomain, productId);
@@ -92,6 +94,7 @@ export async function appendProductImage(
   image: ImageInput,
   options?: { position?: number; alt?: string | null },
 ): Promise<boolean> {
+  denyExternalWrite('listingLifecycle', 'append Shopify product image');
   const body = buildImageBody(image, options?.position, options?.alt);
   if (!body) return false;
 
@@ -123,6 +126,7 @@ export async function replaceProductImages(
   images: ImageInput[],
   options?: { alts?: Array<string | null> },
 ): Promise<UploadResult> {
+  denyExternalWrite('listingLifecycle', 'replace Shopify product images');
   const deleted = await deleteAllProductImages(accessToken, storeDomain, productId);
 
   let uploaded = 0;

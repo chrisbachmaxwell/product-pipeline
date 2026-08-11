@@ -20,6 +20,7 @@ import { getDb, getRawDb } from '../db/client.js';
 import { productMappings, syncLog, orderMappings } from '../db/schema.js';
 import { eq, and, lt, isNull, sql } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 // ---------------------------------------------------------------------------
 // 1. Stale Listing Auto-Republish
@@ -44,6 +45,7 @@ export async function republishStaleListings(
   ebayToken: string,
   maxAgeDays = 30,
 ): Promise<RepublishResult> {
+  denyExternalWrite('listingLifecycle', 'republish stale eBay listings');
   const result: RepublishResult = {
     processed: 0,
     republished: 0,
@@ -175,6 +177,7 @@ export async function applyPriceDropSchedule(
   ebayToken: string,
   _shopifyToken?: string, // reserved for future Shopify price reads
 ): Promise<PriceDropResult> {
+  denyExternalWrite('price', 'apply automatic eBay price drops');
   const result: PriceDropResult = {
     processed: 0,
     dropped: 0,
@@ -451,6 +454,7 @@ export async function enablePromotedListings(
   listingIds: string[],
   adRate = 2.0,
 ): Promise<PromoteResult> {
+  denyExternalWrite('listingLifecycle', 'enable eBay promoted listings');
   const result: PromoteResult = {
     processed: 0,
     promoted: 0,
@@ -597,6 +601,7 @@ export async function runListingManagement(ebayToken: string): Promise<{
   republish: RepublishResult;
   priceDrop: PriceDropResult;
 }> {
+  denyExternalWrite('listingLifecycle', 'run automated listing management');
   const rawDb = await getRawDb();
 
   // Check if listing management is enabled

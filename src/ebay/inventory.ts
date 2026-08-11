@@ -1,4 +1,5 @@
 import { ebayRequest } from './client.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 /**
  * eBay Inventory API — manage inventory items and offers.
@@ -76,6 +77,7 @@ export const createOrReplaceInventoryItem = async (
   sku: string,
   item: Omit<EbayInventoryItem, 'sku'>,
 ): Promise<void> => {
+  denyExternalWrite('listingLifecycle', 'create or replace eBay inventory item');
   await ebayRequest({
     method: 'PUT',
     path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
@@ -129,6 +131,7 @@ export const updateInventoryQuantity = async (
   sku: string,
   quantity: number,
 ): Promise<void> => {
+  denyExternalWrite('inventory', 'update eBay inventory quantity');
   // Get current item first
   const existing = await getInventoryItem(accessToken, sku);
   if (!existing) {
@@ -149,6 +152,7 @@ export const createOffer = async (
   accessToken: string,
   offer: Omit<EbayOffer, 'offerId'>,
 ): Promise<EbayOfferResponse> => {
+  denyExternalWrite('listingLifecycle', 'create eBay offer');
   return ebayRequest<EbayOfferResponse>({
     method: 'POST',
     path: '/sell/inventory/v1/offer',
@@ -167,6 +171,7 @@ export const updateOffer = async (
   offerId: string,
   offer: Omit<EbayOffer, 'offerId'>,
 ): Promise<void> => {
+  denyExternalWrite('price', 'update eBay offer');
   await ebayRequest({
     method: 'PUT',
     path: `/sell/inventory/v1/offer/${offerId}`,
@@ -252,6 +257,7 @@ export const deleteOffer = async (
   accessToken: string,
   offerId: string,
 ): Promise<void> => {
+  denyExternalWrite('listingLifecycle', 'delete eBay offer');
   await ebayRequest({
     method: 'DELETE',
     path: `/sell/inventory/v1/offer/${offerId}`,
@@ -281,6 +287,7 @@ export const createOrUpdateLocation = async (
     locationTypes: string[]; // ['WAREHOUSE']
   },
 ): Promise<void> => {
+  denyExternalWrite('listingLifecycle', 'create or update eBay inventory location');
   await ebayRequest({
     method: 'POST',
     path: `/sell/inventory/v1/location/${encodeURIComponent(locationKey)}`,
@@ -316,6 +323,7 @@ export const publishOffer = async (
   accessToken: string,
   offerId: string,
 ): Promise<{ listingId: string }> => {
+  denyExternalWrite('listingLifecycle', 'publish eBay offer');
   return ebayRequest<{ listingId: string }>({
     method: 'POST',
     path: `/sell/inventory/v1/offer/${offerId}/publish`,
@@ -343,6 +351,7 @@ export const deleteInventoryItem = async (
   accessToken: string,
   sku: string,
 ): Promise<void> => {
+  denyExternalWrite('listingLifecycle', 'delete eBay inventory item');
   await ebayRequest({
     method: 'DELETE',
     path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
@@ -358,6 +367,7 @@ export const withdrawOffer = async (
   accessToken: string,
   offerId: string,
 ): Promise<void> => {
+  denyExternalWrite('listingLifecycle', 'withdraw eBay offer');
   await ebayRequest({
     method: 'POST',
     path: `/sell/inventory/v1/offer/${offerId}/withdraw`,

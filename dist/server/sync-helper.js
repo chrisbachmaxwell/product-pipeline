@@ -1,6 +1,7 @@
 import { getValidEbayToken } from '../ebay/token-manager.js';
 import { getRawDb } from '../db/client.js';
 import { info, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Run order sync with automatic token retrieval.
  * Returns null if tokens aren't configured yet.
@@ -12,6 +13,7 @@ import { info, error as logError } from '../utils/logger.js';
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 export async function runOrderSync(options = {}) {
+    denyExternalWrite('orderImport', 'run eBay-to-Shopify order sync');
     try {
         const ebayToken = await getValidEbayToken();
         if (!ebayToken) {

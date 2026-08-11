@@ -5,6 +5,7 @@ import { info, error as logError } from '../../utils/logger.js';
 import { fetchAllShopifyProductsOverview, fetchDetailedShopifyProduct } from '../../shopify/products.js';
 import { GRADE_DESCRIPTIONS } from '../../config/condition-descriptions.js';
 import { CATEGORY_RULES } from '../../sync/category-mapper.js';
+import { getMigrationPolicyStatus } from '../../safety/writer-quarantine.js';
 const router = Router();
 /** GET /api/image-proxy — Proxy external images to avoid CORS issues (for canvas editing) */
 router.get('/api/image-proxy', async (req, res) => {
@@ -44,11 +45,19 @@ router.get('/api/status', async (_req, res) => {
         const shopifyToken = db.prepare(`SELECT access_token FROM auth_tokens WHERE platform = 'shopify'`).get();
         const ebayToken = db.prepare(`SELECT access_token, expires_at FROM auth_tokens WHERE platform = 'ebay'`).get();
         res.json({
-            status: 'running',
+            status: 'shadow-read-only',
+            migration: getMigrationPolicyStatus(),
             products: { mapped: productCount?.count ?? 0 },
-            orders: { imported: orderCount?.count ?? 0 },
-            shopifyConnected: !!shopifyToken?.access_token,
-            ebayConnected: !!ebayToken?.access_token,
+            orders: {
+                localMappings: orderCount?.count ?? 0,
+                creationEligible: 0,
+                authoritative: false,
+            },
+            credentialRecords: {
+                shopifyPresent: !!shopifyToken?.access_token,
+                ebayPresent: !!ebayToken?.access_token,
+                remotelyVerified: false,
+            },
             lastSyncs,
             recentNotifications,
             settings: Object.fromEntries(settings.map((s) => [s.key, s.value])),

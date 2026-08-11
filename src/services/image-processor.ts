@@ -1,5 +1,6 @@
 import { info, warn } from '../utils/logger.js';
 import { getImageService, timedImageCall } from './image-service-factory.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 /**
  * Orchestrates product image processing for listings.
@@ -58,6 +59,7 @@ export async function uploadToShopify(
   productId: string,
   imageBuffers: Buffer[],
 ): Promise<string[]> {
+  denyExternalWrite('listingLifecycle', 'upload processed images to Shopify');
   const { getRawDb } = await import('../db/client.js');
   const { loadShopifyCredentials } = await import('../config/credentials.js');
   const { replaceProductImages, listProductImages } = await import('../shopify/images.js');

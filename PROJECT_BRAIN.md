@@ -1,7 +1,8 @@
 # Product Pipeline Project Brain
 
 > Canonical orientation and handoff document for the Product Pipeline repository.
-> Source behavior verified against `main` at `e6914f5657bf1d074dd8900ac7b6513f96654922` on 2026-08-11.
+> Initial architecture behavior was verified against `main` at `e6914f5657bf1d074dd8900ac7b6513f96654922` on 2026-08-11.
+> The writer-quarantine and offline-reconciliation behavior described below was source-verified on 2026-08-11; repository history, deployment, and live-runtime proof remain separate evidence.
 > Time-specific Shopify and embedded-app facts were verified in a read-only browser walkthrough on 2026-08-11.
 > This is the canonical target and safety plan; it does not claim production parity or authorize a cutover.
 
@@ -84,6 +85,18 @@ The SQLite database is an application ledger/cache, not an authoritative catalog
 - Do not remove legacy code until its route, scheduler, webhook, watcher, UI, CLI, import, database, and deployment dependencies are mapped.
 - Do not delete legacy database columns/tables during initial decommission; first stop writers and retain read-only evidence.
 
+### Enforced incumbent quarantine in current source
+
+- `src/safety/writer-quarantine.ts` hard-codes ProductPipeline to `shadow-read-only`. Marketplace Connect remains the accepted production owner for eBay-to-Shopify order import, price, and inventory. There is no runtime flag, request confirmation, database setting, or test-mode exception that can enable those ProductPipeline writers.
+- Middleware denies every non-read request beneath `/api` with HTTP `423` before a legacy handler can run. `GET`, `HEAD`, and `OPTIONS` remain available for observation.
+- Shopify and eBay authentication routes are not mounted in the shadow application. The retained Shopify OAuth helper requests read scopes only and does not register webhooks; existing credential records are not connectivity proof.
+- The server does not mount the legacy scheduler or cloud watcher. Shopify and eBay webhooks are receipt-only: they record redacted local metadata and dispatch no sync, pipeline, listing, order, price, inventory, fulfillment, or watcher work.
+- The legacy CLI registers only `status`. Low-level eBay requests other than `GET`/`HEAD`, Shopify order creation, and Shopify inventory mutation fail closed at their adapter boundaries; legacy mutation services also deny at entry.
+- The isolated operator CLI can reconcile only strict, redacted local snapshots and append local hash-chained audit evidence. It has no remote client or application-database adapter and cannot establish live parity.
+- The cutover watermark remains unset, historical order backfill remains forbidden, and no current-source behavior authorizes a ProductPipeline order creation.
+
+See `docs/WRITER_QUARANTINE.md` for the operator-facing contract, enforcement layers, and proof limits.
+
 ## 4. Test Lane
 
 The Test Lane exists to accelerate safe implementation without turning production commerce into a test harness.
@@ -123,11 +136,13 @@ The repository contains a TypeScript/Node application with Express 5, React 19/V
 
 Principal source areas:
 
+- `src/safety/`: immutable migration ownership policy and centralized writer-quarantine controls.
 - `src/ebay/`: authentication and eBay REST/Trading clients.
 - `src/shopify/`: Shopify products, orders, and webhook helpers.
 - `src/sync/`: product, order, inventory, price, fulfillment, listing, and AI pipeline logic.
-- `src/server/`: Express application and API routes.
-- `src/web/`: operator interface.
+- `src/server/`: Express application, read-only migration status, API routes, and receipt-only webhooks.
+- `src/operator-cli/`: isolated local preflight, ownership, snapshot reconciliation, and audit verification.
+- `src/web/`: operator interface, including the read-only five-page migration control plane.
 - `src/db/`: shared SQLite schema and initialization/migrations.
 - `src/services/`: drafts, image processing, photo templates, eBay draft listing, TradeInManager, and related services.
 - `src/watcher/`: StyleShoots/local/cloud photo ingestion.
@@ -137,7 +152,7 @@ Principal source areas:
 The current application is not cleanly divided into listing and enrichment modules. Notable shared seams include:
 
 - `src/server/routes/api.ts` mixes listing, order, mapping, image, test, and operational endpoints.
-- `src/server/index.ts` mounts mixed routes and starts schedulers/watchers.
+- `src/server/index.ts` still mounts mixed legacy routes, but the current quarantine middleware blocks their non-read methods and startup no longer mounts the scheduler or cloud watcher.
 - `src/db/client.ts` creates and migrates both retained and legacy tables.
 - `src/web/App.tsx`, navigation, settings, stores, and API hooks span both product directions.
 - `product_drafts` supports both enrichment review and manual eBay listing preparation.
@@ -178,7 +193,7 @@ No control was changed and no sync, import, listing, mapping, save, or external 
 
 | Capability | Verified implementation | Current qualification |
 |---|---|---|
-| eBay authentication | Auth routes and token manager | Wired; live validity unknown |
+| eBay authentication | Auth route source and token manager | Route is intentionally unmounted in shadow mode; existing-token validity is unknown |
 | Listing inventory view | Listings API, UI, and CLI | Reads local mappings, not authoritative eBay inventory |
 | Shopify catalog/detail | Shopify clients, routes, UI | Built; live connectivity unknown |
 | Create/publish listing | `src/sync/product-sync.ts` and product sync route | Single-variant; remote-write defaults need hardening |
@@ -216,30 +231,20 @@ No control was changed and no sync, import, listing, mapping, save, or external 
 
 On 2026-02-11, an order sync without a safe date boundary imported the eBay order history into Shopify. Those orders cascaded into Lightspeed. Repository documentation reports 259 duplicates and identifies overlap with historical Marketplace Connect/Codisto-created orders.
 
-### Safeguards now present in source
+### Legacy order defenses retained behind quarantine
 
-- `src/sync/order-sync.ts` defaults to a 24-hour lookback and clamps requests to seven days.
-- A persisted `ebay_order_import_cutoff` is required for live order creation and each pre-cutoff order is skipped.
-- Order sync defaults to dry-run.
-- Local `order_mappings` are checked.
-- Shopify order searches check eBay tags/source identifiers and scan recent order notes/tags.
-- `src/sync/order-safety.ts` can match total/date plus buyer or embedded eBay order ID.
-- Safe mode defaults to five creations per hour with at least ten seconds between creations.
-- Regression tests cover cutoff behavior and one Shopify duplicate lookup path.
+The legacy implementation still contains a 24-hour default lookback, a seven-day clamp, a persisted-cutoff check, dry-run default, local mapping checks, Shopify tag/note searches, heuristic duplicate matching, and process-local rate limiting. Regression tests cover cutoff behavior and one duplicate lookup path.
 
-### Remaining risks
+Those defenses are historical defense-in-depth, not the active authorization boundary and not evidence that ProductPipeline is ready to own orders. Their inner semantics still have known weaknesses: a caller can select `dryRun: false` without the stronger documented confirmation, some duplicate lookup failures fail open, rate limiting is process-local, and remote creation plus local mapping is not atomic.
 
-- `dryRun: false` is accepted as a live-write signal without `confirm: true`, contrary to the stricter documentation.
-- The mounted eBay notification route processes XML and calls live order sync with `dryRun: false`.
-- The observed notification route does not verify an eBay signature or protect against replay.
-- Disabling scheduled import sets `auto_sync_enabled` false, but direct/webhook sync checks the cutoff rather than that flag.
-- Duplicate lookup failures can fail open.
-- Rate limiting is process-local, resets on restart, and does not coordinate multiple workers.
-- Remote creation and local mapping are not one atomic operation.
-- The local import endpoint accepts a caller-supplied day range; it writes local data but increases ambiguity around order ownership.
-- Marketplace Connect's exact webhook/subscription state, ProductPipeline cutoff value, deployed worker count, and cross-system reconciliation state remain unknown.
+### Current hard quarantine
 
-During migration, every ProductPipeline eBay-to-Shopify order-creation entry point must be unmounted or hard-disabled. A configuration toggle that one caller can bypass is not sufficient. The replacement order module must be rebuilt or isolated behind the watermark, durable external-ID idempotency, single-writer, approval, audit, reconciliation, and rollback gates before any canary.
+- `syncOrders` denies at entry and `createShopifyOrder` independently denies before credential loading or network access.
+- Every non-read `/api` request is denied before route logic, so direct import/sync endpoints cannot initiate work.
+- The scheduler is not mounted, the eBay notification endpoint is redacted receipt-only, and the legacy CLI exposes no order action.
+- The immutable policy has `historicalBackfillAllowed: false`, `cutoverWatermarkUtc: null`, and `externalWritesAllowed: false`.
+
+These source controls neutralize the previously identified entry points while the quarantine is present, but they do not make the legacy importer cutover-ready. The replacement order module still requires a persisted explicit watermark, durable external-ID idempotency, one-writer proof, approval, remote reconciliation, immutable production audit evidence, and rollback before any separately authorized canary. Marketplace Connect subscription state, deployed commit/processes, and cross-system state remain unknown until read-only live verification.
 
 ## 8. Legacy AI and Product-Enrichment Scope
 
@@ -323,21 +328,22 @@ Remove or hide from the migration target: AI chat, AI prompts, description/image
 
 ### Stage 1 — ProductPipeline shadow mode and writer quarantine
 
-- Add a single fail-closed shadow mode in which ProductPipeline can read/reconcile but cannot mutate Shopify or eBay.
-- Hard-disable/unmount eBay-to-Shopify order creation, including webhook, scheduler, chat, CLI, and direct API paths.
-- Remove or disable live listing, price, inventory, fulfillment, republish, and bulk mutation entry points while Marketplace Connect owns them.
-- Stop unconditional product-create AI pipeline triggers and watcher-triggered publication.
-- Unmount chat, AI pipeline, image-processing, and TradeInManager mutation routes before deleting code.
-- Preserve historical database data read-only.
+- Maintain one fail-closed shadow mode in which ProductPipeline can read or reconcile supplied evidence but cannot mutate Shopify or eBay.
+- Keep eBay-to-Shopify order creation disabled across webhook, scheduler, chat, CLI, direct API, service, and adapter paths.
+- Keep listing, price, inventory, fulfillment, republish, image-upload, and bulk mutation paths denied while Marketplace Connect owns production order import, price, and inventory and before any other responsibility is assigned.
+- Keep the legacy scheduler/cloud watcher unmounted and webhook dispatch disabled; preserve redacted receipt observability.
+- Preserve historical database data as evidence and keep every historical order ineligible for creation.
 
-**Authorized foundation implemented on feature branch:** `agent/operator-cli-foundation` adds a separate `product-pipeline-operator` entrypoint with only local `preflight`, `ownership`, and `audit verify` commands. Its runtime import boundary excludes the legacy CLI, server, database, credentials, platform clients, sync code, schedulers, and watchers. Strict config validation fixes read-only/dry-run/no-write/no-import/no-backfill/no-watermark posture; exact allowlists and declared ownership fail closed. Preflight and ownership append a redacted, hash-chained local audit record. The local audit is tamper-evident, not production-immutable, and passing preflight is not remote proof. See `docs/OPERATOR_CLI.md`.
+**Implemented in current source:** an immutable incumbent policy, broad non-read `/api` denial, unmounted authentication/scheduler/watcher paths, redacted receipt-only webhooks, a status-only legacy CLI, and service/adapter write gates. The UI exposes Overview, Listings, Orders, Reconciliation, and Settings as a read-only control plane. See `docs/WRITER_QUARANTINE.md`.
+
+The isolated `product-pipeline-operator` entrypoint provides local `preflight`, `ownership`, `reconcile`, and `audit verify`. Strict config and snapshot validation fail closed; reconciliation reads only normalized local evidence, writes only digests/counts/decisions to the local hash-chained audit, and always reports no live proof, no production parity, zero external writes, no historical backfill, and no order-creation eligibility. The local audit is tamper-evident by tool behavior, not production-immutable. See `docs/OPERATOR_CLI.md`.
 
 ### Stage 2 — Durable safety foundation
 
-- Implement the per-responsibility ownership gate and make every writer pass through it.
+- Replace the current all-writers quarantine with a reviewed per-responsibility ownership gate only when a separately authorized canary slice is ready; every future writer must pass through that gate.
 - Persist external IDs, idempotency keys, the order cutover watermark, attempts, outcomes, approvals, and hash-verifiable audit events.
 - Make jobs durable and concurrency-safe; retries and multiple workers must preserve exactly-once business effects.
-- Build authoritative Shopify/eBay discovery and reconciliation with a reviewed exception queue.
+- Build authoritative read-only Shopify/eBay discovery and reconciliation with a reviewed exception queue. The current supplied-snapshot reconciler is an offline foundation only.
 - Add contract tests for every denied and future write boundary, including webhook replay, restart, concurrency, and historical-order rejection.
 
 ### Stage 3 — Functional parity in shadow
@@ -374,7 +380,9 @@ Remove or hide from the migration target: AI chat, AI prompts, description/image
 ### Verified in this repository snapshot
 
 - The listing, order, enrichment, image, watcher, and TradeInManager domains coexist and are coupled.
-- The order safeguards and remaining bypass/failure risks described above are present in current source.
+- Current source hard-codes ProductPipeline to shadow read-only, rejects all non-read `/api` calls, unmounts the scheduler/cloud watcher, makes webhooks redacted receipt-only, exposes only legacy CLI `status`, and gates the low-level external writer boundaries described above.
+- The offline operator reconciler accepts only strict local snapshots, appends redacted digest/count/decision evidence to the local hash-chained audit, performs zero external writes, and explicitly cannot prove live parity.
+- Legacy order defenses and their inner failure risks remain in source behind the hard quarantine; they are not cutover-ready and must not be treated as an alternate write path.
 - Listing CRUD/sync paths exist but important operator, reconciliation, correctness, and test gaps remain.
 - Historical documentation contains stale intent and status claims, including that the repository still needs renaming.
 - Existing current tests focus on image factory and order safety/deduplication; listing-management coverage was not found.
@@ -390,7 +398,7 @@ Remove or hide from the migration target: AI chat, AI prompts, description/image
 
 ### Unknown until separately verified
 
-- Which commit is deployed and which Railway services/processes are active.
+- Which exact commit Railway serves, whether it contains the current quarantine, and which Railway services/processes are active.
 - Current Shopify/eBay token validity, scopes, webhook registrations, and eBay notification subscriptions.
 - Marketplace Connect's complete listing/link coverage, per-item exceptions, fulfillment/feedback behavior, and subscription-dependent capabilities.
 - Which system currently owns listing creation/revision/end/relist in practice; the walkthrough verified Marketplace Connect's controls but did not audit every recent remote mutation.
@@ -402,6 +410,7 @@ Remove or hide from the migration target: AI chat, AI prompts, description/image
 - Whether an eBay Sandbox account and an isolated Shopify development/test store support every required workflow for the Test Lane.
 - Whether the current build/tests pass in the deployment environment.
 - Production parity for any responsibility. No parity or cutover claim is authorized yet.
+- The order cutover watermark is deliberately `null`; its future value and event-time semantics require a separately reviewed and authorized order-cutover plan.
 
 Unknowns are not permission to probe or mutate production. Resolve them with an explicitly scoped, read-only environment audit.
 
@@ -436,11 +445,11 @@ Safest next action:
 
 ## 13. Current Handoff
 
-- Repository baseline: `main` at replacement/Test Lane documentation commit `790d208a63798ccb2a71d317525b33d65b89e163`; source behavior baseline before the operator CLI remains `e6914f5657bf1d074dd8900ac7b6513f96654922`.
+- Repository baseline: the writer-quarantine/reconciliation slice is source-verified on top of the previously documented `main` baseline. Its release and deployment evidence must be checked independently in repository history and the implementing handoff.
 - Inspection boundary: repository source/history plus the signed-in Shopify/embedded-app surfaces described above.
 - External access: GitHub clone/read and documentation push are authorized. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway, Lightspeed, token, credential, or configuration access occurred.
-- Runtime actions: no order import/sync, product sync, listing mutation, setting change, credential read, deployment command, or legacy application execution. Only the isolated local operator CLI and local tests/typecheck were run.
+- Runtime actions for this slice: repository implementation and local verification only; no order import/sync, product sync, listing mutation, setting change, credential read, direct commerce access, or Marketplace Connect change.
 - Durable objective: transform ProductPipeline into a safe, simple Marketplace Connect replacement with no historical duplicate-order imports, explicit staged cutover/reconciliation evidence, and operator-approved production migration.
-- Current direction: Marketplace Connect remains the incumbent writer while ProductPipeline enters shadow mode, builds durable safety/reconciliation, proves one responsibility at a time, and receives explicit cutover approvals.
-- Feature-branch status: the smallest CLI foundation is implemented and locally verified on `agent/operator-cli-foundation`; it is not merged to `main`, deployed, or connected to an external system. Review and an explicit merge/deployment decision are required before it can enter the deployed source path.
-- Next decision: accept or revise the responsibility ownership baseline, then separately authorize any writer-quarantine or read-only remote-reconciliation application slice. No further application behavior change or deployment is implied by this branch.
+- Accepted ownership baseline: Marketplace Connect remains the sole production owner for eBay-to-Shopify order import, price, and inventory until a separately authorized responsibility cutover. ProductPipeline is fail-closed and observation-only for them.
+- Implementation status: the local operator CLI foundation plus the hard writer quarantine, read-only control plane, and strict offline snapshot reconciliation are implemented in current source. Local consistency is not deployment evidence or live parity.
+- Next gate: complete scoped verification, commit/push/merge the authorized slice, and record Railway build/deployment evidence if available. Live runtime health and remote read-only parity still require separate evidence. Any writer reintroduction, cutover watermark, live canary, Marketplace Connect responsibility disable, or historical-order import remains blocked pending its own explicit authorization and proof packet.

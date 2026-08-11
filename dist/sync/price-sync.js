@@ -4,6 +4,7 @@ import { productMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, error as logError } from '../utils/logger.js';
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Fetch variant prices from Shopify for mapped products.
  */
@@ -37,6 +38,7 @@ const fetchShopifyPrices = async (accessToken, productIds) => {
  * Compares Shopify variant prices with eBay offer prices and updates if different.
  */
 export const syncPrices = async (ebayAccessToken, shopifyAccessToken, options = {}) => {
+    denyExternalWrite('price', 'sync Shopify prices to eBay');
     const result = {
         updated: 0,
         skipped: 0,

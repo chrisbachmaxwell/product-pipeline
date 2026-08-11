@@ -128,6 +128,7 @@ describe('operator preflight', () => {
     expect(program.commands.map((command) => command.name())).toEqual([
       'preflight',
       'ownership',
+      'reconcile',
       'audit',
     ]);
     for (const forbidden of ['sync', 'import', 'publish', 'write']) {

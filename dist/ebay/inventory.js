@@ -1,9 +1,11 @@
 import { ebayRequest } from './client.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Create or replace an inventory item on eBay.
  * PUT /sell/inventory/v1/inventory_item/{sku}
  */
 export const createOrReplaceInventoryItem = async (accessToken, sku, item) => {
+    denyExternalWrite('listingLifecycle', 'create or replace eBay inventory item');
     await ebayRequest({
         method: 'PUT',
         path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
@@ -47,6 +49,7 @@ export const getInventoryItems = async (accessToken, options = {}) => {
  * Update the quantity of an inventory item.
  */
 export const updateInventoryQuantity = async (accessToken, sku, quantity) => {
+    denyExternalWrite('inventory', 'update eBay inventory quantity');
     // Get current item first
     const existing = await getInventoryItem(accessToken, sku);
     if (!existing) {
@@ -62,6 +65,7 @@ export const updateInventoryQuantity = async (accessToken, sku, quantity) => {
  * POST /sell/inventory/v1/offer
  */
 export const createOffer = async (accessToken, offer) => {
+    denyExternalWrite('listingLifecycle', 'create eBay offer');
     return ebayRequest({
         method: 'POST',
         path: '/sell/inventory/v1/offer',
@@ -75,6 +79,7 @@ export const createOffer = async (accessToken, offer) => {
  * PUT /sell/inventory/v1/offer/{offerId}
  */
 export const updateOffer = async (accessToken, offerId, offer) => {
+    denyExternalWrite('price', 'update eBay offer');
     await ebayRequest({
         method: 'PUT',
         path: `/sell/inventory/v1/offer/${offerId}`,
@@ -140,6 +145,7 @@ export const getBusinessPolicies = async (accessToken) => {
  * DELETE /sell/inventory/v1/offer/{offerId}
  */
 export const deleteOffer = async (accessToken, offerId) => {
+    denyExternalWrite('listingLifecycle', 'delete eBay offer');
     await ebayRequest({
         method: 'DELETE',
         path: `/sell/inventory/v1/offer/${offerId}`,
@@ -151,6 +157,7 @@ export const deleteOffer = async (accessToken, offerId) => {
  * PUT /sell/inventory/v1/location/{merchantLocationKey}
  */
 export const createOrUpdateLocation = async (accessToken, locationKey, location) => {
+    denyExternalWrite('listingLifecycle', 'create or update eBay inventory location');
     await ebayRequest({
         method: 'POST',
         path: `/sell/inventory/v1/location/${encodeURIComponent(locationKey)}`,
@@ -180,6 +187,7 @@ export const getLocation = async (accessToken, locationKey) => {
  * POST /sell/inventory/v1/offer/{offerId}/publish
  */
 export const publishOffer = async (accessToken, offerId) => {
+    denyExternalWrite('listingLifecycle', 'publish eBay offer');
     return ebayRequest({
         method: 'POST',
         path: `/sell/inventory/v1/offer/${offerId}/publish`,
@@ -199,6 +207,7 @@ export const getOffers = async (accessToken, sku) => {
  * Delete an inventory item.
  */
 export const deleteInventoryItem = async (accessToken, sku) => {
+    denyExternalWrite('listingLifecycle', 'delete eBay inventory item');
     await ebayRequest({
         method: 'DELETE',
         path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
@@ -210,6 +219,7 @@ export const deleteInventoryItem = async (accessToken, sku) => {
  * POST /sell/inventory/v1/offer/{offerId}/withdraw
  */
 export const withdrawOffer = async (accessToken, offerId) => {
+    denyExternalWrite('listingLifecycle', 'withdraw eBay offer');
     await ebayRequest({
         method: 'POST',
         path: `/sell/inventory/v1/offer/${offerId}/withdraw`,

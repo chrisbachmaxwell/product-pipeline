@@ -1,4 +1,5 @@
 import { ebayRequest } from './client.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface EbayOrderLineItem {
   lineItemId: string;
@@ -160,6 +161,7 @@ export const createShippingFulfillment = async (
   orderId: string,
   fulfillment: EbayShippingFulfillmentInput,
 ): Promise<{ fulfillmentId: string }> => {
+  denyExternalWrite('fulfillment', 'create eBay shipping fulfillment');
   return ebayRequest<{ fulfillmentId: string }>({
     method: 'POST',
     path: `/sell/fulfillment/v1/order/${orderId}/shipping_fulfillment`,

@@ -11,10 +11,10 @@ router.get('/auth', async (req, res) => {
         const appUrl = `${proto}://${req.get('host')}`;
         const redirectUri = `${appUrl}/auth/callback`;
         const scopes = [
-            'read_products', 'write_products',
-            'read_inventory', 'write_inventory',
-            'read_orders', 'write_orders',
-            'read_fulfillments', 'write_fulfillments',
+            'read_products',
+            'read_inventory',
+            'read_orders',
+            'read_fulfillments',
         ].join(',');
         const nonce = crypto.randomUUID();
         const authUrl = `https://${shop}/admin/oauth/authorize?` +
@@ -64,13 +64,6 @@ router.get('/auth/callback', async (req, res) => {
             db.prepare(`INSERT INTO auth_tokens (platform, access_token, scope, created_at, updated_at) VALUES ('shopify', ?, ?, unixepoch(), unixepoch())`).run(accessToken, tokenData.scope);
         }
         info(`[Shopify Auth] Authenticated with ${shop}. Scopes: ${tokenData.scope}`);
-        try {
-            const cbProto = req.get('x-forwarded-proto') || req.protocol;
-            await registerWebhooks(shop, accessToken, `${cbProto}://${req.get('host')}`);
-        }
-        catch (err) {
-            logError(`[Shopify Auth] Webhook registration failed: ${err}`);
-        }
         res.send(`
       <html><body style="font-family:system-ui;padding:40px;text-align:center">
         <h1>✅ ProductPipeline Connected!</h1>
@@ -85,28 +78,4 @@ router.get('/auth/callback', async (req, res) => {
         res.status(500).json({ error: 'Auth callback failed' });
     }
 });
-async function registerWebhooks(shop, accessToken, appUrl) {
-    const topics = [
-        'products/update', 'products/create', 'products/delete',
-        'orders/fulfilled', 'inventory_levels/update',
-    ];
-    for (const topic of topics) {
-        const webhookUrl = `${appUrl}/webhooks/shopify/${topic.replace('/', '-')}`;
-        const response = await fetch(`https://${shop}/admin/api/2024-01/webhooks.json`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Shopify-Access-Token': accessToken,
-            },
-            body: JSON.stringify({ webhook: { topic, address: webhookUrl, format: 'json' } }),
-        });
-        if (response.ok) {
-            info(`[Shopify Auth] Webhook registered: ${topic} → ${webhookUrl}`);
-        }
-        else {
-            const errText = await response.text();
-            logError(`[Shopify Auth] Webhook failed ${topic}: ${errText}`);
-        }
-    }
-}
 export default router;

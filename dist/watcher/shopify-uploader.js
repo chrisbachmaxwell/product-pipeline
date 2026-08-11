@@ -9,6 +9,7 @@ import path from 'node:path';
 import { loadShopifyCredentials } from '../config/credentials.js';
 import { getRawDb } from '../db/client.js';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Get the Shopify access token from the DB.
  */
@@ -67,6 +68,7 @@ async function uploadSingleImage(accessToken, storeDomain, productId, filePath, 
  * @returns Number of successfully uploaded images
  */
 export async function uploadImagesToShopify(shopifyProductId, imagePaths) {
+    denyExternalWrite('listingLifecycle', 'upload watcher images to Shopify');
     const accessToken = await getShopifyToken();
     const creds = await loadShopifyCredentials();
     info(`[ShopifyUploader] Uploading ${imagePaths.length} images to Shopify product ${shopifyProductId}`);

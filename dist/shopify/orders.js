@@ -1,8 +1,10 @@
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Create an order in Shopify via REST Admin API.
  */
 export const createShopifyOrder = async (accessToken, order) => {
+    denyExternalWrite('orderImport', 'create Shopify order from eBay');
     const creds = await loadShopifyCredentials();
     const url = `https://${creds.storeDomain}/admin/api/2024-01/orders.json`;
     const response = await fetch(url, {

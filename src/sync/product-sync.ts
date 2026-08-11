@@ -28,6 +28,7 @@ import {
 import { cleanTitle, parsePrice } from './mapper.js';
 import { getCategoryId, getCategoryName } from './category-mapper.js';
 import { getAspects } from './aspect-mapper.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface ProductSyncResult {
   processed: number;
@@ -378,7 +379,8 @@ export const syncProducts = async (
   settings: Record<string, string> = {},
   options: { dryRun?: boolean; draft?: boolean } = {},
 ): Promise<ProductSyncResult> => {
-  
+  denyExternalWrite('listingLifecycle', 'sync Shopify products to eBay');
+
   const result: ProductSyncResult = {
     processed: 0,
     created: 0,
@@ -437,7 +439,8 @@ export const autoSyncNewProducts = async (
   shopifyToken: string,
   settings: Record<string, string> = {},
 ): Promise<ProductSyncResult> => {
-  
+  denyExternalWrite('listingLifecycle', 'auto-list new Shopify products on eBay');
+
   if (settings.auto_list !== 'true') {
     info('[AutoSync] Auto-list disabled');
     return {
@@ -499,6 +502,7 @@ export const updateProductOnEbay = async (
   productId: string,
   settings: Record<string, string> = {},
 ): Promise<{ success: boolean; error?: string; updated: string[] }> => {
+  denyExternalWrite('listingLifecycle', 'update eBay listing from Shopify product');
   const updated: string[] = [];
   
   try {
@@ -599,6 +603,7 @@ export const endEbayListing = async (
   ebayToken: string,
   productId: string,
 ): Promise<{ success: boolean; error?: string }> => {
+  denyExternalWrite('listingLifecycle', 'end eBay listing');
   try {
     const db = await getDb();
     

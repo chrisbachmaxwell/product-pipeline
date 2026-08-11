@@ -16,6 +16,7 @@
 import { getRawDb } from '../db/client.js';
 import { getValidEbayToken } from '../ebay/token-manager.js';
 import { createOrReplaceInventoryItem, createOffer, publishOffer, getLocation, createOrUpdateLocation, getOffersBySku, getBusinessPolicies, } from '../ebay/inventory.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 import { getCategoryId, getCategoryName } from '../sync/category-mapper.js';
 import { getAspects } from '../sync/aspect-mapper.js';
 import { getEbayCondition, resolveMapping, getMapping } from '../sync/attribute-mapping-service.js';
@@ -276,6 +277,7 @@ export const previewEbayListing = async (draftId) => {
  * @param overrides  Optional values from the listing prep UI that override system defaults.
  */
 export const listDraftOnEbay = async (draftId, overrides = {}) => {
+    denyExternalWrite('listingLifecycle', 'publish eBay listing from draft');
     const db = await getRawDb();
     const now = Math.floor(Date.now() / 1000);
     // Load draft

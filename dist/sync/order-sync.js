@@ -5,6 +5,7 @@ import { orderMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
 import { assertRateLimit, recordOrderCreation, findDuplicateByTotalDateBuyer, DuplicateOrderError, SAFETY_MODE, } from './order-safety.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Map an eBay order to Shopify order input.
  */
@@ -96,6 +97,7 @@ export function applyCutoff(createdAfter, cutoff) {
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 export const syncOrders = async (ebayAccessToken, shopifyAccessToken, options = {}) => {
+    denyExternalWrite('orderImport', 'sync eBay orders to Shopify');
     // ─── Determine real/dry-run mode ──────────────────────────────────────────
     // confirm=true is the authoritative flag. dryRun=false is backward-compat.
     // If neither is set, we default to DRY RUN for safety.

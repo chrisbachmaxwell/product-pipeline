@@ -1,4 +1,5 @@
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface ShopifyOrderInput {
   source_name: string;
@@ -54,6 +55,7 @@ export const createShopifyOrder = async (
   accessToken: string,
   order: ShopifyOrderInput,
 ): Promise<ShopifyOrderResult> => {
+  denyExternalWrite('orderImport', 'create Shopify order from eBay');
   const creds = await loadShopifyCredentials();
   const url = `https://${creds.storeDomain}/admin/api/2024-01/orders.json`;
 

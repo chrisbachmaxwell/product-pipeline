@@ -3,6 +3,7 @@ import { getDb } from '../db/client.js';
 import { productMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface InventorySyncResult {
   processed: number;
@@ -23,7 +24,8 @@ export const updateEbayInventory = async (
   quantity: number,
   options: { dryRun?: boolean } = {},
 ): Promise<{ success: boolean; error?: string; action?: string }> => {
-  
+  denyExternalWrite('inventory', 'update eBay inventory');
+
   try {
     // Check if inventory item exists on eBay
     const existing = await getInventoryItem(ebayToken, sku);
@@ -260,7 +262,8 @@ export const syncAllInventory = async (
   shopifyToken: string,
   options: { dryRun?: boolean } = {},
 ): Promise<InventorySyncResult> => {
-  
+  denyExternalWrite('inventory', 'sync Shopify inventory to eBay');
+
   const result: InventorySyncResult = {
     processed: 0,
     updated: 0,
@@ -374,7 +377,8 @@ export const handleInventoryWebhook = async (
   variantId: string,
   newQuantity: number,
 ): Promise<void> => {
-  
+  denyExternalWrite('inventory', 'handle Shopify inventory webhook');
+
   try {
     const db = await getDb();
     

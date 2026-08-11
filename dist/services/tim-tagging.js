@@ -6,6 +6,7 @@
 import { loadShopifyCredentials } from '../config/credentials.js';
 import { fetchDetailedShopifyProduct } from '../shopify/products.js';
 import { info, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 const CONDITION_TAG_PREFIX = 'condition-';
 /**
  * Apply a condition tag to a Shopify product.
@@ -13,6 +14,7 @@ const CONDITION_TAG_PREFIX = 'condition-';
  * Skips tagging if condition is null.
  */
 export async function applyConditionTag(accessToken, productId, condition) {
+    denyExternalWrite('listingLifecycle', 'apply Shopify product condition tag');
     if (!condition || condition === 'null') {
         return { success: true, productId, skipped: true };
     }

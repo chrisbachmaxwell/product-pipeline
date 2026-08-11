@@ -7,7 +7,7 @@ export const createShopifyApi = async (): Promise<Shopify> => {
   return shopifyApi({
     apiKey: shopify.clientId,
     apiSecretKey: shopify.clientSecret,
-    scopes: ['read_products', 'write_products', 'read_inventory', 'read_orders', 'write_orders'],
+    scopes: ['read_products', 'read_inventory', 'read_orders', 'read_fulfillments'],
     hostName: shopify.storeDomain,
     apiVersion: (process.env.SHOPIFY_API_VERSION ?? '2024-01') as ApiVersion,
     isEmbeddedApp: false,

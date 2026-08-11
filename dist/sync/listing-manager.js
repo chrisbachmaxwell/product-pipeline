@@ -12,6 +12,7 @@ import { ebayRequest } from '../ebay/client.js';
 import { getDb, getRawDb } from '../db/client.js';
 import { syncLog } from '../db/schema.js';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Republish stale listings to give them a fresh boost in the eBay algorithm.
  * Withdraws the offer, waits briefly, then re-publishes it.
@@ -20,6 +21,7 @@ import { info, warn, error as logError } from '../utils/logger.js';
  * @param maxAgeDays Listings older than this are considered stale (default: 30)
  */
 export async function republishStaleListings(ebayToken, maxAgeDays = 30) {
+    denyExternalWrite('listingLifecycle', 'republish stale eBay listings');
     const result = {
         processed: 0,
         republished: 0,
@@ -116,6 +118,7 @@ export async function republishStaleListings(ebayToken, maxAgeDays = 30) {
  * Tracks original price in productMappings.original_price so drops don't compound.
  */
 export async function applyPriceDropSchedule(ebayToken, _shopifyToken) {
+    denyExternalWrite('price', 'apply automatic eBay price drops');
     const result = {
         processed: 0,
         dropped: 0,
@@ -312,6 +315,7 @@ export async function getListingHealth() {
  * @param adRate      Ad rate percentage (default 2.0 = 2%)
  */
 export async function enablePromotedListings(ebayToken, listingIds, adRate = 2.0) {
+    denyExternalWrite('listingLifecycle', 'enable eBay promoted listings');
     const result = {
         processed: 0,
         promoted: 0,
@@ -432,6 +436,7 @@ async function addListingToCampaign(ebayToken, campaignId, listingId, adRate) {
  * Run all AI listing management tasks. Called by the scheduler.
  */
 export async function runListingManagement(ebayToken) {
+    denyExternalWrite('listingLifecycle', 'run automated listing management');
     const rawDb = await getRawDb();
     // Check if listing management is enabled
     const enabledSetting = rawDb

@@ -169,6 +169,68 @@ export const useStatus = () => {
   return query;
 };
 
+export interface MigrationResponsibilityStatus {
+  responsibility: string;
+  owner: string;
+  productPipelineAccess: 'disabled' | 'read-only';
+  writesAllowed?: boolean;
+  reason?: string;
+}
+
+export interface MigrationException {
+  id?: string;
+  code?: string;
+  severity?: 'info' | 'warning' | 'critical';
+  message?: string;
+  detail?: string;
+  setting?: string;
+  observed?: unknown;
+  expected?: unknown;
+  effectiveBehavior?: string;
+  [key: string]: unknown;
+}
+
+export interface MigrationReconciliationSummary {
+  scope?: string;
+  observedAt?: string;
+  generatedAt?: string;
+  counts?: Record<string, number>;
+  exceptions?: MigrationException[];
+  audit?: {
+    valid?: boolean;
+    recordCount?: number;
+    headHash?: string | null;
+    verifiedAt?: string | null;
+    availableInWebRuntime?: boolean;
+    note?: string;
+  };
+  [key: string]: unknown;
+}
+
+export interface MigrationStatusResponse {
+  phase: string;
+  effectiveMode: string;
+  externalWritesAllowed: boolean;
+  historicalBackfillAllowed: boolean;
+  cutoverWatermarkUtc: string | null;
+  remoteVerification: string;
+  observedAt: string;
+  responsibilities: MigrationResponsibilityStatus[];
+  quarantine: {
+    enabled: boolean;
+    channels: string[];
+  };
+  reconciliation?: MigrationReconciliationSummary;
+}
+
+/** Single source for the operator-facing migration and quarantine state. */
+export const useMigrationStatus = () =>
+  useQuery({
+    queryKey: ['migration-status'],
+    queryFn: () => apiClient.get<MigrationStatusResponse>('/migration/status'),
+    refetchInterval: 15_000,
+  });
+
 export const useListings = (params?: {
   limit?: number;
   offset?: number;

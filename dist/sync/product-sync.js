@@ -8,6 +8,7 @@ import { getEbayCondition, getEbayUPC, getEbayTitle, getEbayDescription, getEbay
 import { cleanTitle, parsePrice } from './mapper.js';
 import { getCategoryId, getCategoryName } from './category-mapper.js';
 import { getAspects } from './aspect-mapper.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Cached business policies (fetched once per sync run).
  */
@@ -290,6 +291,7 @@ const syncProductToEbay = async (ebayToken, shopifyToken, productId, settings, o
  * Sync multiple Shopify products to eBay.
  */
 export const syncProducts = async (ebayToken, shopifyToken, productIds, settings = {}, options = {}) => {
+    denyExternalWrite('listingLifecycle', 'sync Shopify products to eBay');
     const result = {
         processed: 0,
         created: 0,
@@ -332,6 +334,7 @@ export const syncProducts = async (ebayToken, shopifyToken, productIds, settings
  * Auto-sync new Shopify products to eBay based on settings.
  */
 export const autoSyncNewProducts = async (ebayToken, shopifyToken, settings = {}) => {
+    denyExternalWrite('listingLifecycle', 'auto-list new Shopify products on eBay');
     if (settings.auto_list !== 'true') {
         info('[AutoSync] Auto-list disabled');
         return {
@@ -381,6 +384,7 @@ export const autoSyncNewProducts = async (ebayToken, shopifyToken, settings = {}
  * Does NOT delete/recreate the offer — preserves listing history.
  */
 export const updateProductOnEbay = async (ebayToken, shopifyToken, productId, settings = {}) => {
+    denyExternalWrite('listingLifecycle', 'update eBay listing from Shopify product');
     const updated = [];
     try {
         const db = await getDb();
@@ -463,6 +467,7 @@ export const updateProductOnEbay = async (ebayToken, shopifyToken, productId, se
  * Withdraws the offer and updates mapping status to 'ended'.
  */
 export const endEbayListing = async (ebayToken, productId) => {
+    denyExternalWrite('listingLifecycle', 'end eBay listing');
     try {
         const db = await getDb();
         // Find mapping

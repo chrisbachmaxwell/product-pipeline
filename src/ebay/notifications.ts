@@ -1,6 +1,7 @@
 import { getValidEbayToken } from './token-manager.js';
 import { loadEbayCredentials } from '../config/credentials.js';
 import { info, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 const EBAY_TRADING_API = 'https://api.ebay.com/ws/api.dll';
 
@@ -9,6 +10,7 @@ const EBAY_TRADING_API = 'https://api.ebay.com/ws/api.dll';
  * Uses the Trading API SetNotificationPreferences call.
  */
 export async function subscribeToNotifications(notificationUrl: string): Promise<void> {
+  denyExternalWrite('externalCommerce', 'change eBay notification preferences');
   const token = await getValidEbayToken();
   if (!token) throw new Error('No valid eBay token');
 
@@ -106,6 +108,7 @@ export async function getNotificationPreferences(): Promise<string> {
  * Unsubscribe from all eBay Platform Notifications.
  */
 export async function unsubscribeFromNotifications(): Promise<void> {
+  denyExternalWrite('externalCommerce', 'change eBay notification preferences');
   const token = await getValidEbayToken();
   if (!token) throw new Error('No valid eBay token');
 

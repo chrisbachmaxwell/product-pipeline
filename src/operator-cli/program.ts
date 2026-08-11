@@ -2,6 +2,10 @@ import { Command } from 'commander';
 import { verifyAuditLog } from './audit.js';
 import { RESPONSIBILITIES, validateRepositoryRoot } from './config.js';
 import { runOperatorInspection, type OperatorInspection } from './preflight.js';
+import {
+  runSnapshotReconciliation,
+  type ReconciliationResult,
+} from './reconciliation.js';
 
 export type OperatorIo = {
   stdout: (message: string) => void;
@@ -83,6 +87,34 @@ function addInspectionCommand(program: Command, commandName: 'preflight' | 'owne
     );
 }
 
+function printReconciliation(result: ReconciliationResult, json: boolean, io: OperatorIo): void {
+  if (json) {
+    io.stdout(JSON.stringify(result));
+    return;
+  }
+
+  io.stdout(`Operator reconcile: ${result.status.toUpperCase()}`);
+  io.stdout(
+    'Evidence: supplied snapshots only; no network, application database, external writes, order creation, or historical backfill',
+  );
+  io.stdout('Live proof: NO; production parity: NO; order creation eligible: NO');
+  io.stdout(`Captured: ${result.capturedAtUtc}`);
+  io.stdout(
+    `Observed: ${result.counts.shopifyVariants} Shopify variant(s), ${result.counts.ebayListings} eBay listing(s), ${result.counts.ebayOrders} eBay order(s)`,
+  );
+  if (result.discrepancies.length > 0) {
+    io.stdout(`Exceptions (${result.discrepancies.length}):`);
+    result.discrepancies.forEach((item) =>
+      io.stdout(
+        `  - [${item.severity}] ${item.code}: ${item.entityKey} (owner=${item.owner}) — ${item.summary}`,
+      ),
+    );
+  }
+  io.stdout(`Snapshot digest: ${result.snapshot.digest}`);
+  io.stdout(`Result digest: ${result.resultDigest}`);
+  io.stdout(`Audit: ${result.audit.path} #${result.audit.sequence} ${result.audit.recordHash}`);
+}
+
 export function buildOperatorProgram(io: OperatorIo = defaultIo): Command {
   const program = new Command();
   program
@@ -95,6 +127,50 @@ export function buildOperatorProgram(io: OperatorIo = defaultIo): Command {
 
   addInspectionCommand(program, 'preflight', io);
   addInspectionCommand(program, 'ownership', io);
+
+  program
+    .command('reconcile')
+    .description('Compare a bounded, redacted repository-local shadow snapshot without external access')
+    .requiredOption('--config <path>', 'Repository-local nonsecret operator config')
+    .requiredOption(
+      '--snapshot <path>',
+      'Redacted JSON snapshot beneath .local/operator-reconciliation/',
+    )
+    .option('--repo-root <path>', 'ProductPipeline repository root', '.')
+    .option('--dry-run', 'Required safety posture; always enabled', true)
+    .option('--json', 'Emit one JSON object')
+    .action(
+      async (options: {
+        config: string;
+        snapshot: string;
+        repoRoot: string;
+        dryRun: boolean;
+        json?: boolean;
+      }) => {
+        if (options.dryRun !== true) {
+          io.stderr('Denied: dry-run cannot be disabled');
+          io.setExitCode(1);
+          return;
+        }
+        try {
+          const result = await runSnapshotReconciliation({
+            repoRoot: options.repoRoot,
+            configPath: options.config,
+            snapshotPath: options.snapshot,
+          });
+          printReconciliation(result, Boolean(options.json), io);
+          if (result.status === 'exceptions-found') io.setExitCode(2);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Reconciliation denied';
+          io.stderr(
+            options.json
+              ? JSON.stringify({ command: 'reconcile', status: 'denied', error: message })
+              : message,
+          );
+          io.setExitCode(1);
+        }
+      },
+    );
 
   const audit = program.command('audit').description('Inspect the local tamper-evident audit chain');
   audit

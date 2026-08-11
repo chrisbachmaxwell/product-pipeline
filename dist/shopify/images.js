@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 const API_VERSION = '2024-01';
 function imagesUrl(storeDomain, productId) {
     return `https://${storeDomain}/admin/api/${API_VERSION}/products/${productId}/images.json`;
@@ -37,6 +38,7 @@ export async function listProductImages(accessToken, storeDomain, productId) {
  * Delete all existing images on a product. Non-fatal on per-image failure.
  */
 export async function deleteAllProductImages(accessToken, storeDomain, productId) {
+    denyExternalWrite('listingLifecycle', 'delete Shopify product images');
     let deleted = 0;
     try {
         const existing = await listProductImages(accessToken, storeDomain, productId);
@@ -63,6 +65,7 @@ export async function deleteAllProductImages(accessToken, storeDomain, productId
  * Append a single image to a product without touching existing images.
  */
 export async function appendProductImage(accessToken, storeDomain, productId, image, options) {
+    denyExternalWrite('listingLifecycle', 'append Shopify product image');
     const body = buildImageBody(image, options?.position, options?.alt);
     if (!body)
         return false;
@@ -87,6 +90,7 @@ export async function appendProductImage(accessToken, storeDomain, productId, im
  * `src`, local paths and buffers are base64 `attachment`s.
  */
 export async function replaceProductImages(accessToken, storeDomain, productId, images, options) {
+    denyExternalWrite('listingLifecycle', 'replace Shopify product images');
     const deleted = await deleteAllProductImages(accessToken, storeDomain, productId);
     let uploaded = 0;
     let failed = 0;

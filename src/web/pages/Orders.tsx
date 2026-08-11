@@ -1,228 +1,104 @@
-import React, { useMemo, useState } from 'react';
+import React from 'react';
 import {
   Badge,
   Banner,
   BlockStack,
-  Box,
-  Button,
   Card,
   Divider,
-  Icon,
-  IndexTable,
+  InlineGrid,
   InlineStack,
-  Layout,
   Page,
-  Pagination,
-  Select,
-  Spinner,
+  SkeletonBodyText,
   Text,
-  TextField,
 } from '@shopify/polaris';
-import { SearchIcon, OrderIcon } from '@shopify/polaris-icons';
-import { useOrders } from '../hooks/useApi';
+import { useMigrationStatus } from '../hooks/useApi';
+import { MigrationSafetyBanner } from '../components/MigrationSafety';
 
-const STATUS_OPTIONS = [
-  { label: 'All statuses', value: '' },
-  { label: 'Synced', value: 'synced' },
-  { label: 'Fulfilled', value: 'fulfilled' },
-];
+const Metric: React.FC<{ label: string; value: number | string }> = ({ label, value }) => (
+  <Card>
+    <BlockStack gap="100">
+      <Text as="p" tone="subdued">{label}</Text>
+      <Text variant="headingLg" as="p">{typeof value === 'number' ? value.toLocaleString() : value}</Text>
+    </BlockStack>
+  </Card>
+);
 
-const formatCurrency = (amount?: number) => {
-  if (amount === undefined || amount === null) return '—';
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(amount);
-};
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
-};
+const PolicyRow: React.FC<{ label: string; value: string; tone?: 'success' | 'warning' }> = ({
+  label,
+  value,
+  tone = 'success',
+}) => (
+  <InlineStack align="space-between" blockAlign="center" gap="300">
+    <Text as="span">{label}</Text>
+    <Badge tone={tone}>{value}</Badge>
+  </InlineStack>
+);
 
 const Orders: React.FC = () => {
-  const [searchValue, setSearchValue] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [pageOffset, setPageOffset] = useState(0);
-
-  const { data, isLoading, error } = useOrders({
-    limit: 25,
-    offset: pageOffset,
-    search: searchValue || undefined,
-    status: statusFilter || undefined,
-  });
-
-  const orders = useMemo(() => data?.data ?? [], [data]);
-  const total = data?.total ?? 0;
-  const hasPrevious = pageOffset > 0;
-  const hasNext = pageOffset + 25 < total;
+  const statusQuery = useMigrationStatus();
+  const status = statusQuery.data;
+  const counts = status?.reconciliation?.counts ?? {};
 
   return (
-    <Page title="Orders" subtitle="Imported orders from eBay" fullWidth>
+    <Page title="Orders" subtitle="Observation-only migration state" fullWidth>
       <BlockStack gap="500">
-        
-        {/* ── Orders Summary Card ── */}
-        <Card>
-          <InlineStack align="space-between" blockAlign="center">
-            <InlineStack gap="300" blockAlign="center">
-              <Box
-                background="bg-fill-secondary"
-                borderRadius="200"
-                padding="200"
-              >
-                <Icon source={OrderIcon} />
-              </Box>
-              <BlockStack gap="050">
-                <Text variant="headingSm" as="h2">Order Management</Text>
-                <Text variant="bodySm" tone="subdued" as="p">
-                  {total} total orders
-                </Text>
-              </BlockStack>
-            </InlineStack>
-          </InlineStack>
-        </Card>
+        <MigrationSafetyBanner
+          status={status}
+          error={statusQuery.error instanceof Error ? statusQuery.error : null}
+        />
+        <Banner tone="warning" title="Marketplace Connect is the sole production order importer">
+          <BlockStack gap="100">
+            <Text as="p">
+              ProductPipeline order ingestion and Shopify-order creation are hard-disabled. No
+              cutover watermark exists, no historical backfill is permitted, and every historical
+              local record is ineligible for creation by ProductPipeline.
+            </Text>
+            <Text as="p" tone="subdued">
+              Customer and order payloads are intentionally not exposed by this shadow-mode screen.
+            </Text>
+          </BlockStack>
+        </Banner>
 
-        {/* ── Filters & Search ── */}
+        {statusQuery.isLoading ? (
+          <SkeletonBodyText lines={6} />
+        ) : (
+          <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+            <Metric label="Historical local eBay records" value={counts.historicalEbayOrders ?? 0} />
+            <Metric label="Historical records ineligible" value={counts.historicalOrdersIneligible ?? 0} />
+            <Metric label="Local order mappings" value={counts.orderMappings ?? 0} />
+            <Metric label="Eligible for ProductPipeline creation" value={0} />
+          </InlineGrid>
+        )}
+
         <Card>
           <BlockStack gap="300">
-            <InlineStack gap="300" align="space-between">
-              <TextField
-                label=""
-                value={searchValue}
-                onChange={(value) => {
-                  setSearchValue(value);
-                  setPageOffset(0);
-                }}
-                placeholder="Search by eBay order ID or Shopify order ID"
-                prefix={<Icon source={SearchIcon} />}
-                autoComplete="off"
-                clearButton
-                onClearButtonClick={() => setSearchValue('')}
-              />
-              <Box minWidth="200px">
-                <Select
-                  label="Status"
-                  labelHidden
-                  options={STATUS_OPTIONS}
-                  value={statusFilter}
-                  onChange={(value) => {
-                    setStatusFilter(value);
-                    setPageOffset(0);
-                  }}
-                />
-              </Box>
+            <InlineStack align="space-between" blockAlign="center">
+              <Text variant="headingMd" as="h2">Effective order policy</Text>
+              <Badge tone="info">Read-only</Badge>
             </InlineStack>
-
             <Divider />
-
-            {error && (
-              <Banner tone="critical" title="Unable to load orders">
-                <Text as="p">{(error as Error).message}</Text>
-              </Banner>
-            )}
-
-            {isLoading ? (
-              <Box padding="400">
-                <InlineStack align="center">
-                  <Spinner accessibilityLabel="Loading orders" size="large" />
-                </InlineStack>
-              </Box>
-            ) : orders.length === 0 ? (
-              <Box padding="400">
-                <BlockStack gap="300" inlineAlign="center">
-                  <Icon source={OrderIcon} tone="subdued" />
-                  <BlockStack gap="200" inlineAlign="center">
-                    <Text variant="headingSm" as="h3">No orders found</Text>
-                    <Text tone="subdued" as="p">
-                      {searchValue || statusFilter
-                        ? 'Try adjusting your search or filters'
-                        : 'Orders will appear here once imported from eBay'}
-                    </Text>
-                  </BlockStack>
-                  {searchValue || statusFilter ? (
-                    <Button
-                      onClick={() => {
-                        setSearchValue('');
-                        setStatusFilter('');
-                        setPageOffset(0);
-                      }}
-                    >
-                      Clear filters
-                    </Button>
-                  ) : null}
-                </BlockStack>
-              </Box>
-            ) : (
-              <IndexTable
-                resourceName={{ singular: 'order', plural: 'orders' }}
-                itemCount={orders.length}
-                selectable={false}
-                headings={[
-                  { title: 'eBay order' },
-                  { title: 'Shopify order' },
-                  { title: 'Status' },
-                  { title: 'Total' },
-                  { title: 'Date' },
-                ]}
-              >
-                {orders.map((order, index) => (
-                  <IndexTable.Row
-                    id={String(order.id ?? index)}
-                    key={order.id ?? index}
-                    position={index}
-                  >
-                    <IndexTable.Cell>
-                      <Text variant="bodyMd" fontWeight="semibold" as="span">
-                        {order.ebay_order_id ?? order.ebayOrderId ?? '—'}
-                      </Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text variant="bodyMd" as="span">
-                        {order.shopify_order_id ?? order.shopifyOrderId ?? '—'}
-                      </Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Badge 
-                        tone={
-                          order.status === 'fulfilled'
-                            ? 'success'
-                            : order.status === 'synced'
-                              ? 'info'
-                              : order.status === 'failed'
-                                ? 'critical'
-                                : 'info'
-                        }
-                      >
-                        {order.status ?? 'unknown'}
-                      </Badge>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text variant="bodyMd" as="span">{formatCurrency(order.total)}</Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>
-                      <Text variant="bodySm" tone="subdued" as="span">
-                        {formatTimestamp(order.ebay_created_at ?? order.created_at ?? order.createdAt)}
-                      </Text>
-                    </IndexTable.Cell>
-                  </IndexTable.Row>
-                ))}
-              </IndexTable>
-            )}
+            <PolicyRow label="Production importer" value="Marketplace Connect" />
+            <Divider />
+            <PolicyRow label="ProductPipeline order writer" value="Hard-disabled" />
+            <Divider />
+            <PolicyRow label="Historical backfill" value="Blocked" />
+            <Divider />
+            <PolicyRow label="Cutover watermark" value={status?.cutoverWatermarkUtc ?? 'Not established'} />
+            <Divider />
+            <PolicyRow label="Production parity" value="Not verified" tone="warning" />
           </BlockStack>
         </Card>
 
-        {/* ── Pagination ── */}
-        {!isLoading && orders.length > 0 && (
-          <InlineStack align="center">
-            <Pagination
-              hasPrevious={hasPrevious}
-              onPrevious={() => setPageOffset(Math.max(0, pageOffset - 25))}
-              hasNext={hasNext}
-              onNext={() => setPageOffset(pageOffset + 25)}
-            />
-          </InlineStack>
-        )}
+        <Card>
+          <BlockStack gap="200">
+            <Text variant="headingMd" as="h2">Next gate</Text>
+            <Text as="p">
+              Order import remains unavailable until durable external-ID idempotency, an explicit
+              UTC watermark, single-writer proof, reconciliation, rollback, and a separately
+              authorized cutover are all evidenced.
+            </Text>
+          </BlockStack>
+        </Card>
       </BlockStack>
     </Page>
   );

@@ -1,4 +1,5 @@
 import { loadCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 const EBAY_API_BASE = 'https://api.ebay.com';
 const EBAY_OAUTH_TOKEN = `${EBAY_API_BASE}/identity/v1/oauth2/token`;
 const buildBasicAuth = (clientId, clientSecret) => {
@@ -69,8 +70,12 @@ export const refreshEbayUserToken = async (refreshToken, scopes) => {
     return parseTokenResponse(response);
 };
 export const ebayRequest = async ({ method = 'GET', path, accessToken, body, headers = {}, }) => {
+    const normalizedMethod = method.toUpperCase();
+    if (!['GET', 'HEAD'].includes(normalizedMethod)) {
+        denyExternalWrite('externalCommerce', `eBay ${normalizedMethod} ${path}`);
+    }
     const response = await fetch(`${EBAY_API_BASE}${path}`, {
-        method,
+        method: normalizedMethod,
         headers: {
             Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',

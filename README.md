@@ -4,25 +4,28 @@
 
 > **Current direction (2026-08-11):** ProductPipeline is the intended safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect remains the incumbent during a gated migration; ProductPipeline must not perform live writes or historical order backfill until the per-responsibility parity, canary, reconciliation, rollback, and approval requirements in `PROJECT_BRAIN.md` pass. AI/product-enrichment is legacy scope. Agents and maintainers must read `AGENTS.md` and `PROJECT_BRAIN.md` before making changes.
 
+> **Enforced application state:** ProductPipeline is hard-coded in shadow read-only mode. Marketplace Connect owns production order import, price, and inventory; every non-read `/api` request is denied, background writers are unmounted, and low-level commerce writers fail closed. See [`docs/WRITER_QUARANTINE.md`](docs/WRITER_QUARANTINE.md) for operator behavior, enforcement layers, and proof limits.
+
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
 
-## Safe Operator CLI
+## Safe Operator CLI and Reconciliation
 
-The new migration operator CLI is an isolated, local-only foundation for shadow configuration, responsibility ownership, and tamper-evident audit checks. It has no Shopify/eBay/Marketplace Connect client, database import, sync, publish, or mutation command.
+The migration operator CLI is an isolated, local-only foundation for shadow configuration, responsibility ownership, strict offline snapshot reconciliation, and tamper-evident audit checks. It has no Shopify/eBay/Marketplace Connect client, application-database import, sync, publish, or mutation command.
 
 ```bash
 npm run operator -- preflight --config config/operator-shadow.example.json
 npm run operator -- ownership --config config/operator-shadow.example.json
+npm run operator -- reconcile --config config/operator-shadow.example.json --snapshot .local/operator-reconciliation/snapshot.json
 npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 ```
 
-The checked-in example intentionally reports unresolved ownership blockers. Passing it would still prove only local configuration safety—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
+The checked-in example intentionally reports unresolved ownership blockers outside the accepted order/price/inventory baseline. Passing a check proves only the declared local configuration or supplied snapshot—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
 
 ## Features
 
-> The commands below describe legacy implementation surfaces, not approved migration actions. Do not run sync, import, publish, republish, or price-drop commands against live systems as a test.
+> The commands below describe historical implementation surfaces, not current CLI commands or approved migration actions. The current-source `ebaysync` entrypoint registers only `status`; former sync, import, publish, republish, and price-drop commands are unmounted.
 
 | Feature | Direction | Command |
 |---------|-----------|---------|
@@ -35,6 +38,8 @@ The checked-in example intentionally reports unresolved ownership blockers. Pass
 | **Watch mode** | Continuous polling | `ebaysync sync --watch 10` |
 
 ## Quick Start
+
+> Historical application setup follows for repository context. In the current shadow phase, use only `npm run cli -- status` and the local operator commands above; action commands shown below are no longer registered.
 
 ```bash
 # Install dependencies

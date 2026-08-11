@@ -2,6 +2,7 @@ import { getValidEbayToken } from '../ebay/token-manager.js';
 import { getRawDb } from '../db/client.js';
 import { info, error as logError } from '../utils/logger.js';
 import type { SyncResult } from '../sync/order-sync.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 /**
  * Run order sync with automatic token retrieval.
@@ -21,6 +22,7 @@ export async function runOrderSync(options: {
   /** ISO date to sync from (defaults to 24h ago, max 7-day lookback enforced) */
   since?: string;
 } = {}): Promise<SyncResult | null> {
+  denyExternalWrite('orderImport', 'run eBay-to-Shopify order sync');
   try {
     const ebayToken = await getValidEbayToken();
     if (!ebayToken) {

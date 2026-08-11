@@ -3,12 +3,14 @@ import { getDb } from '../db/client.js';
 import { productMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Update eBay inventory quantity for a specific SKU.
  * CRITICAL: If quantity is 0, the eBay listing MUST be ended (withdrawn).
  * If quantity goes from 0 to >0, the listing is republished.
  */
 export const updateEbayInventory = async (ebayToken, sku, quantity, options = {}) => {
+    denyExternalWrite('inventory', 'update eBay inventory');
     try {
         // Check if inventory item exists on eBay
         const existing = await getInventoryItem(ebayToken, sku);
@@ -215,6 +217,7 @@ export const updateEbayInventory = async (ebayToken, sku, quantity, options = {}
  * Sync inventory levels for all mapped products.
  */
 export const syncAllInventory = async (ebayToken, shopifyToken, options = {}) => {
+    denyExternalWrite('inventory', 'sync Shopify inventory to eBay');
     const result = {
         processed: 0,
         updated: 0,
@@ -293,6 +296,7 @@ export const syncAllInventory = async (ebayToken, shopifyToken, options = {}) =>
  * Called when a product variant's inventory changes in Shopify.
  */
 export const handleInventoryWebhook = async (ebayToken, productId, variantId, newQuantity) => {
+    denyExternalWrite('inventory', 'handle Shopify inventory webhook');
     try {
         const db = await getDb();
         // Find mapping by product ID

@@ -7,6 +7,7 @@
 import { getRawDb } from '../db/client.js';
 import { info, warn, error as logError } from '../utils/logger.js';
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 // ── Markdown → HTML converter ──────────────────────────────────────────
 // Converts the AI-generated markdown descriptions to HTML for Shopify's body_html field.
 export function markdownToHtml(md) {
@@ -162,6 +163,7 @@ export async function listPendingDrafts(options) {
     };
 }
 export async function approveDraft(draftId, options) {
+    denyExternalWrite('listingLifecycle', 'approve draft to Shopify');
     const db = await getRawDb();
     const draft = db.prepare(`SELECT * FROM product_drafts WHERE id = ?`).get(draftId);
     if (!draft) {

@@ -33,7 +33,7 @@ const AUDIT_RECORD_KEYS = [
 export type AuditOutcome = 'passed' | 'blocked' | 'denied';
 
 export type AuditEventInput = {
-  command: 'preflight' | 'ownership';
+  command: 'preflight' | 'ownership' | 'reconcile';
   lane: OperatorLane | 'unavailable';
   mode: 'read-only' | 'unavailable';
   outcome: AuditOutcome;
@@ -136,7 +136,7 @@ function isAuditRecord(value: unknown): value is AuditRecord {
     typeof record.runId === 'string' &&
     record.runId.length > 0 &&
     record.runId.length <= 128 &&
-    ['preflight', 'ownership'].includes(String(record.command)) &&
+    ['preflight', 'ownership', 'reconcile'].includes(String(record.command)) &&
     ['development', 'sandbox', 'production-shadow', 'unavailable'].includes(String(record.lane)) &&
     ['read-only', 'unavailable'].includes(String(record.mode)) &&
     ['passed', 'blocked', 'denied'].includes(String(record.outcome)) &&

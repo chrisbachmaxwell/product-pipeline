@@ -11,23 +11,14 @@ import healthRoutes from './routes/health.js';
 import apiRoutes from './routes/api.js';
 import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
-import shopifyAuthRoutes from './routes/shopify-auth.js';
-import ebayAuthRoutes from './routes/ebay-auth.js';
-import chatRoutes from './routes/chat.js';
-import pipelineRoutes from './routes/pipeline.js';
 import helpRoutes from './routes/help.js';
 import featureRoutes from './routes/features.js';
-import watcherRoutes from './routes/watcher.js';
-import imageRoutes from './routes/images.js';
-import templateRoutes from './routes/templates.js';
-import draftRoutes from './routes/drafts.js';
-import photoEditRoutes from './routes/photo-edit.js';
 import ebayOrderRoutes from './routes/ebay-orders.js';
 import ebayMetadataRoutes from './routes/ebay-metadata.js';
-import timRoutes from './routes/tim.js';
+import migrationRoutes from './routes/migration.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
-import { getCapabilities, getNewCapabilities } from './capabilities.js';
+import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
 import { initPhotoTemplatesTable } from '../services/photo-templates.js';
 import { seedHelpArticles } from './seeds/help-articles.js';
 
@@ -106,31 +97,42 @@ if (!isTestMode()) {
   app.use('/api', apiKeyAuth);
 }
 
+// Shadow-mode invariant: every state-changing API request is denied before a
+// legacy handler can load credentials, touch the database, or contact a platform.
+app.use('/api', writerQuarantineMiddleware);
+
 // --- Routes ---
 app.use(healthRoutes);
+app.use(migrationRoutes);
 app.use(apiRoutes);
 app.use(ebayNotificationRoutes);
 app.use(shopifyWebhookRoutes);
-app.use(shopifyAuthRoutes);
-app.use(ebayAuthRoutes);
-app.use(chatRoutes);
-app.use(pipelineRoutes);
 app.use(helpRoutes);
 app.use(featureRoutes);
-app.use(watcherRoutes);
-app.use(imageRoutes);
-app.use(templateRoutes);
-app.use(draftRoutes);
-app.use(photoEditRoutes);
 app.use(ebayOrderRoutes);
 app.use(ebayMetadataRoutes);
-app.use(timRoutes);
 
 // --- Capabilities discovery endpoint ---
 app.get('/api/capabilities', (_req, res) => {
   res.json({
-    capabilities: getCapabilities(),
-    newCapabilities: getNewCapabilities(),
+    capabilities: [
+      {
+        id: 'migration-status',
+        name: 'Migration status',
+        description: 'Read the enforced ownership and writer-quarantine state.',
+        method: 'GET',
+        endpoint: '/api/migration/status',
+      },
+      {
+        id: 'local-listings',
+        name: 'Local listing observations',
+        description: 'View local mapping records without changing Shopify or eBay.',
+        method: 'GET',
+        endpoint: '/api/listings',
+      },
+    ],
+    mutationCapabilities: [],
+    legacyMutationCapabilitiesUnmounted: true,
   });
 });
 
@@ -218,12 +220,7 @@ async function start() {
       info(`[Server] API: http://localhost:${PORT}/api/status`);
     });
 
-    // Start background sync scheduler
-    startSyncScheduler(rawDb);
-
-    // Start the GCS photo-arrival watcher (no-op unless DRIVE_MODE=cloud)
-    const { startCloudWatcher } = await import('../watcher/cloud-watcher.js');
-    await startCloudWatcher();
+    info('[Safety] Shadow read-only mode active; scheduler and watcher are not mounted');
 
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);
@@ -276,8 +273,8 @@ function initExtraTables(db: import('better-sqlite3').Database) {
  */
 function seedDefaultSettings(db: import('better-sqlite3').Database) {
   const defaults: Record<string, string> = {
-    sync_price: 'true',
-    sync_inventory: 'true',
+    sync_price: 'false',
+    sync_inventory: 'false',
     auto_list: 'false',
     sync_interval_minutes: '5',
     auto_sync_enabled: 'false',  // MUST be explicitly enabled
@@ -388,66 +385,6 @@ function seedDefaultMappings(db: import('better-sqlite3').Database) {
   }
 
   info('[Server] Seeded default field mappings');
-}
-
-/**
- * Background sync scheduler — fallback polling every N minutes
- */
-function startSyncScheduler(db: import('better-sqlite3').Database) {
-  const checkInterval = setInterval(async () => {
-    try {
-      // Read setting from DB (don't cache it)
-      const setting = db.prepare(`SELECT value FROM settings WHERE key = 'auto_sync_enabled'`).get() as any;
-      const autoSyncEnabled = setting?.value === 'true';
-      
-      if (!autoSyncEnabled) {
-        return; // Auto-sync disabled, skip silently
-      }
-      
-      const intervalSetting = db.prepare(`SELECT value FROM settings WHERE key = 'sync_interval_minutes'`).get() as any;
-      const intervalMinutes = parseInt(intervalSetting?.value || '5', 10);
-      
-      info(`[Scheduler] Running auto-sync (interval: ${intervalMinutes} minutes)`);
-      await runBackgroundSync();
-      
-    } catch (err) {
-      logError(`[Scheduler] Auto-sync check error: ${err}`);
-    }
-  }, 60000); // Check every minute
-  
-  info('[Scheduler] Auto-sync scheduler started. Enable with setting auto_sync_enabled=true');
-  
-  // Clean up on process exit
-  process.on('SIGTERM', () => clearInterval(checkInterval));
-  process.on('SIGINT', () => clearInterval(checkInterval));
-}
-
-async function runBackgroundSync() {
-  try {
-    const { runOrderSync } = await import('./sync-helper.js');
-    // Only sync orders from the last 24 hours for auto-sync
-    const result = await runOrderSync({ confirm: true });
-    if (result) {
-      info(`[Scheduler] Background sync complete: ${result.imported} imported, ${result.skipped} skipped, ${result.failed} failed`);
-    } else {
-      info(`[Scheduler] Background sync skipped (no tokens configured)`);
-    }
-  } catch (err) {
-    logError(`[Scheduler] Background sync error: ${err}`);
-  }
-
-  // Run AI listing management (republish stale, price drops)
-  try {
-    const { getValidEbayToken } = await import('../ebay/token-manager.js');
-    const ebayToken = await getValidEbayToken();
-    if (ebayToken) {
-      const { runListingManagement } = await import('../sync/listing-manager.js');
-      const mgmtResult = await runListingManagement(ebayToken);
-      info(`[Scheduler] Listing management: republished=${mgmtResult.republish.republished}, price_drops=${mgmtResult.priceDrop.dropped}`);
-    }
-  } catch (err) {
-    logError(`[Scheduler] Listing management error: ${err}`);
-  }
 }
 
 start();

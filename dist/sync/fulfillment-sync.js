@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { info, error as logError } from '../utils/logger.js';
 import { loadShopifyCredentials } from '../config/credentials.js';
 import { mapShippingCarrier } from './mapper.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 /**
  * Fetch fulfilled Shopify orders that have eBay mappings.
  */
@@ -36,6 +37,7 @@ const fetchFulfilledShopifyOrders = async (accessToken, shopifyOrderIds) => {
  * When an order is shipped in Shopify, mark it shipped on eBay with tracking.
  */
 export const syncFulfillments = async (ebayAccessToken, shopifyAccessToken, options = {}) => {
+    denyExternalWrite('fulfillment', 'sync Shopify fulfillment to eBay');
     const result = {
         updated: 0,
         skipped: 0,

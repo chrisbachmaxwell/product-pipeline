@@ -4,6 +4,7 @@ import { productMappings, syncLog } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { info, warn, error as logError } from '../utils/logger.js';
 import { loadShopifyCredentials } from '../config/credentials.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 
 export interface PriceSyncResult {
   updated: number;
@@ -61,6 +62,7 @@ export const syncPrices = async (
   shopifyAccessToken: string,
   options: { dryRun?: boolean } = {},
 ): Promise<PriceSyncResult> => {
+  denyExternalWrite('price', 'sync Shopify prices to eBay');
   const result: PriceSyncResult = {
     updated: 0,
     skipped: 0,

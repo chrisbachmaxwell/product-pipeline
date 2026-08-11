@@ -25,6 +25,7 @@ import {
   getOffersBySku,
   getBusinessPolicies,
 } from '../ebay/inventory.js';
+import { denyExternalWrite } from '../safety/writer-quarantine.js';
 import { getCategoryId, getCategoryName } from '../sync/category-mapper.js';
 import { getAspects } from '../sync/aspect-mapper.js';
 import { getEbayCondition, resolveMapping, getMapping } from '../sync/attribute-mapping-service.js';
@@ -387,6 +388,7 @@ export const listDraftOnEbay = async (
   draftId: number,
   overrides: ListingOverrides = {},
 ): Promise<ListOnEbayResult> => {
+  denyExternalWrite('listingLifecycle', 'publish eBay listing from draft');
   const db = await getRawDb();
   const now = Math.floor(Date.now() / 1000);
 

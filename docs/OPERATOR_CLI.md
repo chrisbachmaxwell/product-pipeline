@@ -1,6 +1,6 @@
 # ProductPipeline Operator CLI Foundation
 
-The operator CLI is a local-only migration safety tool. It validates declared shadow-mode configuration, reports responsibility ownership, and verifies its local audit chain. It does not connect to Shopify, eBay, Marketplace Connect, Railway, the ProductPipeline server, or the application database.
+The operator CLI is a local-only migration safety tool. It validates declared shadow-mode configuration, reports responsibility ownership, compares redacted offline reconciliation snapshots, and verifies its local audit chain. It does not connect to Shopify, eBay, Marketplace Connect, Railway, the ProductPipeline server, or the application database.
 
 This foundation does not prove remote identity, configuration, listing parity, or production readiness. It implements no sync, import, publish, save, approval, or mutation command.
 
@@ -14,7 +14,7 @@ The executable at `src/operator-cli/index.ts` is separate from the legacy `ebays
 
 Do not import from `src/cli`, `src/server`, `src/db`, `src/config`, `src/shopify`, `src/ebay`, `src/sync`, or `src/watcher`. Those legacy trees can read credentials, initialize or seed the application database, start timers/workers, contact configured services, or expose mutations.
 
-The only write this CLI performs is appending a redacted decision record to a repository-local JSONL audit file for `preflight` and `ownership`. `audit verify` does not write. Runtime audit files live under `.local/` and are ignored by Git.
+The only write this CLI performs is appending a redacted decision record to a repository-local JSONL audit file for `preflight`, `ownership`, and `reconcile`. `audit verify` does not write. Runtime audit files and reconciliation snapshots live under `.local/` and are ignored by Git.
 
 ## Configuration contract
 
@@ -53,6 +53,25 @@ Print the ownership matrix:
 npm run operator -- ownership --config config/operator-shadow.example.json
 ```
 
+Compare one redacted offline snapshot:
+
+```sh
+npm run operator -- reconcile \
+  --config config/operator-shadow.example.json \
+  --snapshot .local/operator-reconciliation/snapshot.json
+```
+
+`reconcile` accepts one strict JSON bundle with schema version `1`, kind `product-pipeline-shadow-reconciliation`, a canonical UTC capture time, identities matching the operator config exactly, and these normalized sections:
+
+- ProductPipeline listing links and order observations;
+- Shopify variant price/inventory and eBay-source order links;
+- eBay inventory/offer/listing state and order identities; and
+- Marketplace Connect order-import, price-sync, and inventory-sync status.
+
+Snapshots are capped at 4 MiB and 5,000 rows per collection. The file must be a regular, non-symlink file beneath `.local/operator-reconciliation/`. Unknown fields and secret-like or personal-data fields are rejected. A snapshot must contain only stable platform IDs, SKU, normalized price/inventory, status, owner, and timestamps—never names, titles, buyers, customers, email, phone, addresses, notes, tags, line items, raw payloads, tokens, cookies, or authorization material.
+
+This command has no snapshot exporter and no live adapter. A trusted, separately reviewed process must create the redacted bundle. Reconciliation never reads the application database or credential files and never contacts a platform. An unlinked eBay order is reported as an incumbent-owned exception; it is never an import candidate.
+
 Verify the local audit chain:
 
 ```sh
@@ -63,15 +82,15 @@ Add `--json` for one machine-readable JSON object. `--dry-run` is accepted and a
 
 Exit codes:
 
-- `0`: local config is configuration-safe, or the audit chain verified;
+- `0`: local config is configuration-safe, supplied snapshots are internally consistent, or the audit chain verified;
 - `1`: config, repository identity, argument, or audit integrity denial;
-- `2`: structurally safe config, but unresolved ownership blocks readiness.
+- `2`: structurally safe input, but unresolved ownership, stale evidence, or reconciliation exceptions block readiness.
 
-Do not use `npm run cli` or the legacy `ebaysync` commands as migration preflight. Those commands are outside this safety boundary.
+The legacy `npm run cli` / `ebaysync` entrypoint is status-only in shadow mode. Its status output does not replace the stricter operator preflight, supplied-snapshot reconciliation, or audit verification described here.
 
 ## Audit properties and limits
 
-Each record includes a sequence, UTC timestamp, random run ID, command, lane/mode, approved nonsecret identity fields, config/ownership digests, check results, previous hash, and record hash. Before append, the CLI verifies the entire existing chain, obtains an exclusive lock, appends with filesystem sync, and verifies the new head. It refuses to append to a corrupt or concurrently locked log.
+Each record includes a sequence, UTC timestamp, random run ID, command, lane/mode, approved nonsecret identity fields, config/ownership digests, check results, previous hash, and record hash. Reconciliation audit records add only snapshot/result digests as check IDs; raw SKU, listing IDs, order IDs, snapshot rows, and discrepancy details are not copied into the audit. Before append, the CLI verifies the entire existing chain, obtains an exclusive lock, appends with filesystem sync, and verifies the new head. It refuses to append to a corrupt or concurrently locked log.
 
 This local file is append-only by tool behavior and tamper-evident for edits, reordered records, and broken links. It is not immutable against a host administrator, and a standalone hash chain cannot prove that its final records were not truncated. Production audit durability requires a separately designed append-only store and external checkpoint/anchor.
 
@@ -84,10 +103,10 @@ npx vitest run src/operator-cli/__tests__
 npx tsc --noEmit
 ```
 
-Coverage includes unsafe-mode, writer, backfill, cutover, secret, unknown-field, wildcard, lane mismatch, repository/path, no-network/no-database, command-boundary, audit-link, tamper, incomplete-write, and concurrent-lock denials.
+Coverage includes unsafe-mode, writer, backfill, cutover, secret, personal-data, unknown-field, wildcard, identity, snapshot path, stale evidence, duplicate-order, observed price/inventory difference, no-network/no-database, command-boundary, audit-link, tamper, incomplete-write, and concurrent-lock denials.
 
 ## Next gate
 
-This foundation is ready for code review. It should remain on a non-default branch until the user approves a merge/deployment decision because this repository documents `main` as Railway-auto-deployed.
+The offline reconciliation result is deliberately limited to `consistent-with-supplied-snapshots` or `exceptions-found`. Every result states `liveProof: false`, `productionParity: false`, `externalWrites: 0`, `historicalBackfill: false`, and `orderCreationEligible: false`.
 
-The next implementation slice is not authorized by this CLI itself. It requires an accepted ownership baseline and an explicit scope for repository application changes: hard writer quarantine, durable external-ID idempotency, the order watermark model, and read-only reconciliation adapters. No live/sandbox access, credential use, test listing/order, or Marketplace Connect change follows from passing this local preflight.
+This slice does not authorize a live adapter, sandbox/live write, order or listing creation, ownership cutover, Marketplace Connect change, or production-parity claim. A future live read adapter requires its own credential boundary, read-only transport, redaction contract, and deployment review.
