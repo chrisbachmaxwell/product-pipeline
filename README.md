@@ -2,9 +2,11 @@
 
 **Shopify ↔ eBay listing automation for UsedCameraGear.com**
 
-> Formerly "ebay-sync-app" / "Product Bridge". Directory and GitHub repo not yet renamed.
+> **Current direction (2026-08-11):** Product Pipeline is being narrowed to Marketplace Connect-style eBay listing management. AI/product-enrichment components are legacy scope for staged decommission, and eBay-to-Shopify order creation is outside the target product. Agents and maintainers must read `AGENTS.md` and `PROJECT_BRAIN.md` before making changes.
 
-Full-featured listing pipeline: Lightspeed → Shopify → AI description → PhotoRoom images → eBay. Replaces Marketplace Connect (Codisto).
+> Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
+
+Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
 
 ## Features
 

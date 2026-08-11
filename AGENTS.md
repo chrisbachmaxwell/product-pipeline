@@ -1,16 +1,19 @@
 # AGENTS.md — Rules for Working on ProductPipeline
 
-> **MANDATORY: Read this file AND `PROJECT.md` before making any changes to this codebase.**
+> **MANDATORY: Read this file, `PROJECT_BRAIN.md`, AND `PROJECT.md` before making any changes to this codebase.**
 > Any agent working on this project must update `PROJECT.md` changelog before finishing.
 
 ---
 
 ## 0. Read First
 
-1. Read `PROJECT.md` — architecture, tech stack, feature status, decision log
-2. Read this file — safety rules, code conventions, what NOT to do
-3. Check `git log --oneline -20` to understand recent changes
-4. If touching order sync: re-read the entire **Order Sync Safety** section below
+1. Read this file — safety rules, code conventions, what NOT to do
+2. Read `PROJECT_BRAIN.md` — canonical direction, source-of-truth rules, verified state, unknowns, and handoff protocol
+3. Read `PROJECT.md` — historical architecture, feature status, decision log, and changelog
+4. Check `git log --oneline -20` to understand recent changes
+5. If touching order sync: re-read the entire **Order Sync Safety** section below
+
+When historical documentation conflicts with `PROJECT_BRAIN.md`, follow the brain and verify the current code. The authorized direction is a focused eBay listing-management app. AI/product-enrichment features are legacy scope for staged decommission, and eBay-to-Shopify order creation must remain disabled unless a separately approved ownership cutover is proven safe.
 
 ---
 

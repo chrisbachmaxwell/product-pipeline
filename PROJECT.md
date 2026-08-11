@@ -1,10 +1,12 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-02-23. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-08-11. Any agent working on this project MUST update this file before finishing.**
+>
+> **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
 ## 1. Project Overview
 
-**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") is a full-featured listing automation platform for **Pictureline's UsedCameraGear.com** store. It replaces Marketplace Connect (Codisto) for Shopify ↔ eBay integration.
+**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is now narrower: a Marketplace Connect-style application focused on eBay listing management. AI/product-enrichment scope is slated for staged removal, and Marketplace Connect is the presumed order owner until live ownership is separately verified.
 
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
@@ -301,8 +303,11 @@ Test files: `src/services/__tests__/`
 | **Chokidar watcher** | Reliable cross-platform file watching with debounce/stabilization |
 | **Rename from "ebay-sync-app"** | Scope grew far beyond eBay sync; now a full product pipeline |
 | **TIM integration** | Condition data from trade-ins improves AI description quality |
+| **Narrow to eBay listing management (2026-08-11)** | Marketplace Connect-style listing operations are the target; AI/enrichment is legacy scope for staged removal, and order creation stays outside this product pending a separately approved ownership cutover |
 
 ## 8. Next Steps
+
+> Historical backlog retained for context. Do not execute this list as current direction; use the staged plan in `PROJECT_BRAIN.md`.
 
 **Prioritized remaining work:**
 
@@ -318,6 +323,15 @@ Test files: `src/services/__tests__/`
 10. **Auth hardening** — Current API key auth is basic; consider proper session auth for web UI
 
 ## Recent Changes
+
+### 2026-08-11: Durable Project Brain and Narrowed Product Direction
+
+- Added `PROJECT_BRAIN.md` as the canonical repository-local orientation and handoff document.
+- Recorded the narrowed Marketplace Connect-style eBay listing-management purpose.
+- Distinguished verified source behavior from deployment and live-system unknowns.
+- Inventoried listing capabilities, order-sync safeguards and residual risks, and legacy AI/enrichment scope.
+- Defined non-negotiable order-ownership, no-backfill, cursor, idempotency, approval, reconciliation, webhook, and audit safeguards.
+- Added a staged architecture and decommission plan; no application code, configuration, runtime behavior, deployment, or commerce system was changed.
 
 ### 2026-02-25: End-to-End UI Fixes — Voting, Orders Filters, Sync Status
 Improved end-to-end functionality to eliminate dead interactions and mismatches:
