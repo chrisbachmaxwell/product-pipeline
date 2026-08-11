@@ -2,13 +2,15 @@
 
 **Shopify ↔ eBay listing automation for UsedCameraGear.com**
 
-> **Current direction (2026-08-11):** Product Pipeline is being narrowed to Marketplace Connect-style eBay listing management. AI/product-enrichment components are legacy scope for staged decommission, and eBay-to-Shopify order creation is outside the target product. Agents and maintainers must read `AGENTS.md` and `PROJECT_BRAIN.md` before making changes.
+> **Current direction (2026-08-11):** ProductPipeline is the intended safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect remains the incumbent during a gated migration; ProductPipeline must not perform live writes or historical order backfill until the per-responsibility parity, canary, reconciliation, rollback, and approval requirements in `PROJECT_BRAIN.md` pass. AI/product-enrichment is legacy scope. Agents and maintainers must read `AGENTS.md` and `PROJECT_BRAIN.md` before making changes.
 
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
 
 ## Features
+
+> The commands below describe legacy implementation surfaces, not approved migration actions. Do not run sync, import, publish, republish, or price-drop commands against live systems as a test.
 
 | Feature | Direction | Command |
 |---------|-----------|---------|
@@ -189,7 +191,7 @@ SQLite at `~/.clawdbot/ebaysync.db` with tables:
 
 - **Seller:** usedcam-0 (https://www.ebay.com/usr/usedcam-0)
 - **Location:** 305 W 700 S, Salt Lake City, UT 84101
-- **Connected via:** Marketplace Connect (Codisto) — being replaced by this app
+- **Current incumbent:** Marketplace Connect (Codisto); ProductPipeline replacement is gated and not yet complete
 
 ## Tech Stack
 

@@ -6,7 +6,7 @@
 
 ## 1. Project Overview
 
-**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is now narrower: a Marketplace Connect-style application focused on eBay listing management. AI/product-enrichment scope is slated for staged removal, and Marketplace Connect is the presumed order owner until live ownership is separately verified.
+**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. AI/product-enrichment scope is slated for staged removal.
 
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
@@ -113,6 +113,8 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 ## 3. Current State
 
 ### Feature Status
+
+> Historical implementation inventory, not proof of current production fitness, ownership, or parity. The 2026-08-11 live walkthrough and current target are recorded in `PROJECT_BRAIN.md`.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -303,7 +305,7 @@ Test files: `src/services/__tests__/`
 | **Chokidar watcher** | Reliable cross-platform file watching with debounce/stabilization |
 | **Rename from "ebay-sync-app"** | Scope grew far beyond eBay sync; now a full product pipeline |
 | **TIM integration** | Condition data from trade-ins improves AI description quality |
-| **Narrow to eBay listing management (2026-08-11)** | Marketplace Connect-style listing operations are the target; AI/enrichment is legacy scope for staged removal, and order creation stays outside this product pending a separately approved ownership cutover |
+| **Replace Marketplace Connect through staged cutover (2026-08-11)** | ProductPipeline is the intended eBay-integration replacement, but Marketplace Connect stays incumbent until each responsibility has parity, single-writer proof, canary, reconciliation, rollback, and operator approval; AI/enrichment is legacy scope |
 
 ## 8. Next Steps
 
@@ -323,6 +325,14 @@ Test files: `src/services/__tests__/`
 10. **Auth hardening** — Current API key auth is basic; consider proper session auth for web UI
 
 ## Recent Changes
+
+### 2026-08-11: Marketplace Connect Replacement Target and Test Lane
+
+- Revised the canonical target from listing-only coexistence to a staged, operator-approved replacement for Marketplace Connect's Used Camera Gear eBay integration.
+- Recorded the read-only Shopify walkthrough: Marketplace Connect currently imports all complete eBay orders and syncs price/inventory; ProductPipeline is reachable but exposes overlapping controls, historical local orders, AI/pipeline activity, and conflicting eBay status indicators.
+- Added the ownership matrix, explicit order watermark, durable external-ID idempotency, single-writer, audit, reconciliation, canary, break-glass, and rollback gates.
+- Defined separate sandbox/development and live-canary Test Lanes, with no historical backfill and no real Shopify-order writes in the current phase.
+- Defined the simple five-page operator control plane and staged replacement plan. No application code, configuration, credential, deployment, or commerce-system mutation was made.
 
 ### 2026-08-11: Durable Project Brain and Narrowed Product Direction
 

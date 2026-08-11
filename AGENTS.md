@@ -13,7 +13,7 @@
 4. Check `git log --oneline -20` to understand recent changes
 5. If touching order sync: re-read the entire **Order Sync Safety** section below
 
-When historical documentation conflicts with `PROJECT_BRAIN.md`, follow the brain and verify the current code. The authorized direction is a focused eBay listing-management app. AI/product-enrichment features are legacy scope for staged decommission, and eBay-to-Shopify order creation must remain disabled unless a separately approved ownership cutover is proven safe.
+When historical documentation conflicts with `PROJECT_BRAIN.md`, follow the brain and verify the current code. The authorized target is a safe, simple replacement for Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect remains the incumbent writer during migration; ProductPipeline must stay read-only/shadow for each responsibility until its documented parity, idempotency, canary, reconciliation, approval, and rollback gates pass. AI/product-enrichment is legacy scope for staged removal. No historical order backfill is permitted.
 
 ---
 
