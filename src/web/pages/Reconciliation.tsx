@@ -21,6 +21,7 @@ import {
   EvidenceSourceCards,
   ResponsibilityEvidenceCards,
 } from '../components/EvidenceProjection';
+import { DurableMigrationState } from '../components/DurableMigrationState';
 
 const Reconciliation: React.FC = () => {
   const statusQuery = useMigrationStatus();
@@ -84,6 +85,8 @@ const Reconciliation: React.FC = () => {
         <EvidenceSourceCards status={status} />
 
         <ResponsibilityEvidenceCards status={status} />
+
+        <DurableMigrationState status={status} />
 
         <BlockStack gap="300">
           <InlineStack align="space-between" blockAlign="center">

@@ -16,6 +16,7 @@ import {
   MigrationSafetyBanner,
   OwnershipCards,
 } from '../components/MigrationSafety';
+import { DurableMigrationState } from '../components/DurableMigrationState';
 
 const Dashboard: React.FC = () => {
   const statusQuery = useMigrationStatus();
@@ -45,6 +46,8 @@ const Dashboard: React.FC = () => {
           <Text variant="headingMd" as="h2">Production responsibility</Text>
           {isLoading ? <SkeletonBodyText lines={4} /> : <OwnershipCards status={status} />}
         </BlockStack>
+
+        <DurableMigrationState status={status} />
 
         <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
           <Card>

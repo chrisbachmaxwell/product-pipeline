@@ -16,6 +16,7 @@
     "start": "node dist/server/index.js",
     "cli": "tsx src/cli/index.ts",
     "operator": "tsx src/operator-cli/index.ts",
+    "migration-admin": "tsx src/migration-admin/index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

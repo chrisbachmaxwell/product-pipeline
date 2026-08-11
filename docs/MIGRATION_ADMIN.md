@@ -1,0 +1,73 @@
+# Migration-State Administration
+
+`migration-admin` is a separate, local-only command for creating one inert migration-state database and verifying it without mutation. It is not the legacy CLI, the offline reconciliation CLI, a schema upgrader, a platform client, or a cutover control.
+
+The command surface is intentionally limited to:
+
+- `init`: preview by default; initialize once only after the operator repeats the exact account-scope digest.
+- `verify`: open an existing store read-only, verify schema/account/integrity/audit invariants, and emit a redacted local-state projection.
+
+There is no `force`, reset, migrate, sync, import, watermark, ownership, approval, job, canary, or write command. Neither command loads credentials, contacts Shopify/eBay/Marketplace Connect, reads the legacy application database, or changes production data.
+
+## Configuration
+
+Copy `config/migration-state.example.json` to a separate repository-local JSON file and replace its deliberately invalid eBay seller placeholder with the exact nonsecret account identifier. Never add a token, cookie, password, client secret, API key, customer value, or raw payload.
+
+The strict schema requires:
+
+- the exact ProductPipeline project/mode and schema version;
+- a lane whose eBay environment matches (`development`/`sandbox` use sandbox; `production-shadow` uses production);
+- exact Shopify store, eBay environment/seller/`EBAY_US` scope;
+- the fixed ignored path `.local/migration-state/product-pipeline-migration-v1.sqlite`;
+- explicit false assertions for platform access, external writes, historical backfill, ownership transfer, and credential use;
+- a null cutover watermark.
+
+Unknown fields, wildcard identities, the shipped invalid placeholder and common placeholder prefixes, credential-like material, symlink/hard-link paths, path traversal, oversized files, and SQLite sidecars fail closed. Error output names only stable validation categories; it does not echo rejected values or paths. The working `config/migration-state.json` path is ignored by Git; only the deliberately invalid example is tracked.
+
+## Preview, initialize, and verify
+
+Preview performs no filesystem write and exits `2`:
+
+```bash
+npm run migration-admin -- init \
+  --config config/migration-state.json \
+  --created-at 2026-08-11T20:00:00.000Z \
+  --json
+```
+
+Use a trusted current UTC instant rather than copying the example timestamp. Review the exact target and scope digest in the preview. If it is correct, create the fixed local parent yourself, then repeat the command with the exact digest:
+
+```bash
+mkdir -p -m 700 .local/migration-state
+npm run migration-admin -- init \
+  --config config/migration-state.json \
+  --created-at 2026-08-11T20:00:00.000Z \
+  --confirm-scope sha256:<exact-preview-digest> \
+  --json
+```
+
+Initialization refuses an existing database or sidecar and creates only schema, one account scope, and its genesis audit record. It does not create ownership, watermark, cursor, identity, link, intent, approval, job, attempt, or reconciliation records. The returned writable construction handle is always closed before the database is reopened and projected read-only.
+
+Verify an existing store with:
+
+```bash
+npm run migration-admin -- verify \
+  --config config/migration-state.json \
+  --json
+```
+
+Verification exits `0` only for a locally valid store. It preserves the database bytes, size, mode, modification time, and directory entries. Missing, legacy, tampered, cross-account, unsafe-permission, linked, or sidecar-bearing state exits `1` without creating or repairing anything.
+
+## Web projection
+
+The mounted application reads migration state only when `MIGRATION_STATE_CONFIG_PATH` explicitly names the strict repository-local configuration. The reader runs only when authenticated `/api/migration/status` is requested; server startup does not open, create, initialize, or migrate the store.
+
+The API/UI projection is deeply allowlisted. It can show the local schema, safe scope subset, fixed counts, ownership summaries, watermark absence, audit status, and blockers. It never returns a database/config path, seller ID, raw row, approval or entity identifier, rejected value, credential, customer value, or store handle. It always reports zero eligible orders, no historical backfill, no canary authorization, no cutover authorization, and no external-write capability.
+
+Do not configure this on Railway yet. Version 1 intentionally supports only the ignored repository-local path; durable volume placement, one-replica/topology fencing, backup/restore, trusted time, and external audit anchoring require a separate review. A verified local projection is not Shopify/eBay/Marketplace Connect evidence or production parity.
+
+## Exit codes
+
+- `0`: initialization completed with inert postconditions, or an existing store verified locally.
+- `1`: configuration, path, confirmation, creation, or integrity verification denied.
+- `2`: safe initialization preview; no filesystem state was created.

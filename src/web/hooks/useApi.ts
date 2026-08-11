@@ -293,6 +293,53 @@ export interface MigrationResponsibilityEvidenceProjection {
   [key: string]: unknown;
 }
 
+export interface DurableMigrationStateScope {
+  scopeKey?: string;
+  shopifyStoreDomain?: string;
+  ebayEnvironment?: string;
+  ebayMarketplaceId?: string;
+}
+
+export interface DurableMigrationStateProjection {
+  status?: 'verified' | 'unavailable' | 'invalid' | 'not-configured' | string;
+  schemaVersion?: number | null;
+  scope?: DurableMigrationStateScope | null;
+  access?: {
+    writable?: boolean;
+    readOnly?: boolean;
+    externallyWired?: boolean;
+    externalWritesSupported?: boolean;
+    historicalBackfillAllowed?: boolean;
+  };
+  counts?: Record<string, number> | null;
+  ownership?: Array<{
+    responsibility?: string;
+    owner?: string | null;
+    version?: number | null;
+    [key: string]: unknown;
+  }>;
+  orders?: {
+    watermarkUtc?: string | null;
+    watermarkEstablished?: boolean;
+    eligibleForCreation?: number;
+    orderCreationEligible?: boolean;
+    [key: string]: unknown;
+  };
+  audit?: {
+    valid?: boolean;
+    recordCount?: number;
+    headHash?: string | null;
+    [key: string]: unknown;
+  };
+  readiness?: {
+    canaryReady?: boolean;
+    cutoverReady?: boolean;
+    blockers?: string[];
+    [key: string]: unknown;
+  };
+  errorCode?: string;
+}
+
 export interface MigrationStatusResponse {
   phase?: string;
   effectiveMode?: string;
@@ -314,6 +361,8 @@ export interface MigrationStatusResponse {
   responsibilityEvidence?:
     | MigrationResponsibilityEvidenceProjection[]
     | Record<string, MigrationResponsibilityEvidenceProjection | undefined>;
+  /** Local durable migration-control state only; never platform truth or live parity proof. */
+  migrationState?: DurableMigrationStateProjection;
 }
 
 /** Single source for the operator-facing migration and quarantine state. */

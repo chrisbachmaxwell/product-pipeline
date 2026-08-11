@@ -337,6 +337,12 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-11: Inert Migration Administration and Read-Only Projection
+
+- Added a separate `migration-admin` CLI with exactly `init` and `verify`: initialization previews without writing, requires exact account-scope digest confirmation, creates only inert scope/genesis state, and refuses replacement, unsafe paths, sidecars, placeholders, credentials, or non-null cutover intent.
+- Added a redacted migration-store projection and request-time status reader. The mounted API/UI can show local control-plane counts and audit state only when explicitly configured; application startup still does not open or create the store, and no platform or writer capability was added.
+- Preserved production denial: zero eligible orders, no historical backfill, no watermark, no ProductPipeline ownership transfer, no canary/cutover authorization, and no external-write support. Local verification remains separate from Shopify/eBay/Marketplace Connect parity.
+
 ### 2026-08-11: Inert Durable Migration-State and Fixture Read Contracts
 
 - Added a dedicated, explicitly initialized migration-state persistence boundary separate from the legacy application ledger. It models exact platform/account identities, canonical responsibilities, versioned ownership, immutable exclusive order watermarks, separate monotonic cursors, stable idempotency intents, single-use approvals, execution jobs/attempts, reconciliation evidence, and a verified hash-chained audit.

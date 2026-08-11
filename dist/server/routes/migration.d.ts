@@ -1,4 +1,5 @@
 import { type Request, type Response } from 'express';
+import { type MigrationStateApiProjection } from '../migration-state-reader.js';
 declare const router: import("express-serve-static-core").Router;
 type LocalMigrationState = {
     listingMappings: number;
@@ -6,13 +7,14 @@ type LocalMigrationState = {
     historicalEbayOrders: number;
     settings: Record<string, string>;
 };
-export declare function buildMigrationStatus(local: LocalMigrationState, servedAt?: string): {
+export declare function buildMigrationStatus(local: LocalMigrationState, servedAt?: string, migrationState?: MigrationStateApiProjection): {
     sourceOfTruth: {
         acceptedProductionWriterBaseline: string;
         baselineEvidence: string;
         baselineDate: string;
         productPipelineScope: string;
     };
+    migrationState: MigrationStateApiProjection | undefined;
     evidence: {
         sources: ({
             sourceId: string;

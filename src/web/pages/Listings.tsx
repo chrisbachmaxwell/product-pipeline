@@ -18,6 +18,7 @@ import {
 import { SearchIcon } from '@shopify/polaris-icons';
 import { useListings, useMigrationStatus } from '../hooks/useApi';
 import { MigrationSafetyBanner } from '../components/MigrationSafety';
+import { DurableMigrationState } from '../components/DurableMigrationState';
 
 const PAGE_SIZE = 50;
 
@@ -108,6 +109,8 @@ const Listings: React.FC = () => {
             </Text>
           </BlockStack>
         </Banner>
+
+        <DurableMigrationState status={migration.data} compact="listings" />
 
         <Card>
           <BlockStack gap="300">

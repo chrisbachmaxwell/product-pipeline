@@ -1,5 +1,9 @@
 import { Router, type Request, type Response } from 'express';
 import { getMigrationPolicyStatus } from '../../safety/writer-quarantine.js';
+import {
+  readConfiguredMigrationState,
+  type MigrationStateApiProjection,
+} from '../migration-state-reader.js';
 import { openShadowDatabase } from '../shadow-db.js';
 
 const router = Router();
@@ -132,6 +136,7 @@ function buildResponsibilityEvidence() {
 export function buildMigrationStatus(
   local: LocalMigrationState,
   servedAt = new Date().toISOString(),
+  migrationState?: MigrationStateApiProjection,
 ) {
   const configurationExceptions = Object.entries(PROTECTED_SETTING_EXPECTATIONS)
     .filter(([key, expected]) => (local.settings[key] ?? '') !== expected)
@@ -151,6 +156,7 @@ export function buildMigrationStatus(
       baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
       productPipelineScope: 'local-observation-only',
     },
+    migrationState,
     evidence: buildEvidenceProjection(local),
     responsibilityEvidence: buildResponsibilityEvidence(),
     reconciliation: {
@@ -177,6 +183,8 @@ export function buildMigrationStatus(
 }
 
 export async function migrationStatusHandler(_req: Request, res: Response): Promise<void> {
+  const servedAt = new Date().toISOString();
+  const migrationState = await readConfiguredMigrationState();
   try {
     const db = openShadowDatabase();
     try {
@@ -196,12 +204,16 @@ export async function migrationStatusHandler(_req: Request, res: Response): Prom
         }>;
 
       res.json(
-        buildMigrationStatus({
-          listingMappings: count('product_mappings'),
-          orderMappings: count('order_mappings'),
-          historicalEbayOrders: count('ebay_orders'),
-          settings: Object.fromEntries(settingRows.map((row) => [row.key, row.value])),
-        }),
+        buildMigrationStatus(
+          {
+            listingMappings: count('product_mappings'),
+            orderMappings: count('order_mappings'),
+            historicalEbayOrders: count('ebay_orders'),
+            settings: Object.fromEntries(settingRows.map((row) => [row.key, row.value])),
+          },
+          servedAt,
+          migrationState,
+        ),
       );
     } finally {
       db.close();
@@ -209,13 +221,14 @@ export async function migrationStatusHandler(_req: Request, res: Response): Prom
   } catch {
     // Effective policy remains authoritative even if the legacy local ledger is unavailable.
     res.json({
-      ...getMigrationPolicyStatus(),
+      ...getMigrationPolicyStatus(servedAt),
       sourceOfTruth: {
         acceptedProductionWriterBaseline: 'shopify-marketplace-connect',
         baselineEvidence: 'operator-attested-browser-observation',
         baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
         productPipelineScope: 'local-observation-only',
       },
+      migrationState,
       evidence: buildEvidenceProjection(null),
       responsibilityEvidence: buildResponsibilityEvidence(),
       reconciliation: {

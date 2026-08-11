@@ -34,12 +34,13 @@ describe('migration-store filesystem and production boundary regressions', () =>
     it('remains isolated from runtime integrations and imports only its approved local boundary', () => {
         const repositoryRoot = process.cwd();
         const storeRoot = path.join(repositoryRoot, 'src', 'migration-store');
-        const runtimeFiles = ['index.ts', 'schema.ts', 'store.ts', 'types.ts'];
+        const runtimeFiles = ['index.ts', 'projection.ts', 'schema.ts', 'store.ts', 'types.ts'];
         const approvedImports = new Set([
             'node:crypto',
             'node:fs',
             'node:path',
             'better-sqlite3',
+            './projection.js',
             './schema.js',
             './store.js',
             './types.js',
@@ -58,7 +59,14 @@ describe('migration-store filesystem and production boundary regressions', () =>
             for (const entry of entries) {
                 if (!entry.endsWith('.ts') && !entry.endsWith('.tsx'))
                     continue;
+                if (/\.(?:test|spec)\.[^.]+$/.test(entry))
+                    continue;
                 const source = fs.readFileSync(path.join(treeRoot, entry), 'utf8');
+                if (tree === 'server' && entry === 'migration-state-reader.ts') {
+                    expect(source).toMatch(/from ['"]\.\.\/migration-store\/projection\.js['"]/);
+                    expect(source).not.toMatch(/migration-store\/(?:index|store)\.js|\bcreateMigrationStore\b|\bopenMigrationStore(?:ReadOnly)?\b/);
+                    continue;
+                }
                 expect(source, `${tree}/${entry} imports the migration store`).not.toMatch(/migration-store/);
             }
         }
@@ -68,6 +76,13 @@ describe('migration-store filesystem and production boundary regressions', () =>
         const store = fs.readFileSync(path.join(distRoot, 'migration-store', 'store.js'), 'utf8');
         const schema = fs.readFileSync(path.join(distRoot, 'migration-store', 'schema.js'), 'utf8');
         const shadowTransport = fs.readFileSync(path.join(distRoot, 'shadow-read', 'transport.js'), 'utf8');
+        const projection = fs.readFileSync(path.join(distRoot, 'migration-store', 'projection.js'), 'utf8');
+        const migrationStateReader = fs.readFileSync(path.join(distRoot, 'server', 'migration-state-reader.js'), 'utf8');
+        const migrationRoute = fs.readFileSync(path.join(distRoot, 'server', 'routes', 'migration.js'), 'utf8');
+        const migrationAdminConfig = fs.readFileSync(path.join(distRoot, 'migration-admin', 'config.js'), 'utf8');
+        const migrationAdminProgram = fs.readFileSync(path.join(distRoot, 'migration-admin', 'program.js'), 'utf8');
+        const migrationAdminIndex = fs.readFileSync(path.join(distRoot, 'migration-admin', 'index.js'), 'utf8');
+        const packageValue = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
         expect(store).toMatch(/externalWritesSupported = false/);
         expect(store).toMatch(/Production watermark establishment is disabled/);
         expect(store).toMatch(/Production reconciliation is shadow-only/);
@@ -79,6 +94,21 @@ describe('migration-store filesystem and production boundary regressions', () =>
         expect(shadowTransport).toMatch(/fixtureOnly:\s*true/);
         expect(shadowTransport).toMatch(/liveProof:\s*false/);
         expect(shadowTransport).not.toMatch(/\bfetch\s*\(|process\.env|token-manager/);
+        expect(projection).toMatch(/openMigrationStoreReadOnly/);
+        expect(projection).not.toMatch(/createMigrationStore|\bfetch\s*\(|process\.env|token-manager/);
+        expect(migrationStateReader).toMatch(/migration-store\/projection\.js/);
+        expect(migrationStateReader).not.toMatch(/migration-store\/(?:index|store)\.js|createMigrationStore|\bfetch\s*\(/);
+        expect(migrationRoute).toMatch(/readConfiguredMigrationState/);
+        expect(packageValue.scripts?.['migration-admin']).toBe('tsx src/migration-admin/index.ts');
+        expect(migrationAdminIndex).toMatch(/buildMigrationAdminProgram/);
+        expect(migrationAdminProgram.match(/\.command\(['"]([^'"]+)['"]\)/g)).toEqual([
+            ".command('init')",
+            ".command('verify')",
+        ]);
+        expect(migrationAdminProgram).not.toMatch(/\.command\(['"](?:live|write|force|reset|migrate|watermark|import|job|sync|publish)['"]\)/);
+        for (const source of [migrationAdminConfig, migrationAdminProgram, migrationAdminIndex]) {
+            expect(source).not.toMatch(/\bfetch\s*\(|process\.env|token-manager|shopify\/|ebay\/|sync\/|server\//);
+        }
     });
     it('opens a clean store read-only without changing bytes, metadata, or directory contents', () => {
         const { directory, databasePath } = temporaryStorePath();

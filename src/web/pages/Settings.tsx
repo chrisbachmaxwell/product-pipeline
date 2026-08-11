@@ -18,6 +18,7 @@ import {
   MigrationSafetyBanner,
   OwnershipCards,
 } from '../components/MigrationSafety';
+import { DurableMigrationState } from '../components/DurableMigrationState';
 
 const SafetyRow: React.FC<{
   label: string;
@@ -75,6 +76,8 @@ const Settings: React.FC = () => {
             ownership change requires reviewed parity evidence and a separately approved cutover.
           </Text>
         </Banner>
+
+        <DurableMigrationState status={status} />
 
         <Layout>
           <Layout.AnnotatedSection
