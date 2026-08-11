@@ -8,7 +8,7 @@
 
 **ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. AI/product-enrichment scope is slated for staged removal.
 
-**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only`. All non-read `/api` requests are denied, background writers are unmounted, webhooks are redacted receipt-only, the legacy CLI is status-only, and low-level commerce writers fail closed. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
+**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only`. All non-read `/api` requests are denied, only three redacted authenticated API reads are mounted, background writers are unmounted, webhooks cannot dispatch or persist payload evidence, the legacy CLI is status-only, and low-level commerce writers fail closed. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
 
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
@@ -192,7 +192,7 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 
 ### TradeInManager (TIM)
 - **URL:** https://trades.pictureline.com
-- **Auth:** Session-based login (mrfrankbot@gmail.com, password in `~/.clawdbot/credentials/tradeinmanager.txt`)
+- **Auth:** Legacy session-based login; service identity and password must be supplied outside the repository
 - **Data:** Condition grades, grader notes, serial numbers, pricing
 - **Matching:** SKU-based matching between TIM items and Shopify products
 - **Auto-tagging:** Applies condition tags to Shopify products
@@ -331,14 +331,24 @@ Test files: `src/services/__tests__/`
 7. **Batch operations** — Process multiple products through pipeline at once
 8. **eBay category mapping improvements** — Better auto-suggestion, more category coverage
 9. **Webhook reliability** — Retry/queue for failed Shopify/eBay webhooks
-10. **Auth hardening** — Current API key auth is basic; consider proper session auth for web UI
+10. **Read-collector trust boundary** — Choose a separately reviewed local or Railway one-off execution boundary for no-refresh, GET/HEAD-only authoritative Shopify/eBay evidence; Marketplace Connect still needs a supported export or reviewed attestation
 
 ## Recent Changes
+
+### 2026-08-11: Provenance-Bearing Parity Workflow and Shadow API Reduction
+
+- Replaced the single-timestamp offline snapshot with a strict version-2 evidence contract carrying independent ProductPipeline, Shopify, eBay, and Marketplace Connect subjects, collection method, bounded query window, pagination/count proof, capture/as-of time, normalization/redaction versions, and dataset digest. Partial or unavailable evidence parses as a blocker rather than being inferred away.
+- Added per-source and per-responsibility readiness, duplicate Shopify/eBay SKU blockers, stable-ID/status comparisons, and a pure unwired canary-readiness evaluator. The evaluator can describe prerequisites but can never authorize or execute a write.
+- Reduced the mounted runtime API to authenticated migration status, projected local listings, and capability metadata. Production now requires a verified Shopify App Bridge session JWT for the exact app/store; Referer, Origin, query keys, and production API keys cannot authorize. Legacy order/customer/log/settings/test/remote-reader GETs are unmounted.
+- Removed application-database initialization, migrations, settings/help/template seeds, and webhook receipt persistence from the mounted shadow server. Local status/listing views open only an existing SQLite ledger in file-must-exist, read-only, query-only mode.
+- Updated the five-page UI to separate accepted ownership policy, source evidence, response time, and parity. Missing/partial/stale evidence is critical; local counts remain non-authoritative; no action beyond GET refresh is mounted.
+- Redacted a legacy committed API key from current mapping files, made the former live mapping test network-inert, and reduced the checked-in Shopify app scope request to reads only. History still contains the former key and rotation remains an external owner decision.
+- Added `docs/READ_ONLY_PARITY.md`. No live Shopify/eBay evidence collector, database migration, platform write, order import, historical backfill, Marketplace Connect change, credential rotation, or canary is part of this slice.
 
 ### 2026-08-11: Hard Writer Quarantine and Offline Reconciliation
 
 - Added an immutable Marketplace Connect incumbent policy: ProductPipeline is hard-coded to shadow read-only, with no runtime override, no historical backfill, no order cutover watermark, and no external commerce writes.
-- Denied every non-read `/api` request, unmounted the legacy scheduler/cloud watcher, converted Shopify/eBay webhooks to redacted receipt-only observability, and reduced the legacy CLI to `status`.
+- Denied every non-read `/api` request, unmounted the legacy scheduler/cloud watcher, removed webhook dispatch and payload persistence, and reduced the legacy CLI to `status`.
 - Gated low-level eBay non-read requests plus Shopify order/inventory adapters and legacy mutation services so direct imports cannot bypass the route and startup controls.
 - Added read-only Overview, Listings, Orders, Reconciliation, and Settings migration surfaces with explicit Marketplace Connect ownership, quarantine status, proof limits, and operator-safe refresh/review actions.
 - Added strict local snapshot reconciliation and hash-chained audit evidence. It uses no credentials, remote clients, or application database; always records zero external writes/no historical backfill/no order eligibility; and cannot establish live parity.

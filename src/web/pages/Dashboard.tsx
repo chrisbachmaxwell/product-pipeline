@@ -9,30 +9,30 @@ import {
   SkeletonBodyText,
   Text,
 } from '@shopify/polaris';
-import { useNavigate } from 'react-router-dom';
 import { useMigrationStatus } from '../hooks/useApi';
+import { formatEvidenceTime, normalizeEvidenceSources } from '../evidence';
 import {
   humanize,
   MigrationSafetyBanner,
   OwnershipCards,
 } from '../components/MigrationSafety';
 
-const formatObservedAt = (value?: string) => {
-  if (!value) return 'Not available';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? 'Not available' : parsed.toLocaleString();
-};
-
 const Dashboard: React.FC = () => {
-  const navigate = useNavigate();
-  const { data: status, isLoading, error } = useMigrationStatus();
+  const statusQuery = useMigrationStatus();
+  const { data: status, isLoading, error } = statusQuery;
   const exceptions = status?.reconciliation?.exceptions ?? [];
+  const sources = normalizeEvidenceSources(status);
+  const sourceEvidenceIncomplete = sources.some((source) => source.critical);
 
   return (
     <Page
       title="Overview"
       subtitle="Marketplace Connect replacement control plane"
-      primaryAction={{ content: 'View reconciliation', onAction: () => navigate('/reconciliation') }}
+      primaryAction={{
+        content: 'Refresh evidence',
+        onAction: () => { void statusQuery.refetch(); },
+        loading: statusQuery.isFetching,
+      }}
       fullWidth
     >
       <BlockStack gap="500">
@@ -50,31 +50,33 @@ const Dashboard: React.FC = () => {
           <Card>
             <BlockStack gap="200">
               <Text as="p" tone="subdued">Migration phase</Text>
-              <Badge tone="attention">{status ? humanize(status.phase) : 'Unavailable'}</Badge>
+              <Badge tone={status?.phase ? 'attention' : 'critical'}>{humanize(status?.phase)}</Badge>
             </BlockStack>
           </Card>
           <Card>
             <BlockStack gap="200">
               <Text as="p" tone="subdued">Effective mode</Text>
               <Badge tone={status?.effectiveMode === 'shadow-read-only' ? 'success' : 'critical'}>
-                {status ? humanize(status.effectiveMode) : 'Unavailable'}
+                {humanize(status?.effectiveMode)}
               </Badge>
             </BlockStack>
           </Card>
           <Card>
             <BlockStack gap="200">
               <Text as="p" tone="subdued">Remote parity</Text>
-              <Badge tone="warning">
+              <Badge tone="critical">
                 {status?.remoteVerification === 'not-performed'
                   ? 'Not verified'
-                  : humanize(status?.remoteVerification ?? 'unknown')}
+                  : humanize(status?.remoteVerification)}
               </Badge>
             </BlockStack>
           </Card>
           <Card>
             <BlockStack gap="200">
               <Text as="p" tone="subdued">Open exceptions</Text>
-              <Text variant="headingLg" as="p">{exceptions.length}</Text>
+              <Text variant="headingLg" as="p">
+                {status?.reconciliation?.exceptions ? exceptions.length : 'Unavailable'}
+              </Text>
             </BlockStack>
           </Card>
         </InlineGrid>
@@ -83,13 +85,17 @@ const Dashboard: React.FC = () => {
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
               <Text variant="headingMd" as="h2">Evidence boundary</Text>
-              <Badge tone="info">Local observation only</Badge>
+              <Badge tone={sourceEvidenceIncomplete ? 'critical' : 'attention'}>
+                {sourceEvidenceIncomplete ? 'Authoritative sources incomplete' : 'Source captures supplied'}
+              </Badge>
             </InlineStack>
             <Text as="p">
               This screen reports the enforced ProductPipeline policy and local reconciliation
               evidence. It does not prove current Shopify, eBay, or Marketplace Connect parity.
             </Text>
-            <Text as="p" tone="subdued">Observed: {formatObservedAt(status?.observedAt)}</Text>
+            <Text as="p" tone="subdued">
+              Response served: {formatEvidenceTime(status?.servedAt)}
+            </Text>
             <Text as="p" tone="subdued">
               Quarantined channels: {status?.quarantine?.channels?.length
                 ? status.quarantine.channels.map(humanize).join(', ')

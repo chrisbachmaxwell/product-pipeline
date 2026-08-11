@@ -66,14 +66,14 @@ export declare function responsibilityForApiPath(pathname: string): QuarantinedR
 export declare function isReadOnlyHttpMethod(method: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
-export declare function getMigrationPolicyStatus(observedAt?: string): {
+export declare function getMigrationPolicyStatus(servedAt?: string): {
     phase: "marketplace-connect-incumbent";
     effectiveMode: "shadow-read-only";
     externalWritesAllowed: false;
     historicalBackfillAllowed: false;
     cutoverWatermarkUtc: null;
     remoteVerification: "not-performed";
-    observedAt: string;
+    servedAt: string;
     responsibilities: ({
         owner: "marketplace-connect";
         productPipelineAccess: "disabled";

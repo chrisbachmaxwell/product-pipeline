@@ -12,6 +12,7 @@ import {
   Text,
 } from '@shopify/polaris';
 import { useMigrationStatus } from '../hooks/useApi';
+import { booleanPolicyState, formatEvidenceTime } from '../evidence';
 import {
   humanize,
   MigrationSafetyBanner,
@@ -21,20 +22,47 @@ import {
 const SafetyRow: React.FC<{
   label: string;
   value: string;
-  safe?: boolean;
-}> = ({ label, value, safe = true }) => (
+  tone: 'success' | 'critical' | 'warning' | 'attention' | 'info';
+}> = ({ label, value, tone }) => (
   <InlineStack align="space-between" blockAlign="center" gap="300">
     <Text as="span">{label}</Text>
-    <Badge tone={safe ? 'success' : 'warning'}>{value}</Badge>
+    <Badge tone={tone}>{value}</Badge>
   </InlineStack>
 );
 
 const Settings: React.FC = () => {
   const statusQuery = useMigrationStatus();
   const status = statusQuery.data;
+  const externalWrites = booleanPolicyState(
+    status?.externalWritesAllowed,
+    { safe: 'Blocked', unsafe: 'Allowed' },
+  );
+  const historicalBackfill = booleanPolicyState(
+    status?.historicalBackfillAllowed,
+    { safe: 'Blocked', unsafe: 'Allowed' },
+  );
+  const watermark = status?.cutoverWatermarkUtc === undefined
+    ? 'Unavailable'
+    : status.cutoverWatermarkUtc === null
+      ? 'Not established'
+      : status.cutoverWatermarkUtc;
+  const remoteParity = status?.remoteVerification === undefined
+    ? 'Unavailable'
+    : status.remoteVerification === 'not-performed'
+      ? 'Not performed'
+      : humanize(status.remoteVerification);
 
   return (
-    <Page title="Settings" subtitle="Read-only migration policy and ownership" fullWidth>
+    <Page
+      title="Settings"
+      subtitle="Read-only migration policy and ownership"
+      primaryAction={{
+        content: 'Refresh evidence',
+        onAction: () => { void statusQuery.refetch(); },
+        loading: statusQuery.isFetching,
+      }}
+      fullWidth
+    >
       <BlockStack gap="500">
         <MigrationSafetyBanner
           status={status}
@@ -64,28 +92,26 @@ const Settings: React.FC = () => {
               <BlockStack gap="300">
                 <SafetyRow
                   label="ProductPipeline external writes"
-                  value={status?.externalWritesAllowed ? 'Allowed' : 'Blocked'}
-                  safe={!status?.externalWritesAllowed}
+                  value={externalWrites.label}
+                  tone={externalWrites.tone}
                 />
                 <Divider />
                 <SafetyRow
                   label="Historical order backfill"
-                  value={status?.historicalBackfillAllowed ? 'Allowed' : 'Blocked'}
-                  safe={!status?.historicalBackfillAllowed}
+                  value={historicalBackfill.label}
+                  tone={historicalBackfill.tone}
                 />
                 <Divider />
                 <SafetyRow
                   label="Order cutover watermark"
-                  value={status?.cutoverWatermarkUtc ?? 'Not established'}
-                  safe={status?.cutoverWatermarkUtc === null}
+                  value={watermark}
+                  tone="critical"
                 />
                 <Divider />
                 <SafetyRow
                   label="Remote parity proof"
-                  value={status?.remoteVerification === 'not-performed'
-                    ? 'Not performed'
-                    : humanize(status?.remoteVerification ?? 'Unavailable')}
-                  safe={false}
+                  value={remoteParity}
+                  tone="critical"
                 />
               </BlockStack>
             </Card>
@@ -103,8 +129,11 @@ const Settings: React.FC = () => {
                 </Text>
                 <InlineStack gap="200" blockAlign="center">
                   <Text as="span">Remote verification</Text>
-                  <Badge tone="warning">Not performed</Badge>
+                  <Badge tone="critical">{remoteParity}</Badge>
                 </InlineStack>
+                <Text as="p" tone="subdued">
+                  Response served: {formatEvidenceTime(status?.servedAt)}
+                </Text>
                 <Text as="p" tone="subdued">
                   No token, secret, scope, customer payload, or credential value is returned to the browser.
                 </Text>

@@ -1,14 +1,23 @@
 /**
  * TEST_MODE middleware — when TEST_MODE=true env var is set,
- * injects a mock Shopify session and skips auth so automated
- * browser testing tools can hit every route on localhost.
+ * injects a mock Shopify session and skips auth so automated browser testing
+ * tools can exercise the explicit shadow-read allowlist on localhost.
  */
-export const isTestMode = () => process.env.TEST_MODE === 'true';
+/**
+ * Test mode is deliberately unavailable in production. Setting TEST_MODE on a
+ * production process must never disable API authentication or widen the route
+ * surface.
+ */
+export const isTestMode = () => {
+    const environment = process.env.NODE_ENV;
+    return ((environment === 'test' || environment === 'development') &&
+        process.env.TEST_MODE === 'true');
+};
 /** Mock session injected into req when TEST_MODE is active */
 const MOCK_SESSION = {
     shop: 'test-store.myshopify.com',
     accessToken: 'test-token',
-    scope: 'read_products,write_products,read_orders',
+    scope: 'read_products,read_inventory,read_orders,read_fulfillments',
     isOnline: false,
     state: 'test-state',
     id: 'test-session-id',

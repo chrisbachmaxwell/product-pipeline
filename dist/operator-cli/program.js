@@ -70,7 +70,7 @@ function printReconciliation(result, json, io) {
     io.stdout(`Operator reconcile: ${result.status.toUpperCase()}`);
     io.stdout('Evidence: supplied snapshots only; no network, application database, external writes, order creation, or historical backfill');
     io.stdout('Live proof: NO; production parity: NO; order creation eligible: NO');
-    io.stdout(`Captured: ${result.capturedAtUtc}`);
+    io.stdout(`Generated: ${result.generatedAtUtc}`);
     io.stdout(`Observed: ${result.counts.shopifyVariants} Shopify variant(s), ${result.counts.ebayListings} eBay listing(s), ${result.counts.ebayOrders} eBay order(s)`);
     if (result.discrepancies.length > 0) {
         io.stdout(`Exceptions (${result.discrepancies.length}):`);

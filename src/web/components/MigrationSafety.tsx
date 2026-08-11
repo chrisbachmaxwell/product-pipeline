@@ -8,24 +8,38 @@ import {
   InlineStack,
   Text,
 } from '@shopify/polaris';
+import { booleanPolicyState } from '../evidence';
 import type {
   MigrationResponsibilityStatus,
   MigrationStatusResponse,
 } from '../hooks/useApi';
 
 const BASELINE_RESPONSIBILITIES = ['orderImport', 'price', 'inventory'] as const;
+const ALL_RESPONSIBILITIES = [
+  ...BASELINE_RESPONSIBILITIES,
+  'listingLifecycle',
+  'mapping',
+  'fulfillment',
+  'feedback',
+] as const;
 
 const LABELS: Record<string, string> = {
   orderImport: 'eBay → Shopify orders',
   price: 'Price sync',
   inventory: 'Inventory sync',
+  listingLifecycle: 'Listing lifecycle',
+  mapping: 'Listing mapping',
+  fulfillment: 'Fulfillment',
+  feedback: 'Buyer feedback',
 };
 
-export const humanize = (value: string) =>
-  value
+export const humanize = (value: string | null | undefined) => {
+  if (!value) return 'Unavailable';
+  return value
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[-_]/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+};
 
 export const responsibilityLabel = (responsibility: string) =>
   LABELS[responsibility] ?? humanize(responsibility);
@@ -40,25 +54,47 @@ export const MigrationSafetyBanner: React.FC<{
   status?: MigrationStatusResponse;
   error?: Error | null;
 }> = ({ status, error }) => {
-  const baselineOwnershipVerified = BASELINE_RESPONSIBILITIES.every((responsibility) => {
+  const baselinePolicyAccepted = BASELINE_RESPONSIBILITIES.every((responsibility) => {
     const item = findResponsibility(status, responsibility);
-    return item?.owner === 'marketplace-connect' && item.writesAllowed !== true;
+    return (
+      item?.owner === 'marketplace-connect' &&
+      item.writesAllowed === false &&
+      ['disabled', 'read-only'].includes(item.productPipelineAccess)
+    );
   });
   const safelyQuarantined =
     status?.quarantine?.enabled === true &&
+    Boolean(status.quarantine.channels?.length) &&
     status.externalWritesAllowed === false &&
-    baselineOwnershipVerified;
+    status.historicalBackfillAllowed === false &&
+    status.cutoverWatermarkUtc === null &&
+    baselinePolicyAccepted;
 
   if (!status || error) {
     return (
       <Banner tone="critical" title="Migration safety state unavailable">
         <Text as="p">
           ProductPipeline remains observation-only. No write action is available while the enforced
-          ownership state cannot be displayed.
+          ownership policy cannot be displayed.
         </Text>
       </Banner>
     );
   }
+
+  const backfill = booleanPolicyState(
+    status.historicalBackfillAllowed,
+    { safe: 'blocked', unsafe: 'allowed' },
+  );
+  const watermark = status.cutoverWatermarkUtc === undefined
+    ? 'unavailable'
+    : status.cutoverWatermarkUtc === null
+      ? 'not established'
+      : status.cutoverWatermarkUtc;
+  const remoteParity = status.remoteVerification === undefined
+    ? 'unavailable'
+    : status.remoteVerification === 'not-performed'
+      ? 'not verified'
+      : humanize(status.remoteVerification).toLowerCase();
 
   return (
     <Banner
@@ -69,14 +105,13 @@ export const MigrationSafetyBanner: React.FC<{
     >
       <BlockStack gap="100">
         <Text as="p">
-          {baselineOwnershipVerified
-            ? 'Marketplace Connect remains the production owner for orders, price, and inventory. ProductPipeline is read-only and cannot perform those writes.'
-            : 'The required Marketplace Connect ownership baseline is unavailable or inconsistent. ProductPipeline remains observation-only.'}
+          {baselinePolicyAccepted
+            ? 'Accepted ownership policy assigns orders, price, and inventory to Marketplace Connect. This is policy, not current cross-platform parity evidence.'
+            : 'The required Marketplace Connect ownership policy is unavailable or inconsistent. ProductPipeline remains observation-only.'}
         </Text>
         <Text as="p" tone="subdued">
-          Historical order backfill: {status.historicalBackfillAllowed ? 'allowed' : 'blocked'} ·
-          Cutover watermark: {status.cutoverWatermarkUtc ?? 'not established'} · Remote parity:{' '}
-          {status.remoteVerification === 'not-performed' ? 'not verified' : humanize(status.remoteVerification)}
+          Historical order backfill: {backfill.label.toLowerCase()} · Cutover watermark: {watermark} ·
+          Remote parity: {remoteParity}
         </Text>
       </BlockStack>
     </Banner>
@@ -87,39 +122,42 @@ export const OwnershipCards: React.FC<{
   status?: MigrationStatusResponse;
   includeAll?: boolean;
 }> = ({ status, includeAll = false }) => {
-  const responsibilities = includeAll
-    ? status?.responsibilities ?? []
-    : BASELINE_RESPONSIBILITIES.map((key) => findResponsibility(status, key)).filter(
-        (item): item is MigrationResponsibilityStatus => Boolean(item),
-      );
-
-  if (responsibilities.length === 0) {
-    return (
-      <Card>
-        <Text as="p" tone="critical">Ownership data is unavailable; ProductPipeline remains read-only.</Text>
-      </Card>
-    );
-  }
+  const keys = includeAll ? ALL_RESPONSIBILITIES : BASELINE_RESPONSIBILITIES;
 
   return (
     <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
-      {responsibilities.map((item) => (
-        <Card key={item.responsibility}>
-          <BlockStack gap="200">
-            <Text variant="headingSm" as="h3">{responsibilityLabel(item.responsibility)}</Text>
-            <InlineStack gap="200" blockAlign="center">
-              <Text as="span" tone="subdued">Owner</Text>
-              <Badge tone={item.owner === 'marketplace-connect' ? 'success' : 'warning'}>
-                {item.owner === 'marketplace-connect' ? 'Marketplace Connect' : humanize(item.owner)}
-              </Badge>
-            </InlineStack>
-            <InlineStack gap="200" blockAlign="center">
-              <Text as="span" tone="subdued">ProductPipeline</Text>
-              <Badge tone="info">{humanize(item.productPipelineAccess)}</Badge>
-            </InlineStack>
-          </BlockStack>
-        </Card>
-      ))}
+      {keys.map((responsibility) => {
+        const item = findResponsibility(status, responsibility);
+        const owner = item?.owner;
+        const access = item?.productPipelineAccess;
+        return (
+          <Card key={responsibility}>
+            <BlockStack gap="200">
+              <Text variant="headingSm" as="h3">{responsibilityLabel(responsibility)}</Text>
+              <InlineStack gap="200" blockAlign="center">
+                <Text as="span" tone="subdued">Accepted policy owner</Text>
+                <Badge tone={owner === 'marketplace-connect' ? 'attention' : 'critical'}>
+                  {owner === 'marketplace-connect' ? 'Marketplace Connect' : humanize(owner ?? 'unverified')}
+                </Badge>
+              </InlineStack>
+              <InlineStack gap="200" blockAlign="center">
+                <Text as="span" tone="subdued">ProductPipeline policy</Text>
+                <Badge tone={access ? 'info' : 'critical'}>{humanize(access)}</Badge>
+              </InlineStack>
+              <InlineStack gap="200" blockAlign="center">
+                <Text as="span" tone="subdued">Writes</Text>
+                <Badge tone={item?.writesAllowed === false ? 'success' : 'critical'}>
+                  {item?.writesAllowed === false
+                    ? 'Blocked'
+                    : item?.writesAllowed === true
+                      ? 'Allowed'
+                      : 'Unavailable'}
+                </Badge>
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        );
+      })}
     </InlineGrid>
   );
 };

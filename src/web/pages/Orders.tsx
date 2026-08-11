@@ -13,6 +13,7 @@ import {
 } from '@shopify/polaris';
 import { useMigrationStatus } from '../hooks/useApi';
 import { MigrationSafetyBanner } from '../components/MigrationSafety';
+import { booleanPolicyState } from '../evidence';
 
 const Metric: React.FC<{ label: string; value: number | string }> = ({ label, value }) => (
   <Card>
@@ -23,7 +24,11 @@ const Metric: React.FC<{ label: string; value: number | string }> = ({ label, va
   </Card>
 );
 
-const PolicyRow: React.FC<{ label: string; value: string; tone?: 'success' | 'warning' }> = ({
+const PolicyRow: React.FC<{
+  label: string;
+  value: string;
+  tone?: 'success' | 'warning' | 'critical' | 'attention' | 'info';
+}> = ({
   label,
   value,
   tone = 'success',
@@ -38,23 +43,50 @@ const Orders: React.FC = () => {
   const statusQuery = useMigrationStatus();
   const status = statusQuery.data;
   const counts = status?.reconciliation?.counts ?? {};
+  const writerPolicy = booleanPolicyState(
+    status?.externalWritesAllowed,
+    { safe: 'Hard-disabled', unsafe: 'Allowed' },
+  );
+  const backfillPolicy = booleanPolicyState(
+    status?.historicalBackfillAllowed,
+    { safe: 'Blocked', unsafe: 'Allowed' },
+  );
+  const watermark = status?.cutoverWatermarkUtc === undefined
+    ? 'Unavailable'
+    : status.cutoverWatermarkUtc === null
+      ? 'Not established'
+      : status.cutoverWatermarkUtc;
+  const orderCreationEligible = status?.reconciliation?.orderCreationEligible;
+  const localCount = (key: string) =>
+    typeof counts[key] === 'number' ? counts[key] : 'Not supplied';
 
   return (
-    <Page title="Orders" subtitle="Observation-only migration state" fullWidth>
+    <Page
+      title="Orders"
+      subtitle="Observation-only migration state"
+      primaryAction={{
+        content: 'Refresh evidence',
+        onAction: () => { void statusQuery.refetch(); },
+        loading: statusQuery.isFetching,
+      }}
+      fullWidth
+    >
       <BlockStack gap="500">
         <MigrationSafetyBanner
           status={status}
           error={statusQuery.error instanceof Error ? statusQuery.error : null}
         />
-        <Banner tone="warning" title="Marketplace Connect is the sole production order importer">
+        <Banner tone="critical" title="Order ownership policy is accepted; current parity is not proven">
           <BlockStack gap="100">
             <Text as="p">
-              ProductPipeline order ingestion and Shopify-order creation are hard-disabled. No
-              cutover watermark exists, no historical backfill is permitted, and every historical
-              local record is ineligible for creation by ProductPipeline.
+              Marketplace Connect is the accepted sole production order importer and was
+              browser-observed importing eBay orders on 2026-08-11. That historical observation is
+              not a current authoritative parity snapshot. Fulfillment and feedback ownership are
+              also unverified.
             </Text>
             <Text as="p" tone="subdued">
-              Customer and order payloads are intentionally not exposed by this shadow-mode screen.
+              ProductPipeline order ingestion and Shopify-order creation are hard-disabled. No
+              customer or order payload is exposed by this shadow-mode screen.
             </Text>
           </BlockStack>
         </Banner>
@@ -63,10 +95,13 @@ const Orders: React.FC = () => {
           <SkeletonBodyText lines={6} />
         ) : (
           <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
-            <Metric label="Historical local eBay records" value={counts.historicalEbayOrders ?? 0} />
-            <Metric label="Historical records ineligible" value={counts.historicalOrdersIneligible ?? 0} />
-            <Metric label="Local order mappings" value={counts.orderMappings ?? 0} />
-            <Metric label="Eligible for ProductPipeline creation" value={0} />
+            <Metric label="Historical local eBay records" value={localCount('historicalEbayOrders')} />
+            <Metric label="Historical records ineligible" value={localCount('historicalOrdersIneligible')} />
+            <Metric label="Local order mappings" value={localCount('orderMappings')} />
+            <Metric
+              label="Eligible for ProductPipeline creation"
+              value={orderCreationEligible === false ? 0 : 'Unavailable'}
+            />
           </InlineGrid>
         )}
 
@@ -77,15 +112,21 @@ const Orders: React.FC = () => {
               <Badge tone="info">Read-only</Badge>
             </InlineStack>
             <Divider />
-            <PolicyRow label="Production importer" value="Marketplace Connect" />
+            <PolicyRow label="Accepted production importer policy" value="Marketplace Connect" tone="attention" />
             <Divider />
-            <PolicyRow label="ProductPipeline order writer" value="Hard-disabled" />
+            <PolicyRow label="Baseline observation" value="2026-08-11 (date-only)" tone="critical" />
             <Divider />
-            <PolicyRow label="Historical backfill" value="Blocked" />
+            <PolicyRow
+              label="ProductPipeline external writers"
+              value={writerPolicy.label}
+              tone={writerPolicy.tone}
+            />
             <Divider />
-            <PolicyRow label="Cutover watermark" value={status?.cutoverWatermarkUtc ?? 'Not established'} />
+            <PolicyRow label="Historical backfill" value={backfillPolicy.label} tone={backfillPolicy.tone} />
             <Divider />
-            <PolicyRow label="Production parity" value="Not verified" tone="warning" />
+            <PolicyRow label="Cutover watermark" value={watermark} tone="critical" />
+            <Divider />
+            <PolicyRow label="Production parity" value="Not verified" tone="critical" />
           </BlockStack>
         </Card>
 

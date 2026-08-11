@@ -136,7 +136,7 @@ export function writerQuarantineMiddleware(
   res.status(423).json(error.toResponse());
 }
 
-export function getMigrationPolicyStatus(observedAt = new Date().toISOString()) {
+export function getMigrationPolicyStatus(servedAt = new Date().toISOString()) {
   return {
     phase: MARKETPLACE_CONNECT_BASELINE.phase,
     effectiveMode: MARKETPLACE_CONNECT_BASELINE.effectiveMode,
@@ -144,7 +144,7 @@ export function getMigrationPolicyStatus(observedAt = new Date().toISOString()) 
     historicalBackfillAllowed: false as const,
     cutoverWatermarkUtc: null,
     remoteVerification: MARKETPLACE_CONNECT_BASELINE.remoteVerification,
-    observedAt,
+    servedAt,
     responsibilities: Object.entries(MARKETPLACE_CONNECT_BASELINE.responsibilities).map(
       ([responsibility, policy]) => ({ responsibility, ...policy }),
     ),

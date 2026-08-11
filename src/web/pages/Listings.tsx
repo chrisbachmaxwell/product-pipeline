@@ -78,18 +78,35 @@ const Listings: React.FC = () => {
   const total = listingsQuery.data?.total ?? 0;
 
   return (
-    <Page title="Listings" subtitle="Observation-only local listing ledger" fullWidth>
+    <Page
+      title="Listings"
+      subtitle="Observation-only local listing ledger"
+      primaryAction={{
+        content: 'Refresh evidence',
+        onAction: () => {
+          void Promise.all([migration.refetch(), listingsQuery.refetch()]);
+        },
+        loading: migration.isFetching || listingsQuery.isFetching,
+      }}
+      fullWidth
+    >
       <BlockStack gap="500">
         <MigrationSafetyBanner
           status={migration.data}
           error={migration.error instanceof Error ? migration.error : null}
         />
-        <Banner tone="info" title="Local records are not authoritative eBay state">
-          <Text as="p">
-            Price and inventory remain owned by Marketplace Connect. ProductPipeline cannot sync,
-            publish, revise, end, relist, or bulk-update listings in shadow mode. Reconcile these
-            local identifiers against current platform snapshots before claiming parity.
-          </Text>
+        <Banner tone="critical" title="Listing ownership and current eBay parity are unverified">
+          <BlockStack gap="100">
+            <Text as="p">
+              Listing lifecycle and mapping ownership remain unverified. Marketplace Connect was
+              browser-observed with price and inventory sync enabled on 2026-08-11, but no current
+              authoritative Shopify/eBay/Marketplace Connect parity snapshot is available.
+            </Text>
+            <Text as="p" tone="subdued">
+              ProductPipeline cannot sync, publish, revise, end, relist, or bulk-update listings in
+              shadow mode. These local identifiers are not authoritative eBay state.
+            </Text>
+          </BlockStack>
         </Banner>
 
         <Card>

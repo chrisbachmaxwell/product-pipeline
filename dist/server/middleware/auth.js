@@ -1,35 +1,86 @@
+import crypto from 'node:crypto';
+import { loadShopifyCredentials } from '../../config/credentials.js';
+import { createShopifyApi } from '../../shopify/client.js';
+import { isTestMode } from './test-mode.js';
+function constantTimeEqual(left, right) {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+function bearerToken(req) {
+    const authorization = req.get('Authorization');
+    if (!authorization)
+        return null;
+    const match = authorization.match(/^Bearer\s+([^\s]+)$/i);
+    return match?.[1] ?? null;
+}
 /**
- * Simple API key authentication middleware
- * Checks for X-API-Key header or api_key query parameter
+ * Verify an App Bridge session JWT locally. This performs no OAuth exchange,
+ * token refresh, database access, or platform request.
  */
-export const apiKeyAuth = (req, res, next) => {
-    // Skip auth for health check
-    if (req.path === '/health') {
-        return next();
+export async function verifyShopifySessionToken(token) {
+    try {
+        const credentials = await loadShopifyCredentials();
+        const shopify = await createShopifyApi();
+        const payload = await shopify.session.decodeSessionToken(token);
+        const expectedDestination = `https://${credentials.storeDomain}`;
+        return (payload.dest.replace(/\/$/, '') === expectedDestination &&
+            payload.iss.replace(/\/$/, '') === `${expectedDestination}/admin`);
     }
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-        // If no API key is set in env, allow access (development mode)
-        return next();
+    catch {
+        return false;
     }
-    // Allow same-origin requests from the SPA frontend (no API key needed)
-    const referer = req.headers.referer || req.headers.origin || '';
-    const host = req.headers.host || '';
-    if (referer && (referer.includes(host) || referer.includes('ebay-sync-app-production.up.railway.app'))) {
-        return next();
-    }
-    const providedKey = req.headers['x-api-key'] || req.query.api_key;
-    if (!providedKey || providedKey !== apiKey) {
-        return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
-    }
-    next();
-};
+}
 /**
- * Rate limiting middleware (basic token bucket implementation)
+ * API authentication supports either:
+ * - a cryptographically verified Shopify App Bridge session JWT; or
+ * - outside production only, an exact X-API-Key header behind an explicit
+ *   ALLOW_OPERATOR_API_KEY=true opt-in.
+ *
+ * Origin, Referer, Host, CORS, and query parameters are never treated as
+ * identity. Non-production TEST_MODE is the only authentication bypass.
+ */
+export function createApiKeyAuth(dependencies = {}) {
+    const readApiKey = dependencies.apiKey ?? (() => process.env.API_KEY);
+    const operatorApiKeyEnabled = dependencies.operatorApiKeyEnabled ??
+        (() => process.env.ALLOW_OPERATOR_API_KEY === 'true');
+    const isProduction = dependencies.production ?? (() => process.env.NODE_ENV === 'production');
+    const verifySession = dependencies.sessionTokenVerifier ?? verifyShopifySessionToken;
+    const testModeEnabled = dependencies.testMode ?? isTestMode;
+    return async (req, res, next) => {
+        if (testModeEnabled()) {
+            next();
+            return;
+        }
+        const expectedApiKey = readApiKey();
+        const providedApiKey = req.get('X-API-Key');
+        if (!isProduction() &&
+            operatorApiKeyEnabled() &&
+            expectedApiKey &&
+            providedApiKey &&
+            constantTimeEqual(providedApiKey, expectedApiKey)) {
+            next();
+            return;
+        }
+        const sessionToken = bearerToken(req);
+        if (sessionToken && await verifySession(sessionToken)) {
+            next();
+            return;
+        }
+        res.status(401).json({
+            error: 'Unauthorized',
+            code: 'API_AUTH_REQUIRED',
+        });
+    };
+}
+export const apiKeyAuth = createApiKeyAuth();
+/**
+ * Basic in-memory rate limiting. Production ingress rate limiting remains a
+ * separate infrastructure concern.
  */
 const rateLimitStore = new Map();
-const RATE_LIMIT_REQUESTS = 100; // requests per window
-const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_REQUESTS = 100;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 export const rateLimit = (req, res, next) => {
     const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
     const now = Date.now();
@@ -38,7 +89,6 @@ export const rateLimit = (req, res, next) => {
         bucket = { tokens: RATE_LIMIT_REQUESTS, lastRefill: now };
         rateLimitStore.set(clientIp, bucket);
     }
-    // Refill tokens based on time elapsed
     const timeDiff = now - bucket.lastRefill;
     const tokensToAdd = Math.floor(timeDiff / RATE_LIMIT_WINDOW_MS * RATE_LIMIT_REQUESTS);
     bucket.tokens = Math.min(RATE_LIMIT_REQUESTS, bucket.tokens + tokensToAdd);
@@ -49,7 +99,8 @@ export const rateLimit = (req, res, next) => {
             'X-RateLimit-Remaining': '0',
             'X-RateLimit-Reset': new Date(now + RATE_LIMIT_WINDOW_MS).toISOString(),
         });
-        return res.status(429).json({ error: 'Rate limit exceeded' });
+        res.status(429).json({ error: 'Rate limit exceeded' });
+        return;
     }
     bucket.tokens--;
     res.set({

@@ -11,17 +11,16 @@ import {
   Text,
 } from '@shopify/polaris';
 import { useMigrationStatus } from '../hooks/useApi';
+import { formatEvidenceTime, normalizeEvidenceSources, normalizeResponsibilityEvidence } from '../evidence';
 import {
   humanize,
   MigrationSafetyBanner,
   OwnershipCards,
 } from '../components/MigrationSafety';
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return 'Not available';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
-};
+import {
+  EvidenceSourceCards,
+  ResponsibilityEvidenceCards,
+} from '../components/EvidenceProjection';
 
 const Reconciliation: React.FC = () => {
   const statusQuery = useMigrationStatus();
@@ -33,13 +32,24 @@ const Reconciliation: React.FC = () => {
   );
   const exceptions = reconciliation?.exceptions ?? [];
   const audit = reconciliation?.audit;
+  const sourceEvidence = normalizeEvidenceSources(status);
+  const responsibilityEvidence = normalizeResponsibilityEvidence(status);
+  const evidenceIncomplete =
+    sourceEvidence.some((source) => source.critical) ||
+    responsibilityEvidence.some((responsibility) => responsibility.critical);
+  const watermark = status?.cutoverWatermarkUtc === undefined
+    ? 'Unavailable'
+    : status.cutoverWatermarkUtc === null
+      ? 'Not established'
+      : status.cutoverWatermarkUtc;
+  const orderCreationEligible = reconciliation?.orderCreationEligible;
 
   return (
     <Page
       title="Reconciliation"
       subtitle="Read-only migration evidence and exceptions"
       primaryAction={{
-        content: 'Refresh local evidence',
+        content: 'Refresh evidence',
         onAction: () => { void statusQuery.refetch(); },
         loading: statusQuery.isFetching,
       }}
@@ -50,24 +60,34 @@ const Reconciliation: React.FC = () => {
           status={status}
           error={statusQuery.error instanceof Error ? statusQuery.error : null}
         />
-        <Banner tone="info" title="Evidence is limited to the local ProductPipeline ledger">
+        <Banner
+          tone={evidenceIncomplete ? 'critical' : 'warning'}
+          title={evidenceIncomplete
+            ? 'Authoritative cross-platform evidence is incomplete'
+            : 'Source captures are supplied; parity still requires reconciliation'}
+        >
           <Text as="p">
             This view performs no Shopify, eBay, Marketplace Connect, order, listing, price, or
-            inventory write. Local agreement does not establish remote parity or authorize a cutover.
+            inventory write. Missing or partial source evidence blocks parity and cannot authorize a
+            cutover.
           </Text>
         </Banner>
 
         <BlockStack gap="300">
           <InlineStack align="space-between" blockAlign="center">
-            <Text variant="headingMd" as="h2">Responsibility baseline</Text>
-            <Badge tone="attention">Marketplace Connect incumbent</Badge>
+            <Text variant="headingMd" as="h2">Accepted ownership policy</Text>
+            <Badge tone="attention">Not observation evidence</Badge>
           </InlineStack>
           {statusQuery.isLoading ? <SkeletonBodyText lines={4} /> : <OwnershipCards status={status} />}
         </BlockStack>
 
+        <EvidenceSourceCards status={status} />
+
+        <ResponsibilityEvidenceCards status={status} />
+
         <BlockStack gap="300">
           <InlineStack align="space-between" blockAlign="center">
-            <Text variant="headingMd" as="h2">Local evidence</Text>
+            <Text variant="headingMd" as="h2">Legacy local ledger counts</Text>
             <Badge tone="info">{humanize(reconciliation?.scope ?? 'local-ledger')}</Badge>
           </InlineStack>
           {counts.length > 0 ? (
@@ -87,9 +107,29 @@ const Reconciliation: React.FC = () => {
             </Card>
           )}
           <Text as="p" variant="bodySm" tone="subdued">
-            Observed: {formatTimestamp(reconciliation?.observedAt ?? reconciliation?.generatedAt ?? status?.observedAt)}
+            Response served: {formatEvidenceTime(status?.servedAt)}. Response generation time is not
+            source capture time.
           </Text>
         </BlockStack>
+
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text variant="headingMd" as="h2">Cutover gates</Text>
+              <Badge tone="critical">Blocked</Badge>
+            </InlineStack>
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <Text as="span">Explicit UTC watermark</Text>
+              <Badge tone="critical">{watermark}</Badge>
+            </InlineStack>
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <Text as="span">Orders eligible for ProductPipeline creation</Text>
+              <Badge tone={orderCreationEligible === false ? 'success' : 'critical'}>
+                {orderCreationEligible === false ? '0' : 'Unavailable'}
+              </Badge>
+            </InlineStack>
+          </BlockStack>
+        </Card>
 
         <Card>
           <BlockStack gap="300">
@@ -131,12 +171,14 @@ const Reconciliation: React.FC = () => {
           <BlockStack gap="200">
             <InlineStack align="space-between" blockAlign="center">
               <Text variant="headingMd" as="h2">Audit evidence</Text>
-              <Badge tone={audit?.valid ? 'success' : 'warning'}>
+              <Badge tone={audit?.valid ? 'success' : 'critical'}>
                 {audit?.valid ? 'Chain verified' : 'CLI verification required'}
               </Badge>
             </InlineStack>
-            <Text as="p" tone="subdued">Records: {audit?.recordCount ?? 0}</Text>
-            <Text as="p" tone="subdued">Verified: {formatTimestamp(audit?.verifiedAt)}</Text>
+            <Text as="p" tone="subdued">
+              Records: {typeof audit?.recordCount === 'number' ? audit.recordCount : 'Not supplied'}
+            </Text>
+            <Text as="p" tone="subdued">Verified: {formatEvidenceTime(audit?.verifiedAt)}</Text>
             <Text as="p" tone="subdued" breakWord>
               Head: {audit?.headHash ?? 'No audit head available'}
             </Text>

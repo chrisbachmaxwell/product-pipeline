@@ -46,7 +46,7 @@ Source, deployment, and live proof are separate: a healthy local screen or consi
 - Overview, Listings, Orders, Reconciliation, and Settings identify the incumbent owner and shadow status.
 - Non-read requests beneath \`/api\` are denied with a writer-quarantined response.
 - The scheduler and cloud watcher are not mounted.
-- Shopify/eBay webhooks record redacted receipt metadata only and dispatch no work.
+- Shopify/eBay webhooks dispatch no work and persist no receipt payload. Verified Shopify receipts produce only a sanitized process log; eBay receipts receive a static no-op acknowledgement.
 - Historical eBay orders are never eligible for Shopify creation; the cutover watermark is unset.
 
 **Safe commands:**

@@ -1,8 +1,10 @@
 # ✅ Attribute Mapping System - COMPLETE
 
+> **Historical implementation record — not current production proof.** The legacy mapping mutation routes are quarantined and unmounted from the shadow-read application. The former embedded API key has been redacted. Do not run the examples in this document against production.
+
 ## What Was Built
 
-The complete attribute mapping system for the eBay Sync App has been successfully implemented and deployed.
+This file records what the legacy implementation reported as complete. Current route availability, deployment, and production behavior must be verified from current source and the project brain.
 
 ### 🗄️ Database Schema
 
@@ -86,45 +88,11 @@ node local-test.mjs
 ✅ Update mapping works correctly
 ```
 
-**Deployment:** ✅ COMPLETE
-- Built successfully with TypeScript
-- Deployed to Railway via `git push chris main`
-- Database migration runs automatically on startup
+**Historical deployment claim:** the original implementation notes said TypeScript built, Railway deployed, and startup migrated the database. That claim is not current proof and does not authorize a mapping write.
 
-## 🚀 Usage Examples
+## Retired usage surface
 
-### Update Condition to "Like New"
-```bash
-curl -X PUT -H "x-api-key: ebay-sync-74e34e328df0e5aa431d712209ef4758" \
-  -H "Content-Type: application/json" \
-  https://ebay-sync-app-production.up.railway.app/api/mappings/listing/condition \
-  -d '{"mapping_type":"constant","target_value":"Like New"}'
-```
-
-### Map Title from Shopify Product Title  
-```bash
-curl -X PUT -H "x-api-key: ebay-sync-74e34e328df0e5aa431d712209ef4758" \
-  -H "Content-Type: application/json" \
-  https://ebay-sync-app-production.up.railway.app/api/mappings/listing/title \
-  -d '{"mapping_type":"shopify_field","source_value":"title"}'
-```
-
-### Set Handling Time to 1 Day
-```bash
-curl -X PUT -H "x-api-key: ebay-sync-74e34e328df0e5aa431d712209ef4758" \
-  -H "Content-Type: application/json" \
-  https://ebay-sync-app-production.up.railway.app/api/mappings/shipping/handling_time \
-  -d '{"mapping_type":"constant","target_value":"1"}'
-```
-
-## 🎯 Prompt Control Ready
-
-The system is now **fully prompt-controllable**. Chris can tell Frank (the AI) what mapping changes to make, and Frank can call the APIs to update them instantly.
-
-**Example workflow:**
-1. Chris: "Set all conditions to 'Excellent'"  
-2. Frank calls: `PUT /api/mappings/listing/condition` with `{"mapping_type":"constant","target_value":"Excellent"}`
-3. All future eBay listings use "Excellent" condition
+The former document embedded runnable production mapping mutations and a production-like API key. Those examples were removed. Current source does not mount the mapping routes, rejects production API-key authorization, and exposes no AI/chat mapping action. A future mapping change requires exact source evidence, one responsibility and target, a reviewed before/after proposal, single-use approval, audit, reconciliation, and rollback.
 
 ## 📋 Status
 
@@ -134,8 +102,8 @@ The system is now **fully prompt-controllable**. Chris can tell Frank (the AI) w
 - ✅ Mapping service complete
 - ✅ Product sync integration updated
 - ✅ Build passes
-- ✅ Deployed to Railway
-- ✅ Local testing successful
-- 🕐 Live API testing pending (service starting up)
+- Historical local test result recorded; current behavior not re-proven here
+- Historical deployment claim retained only as context
+- Current live mapping ownership and parity remain unverified
 
-The complete attribute mapping system is **BUILT AND DEPLOYED**. The eBay Sync App now has full attribute mapping capabilities that match the original Codisto configuration and are easily configurable through the API.
+Current migration status: mapping code remains in the legacy tree, but its API and AI control surfaces are unmounted. Marketplace Connect coverage and the future ProductPipeline mapping owner remain unverified.

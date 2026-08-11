@@ -6,7 +6,7 @@ application_url = "https://ebay-sync-app-production.up.railway.app"
 embedded = true
 
 [access_scopes]
-scopes = "write_products,read_orders,write_orders,read_inventory,write_inventory"
+scopes = "read_products,read_orders,read_inventory,read_fulfillments"
 
 [auth]
 redirect_urls = [

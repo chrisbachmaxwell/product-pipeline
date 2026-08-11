@@ -46,12 +46,17 @@ let sessionCookie: string | null = null;
 let sessionExpiry = 0;
 
 async function getTimCredentials(): Promise<{ email: string; password: string }> {
-  // Try env var first (Railway), then fall back to local file
+  const email = process.env.TIM_EMAIL;
+  if (!email) {
+    throw new Error('TIM_EMAIL is required; no service-account identity is embedded in source');
+  }
+
+  // Try env var first (Railway), then fall back to the legacy password file.
   if (process.env.TIM_PASSWORD) {
-    return { email: process.env.TIM_EMAIL || 'mrfrankbot@gmail.com', password: process.env.TIM_PASSWORD };
+    return { email, password: process.env.TIM_PASSWORD };
   }
   const password = (await fs.readFile(path.join(CREDENTIALS_DIR, 'tradeinmanager.txt'), 'utf8')).trim();
-  return { email: 'mrfrankbot@gmail.com', password };
+  return { email, password };
 }
 
 async function authenticate(): Promise<string> {

@@ -21,27 +21,27 @@ The ownership transfer contract remains unchanged: one responsibility at a time,
 | Layer | Enforced behavior |
 |---|---|
 | Runtime policy | `src/safety/writer-quarantine.ts` contains the immutable incumbent baseline and throws `WRITER_QUARANTINED` for every attempted external write. Denials identify the responsibility, operation, incumbent owner, and required cutover decision. |
-| HTTP API | Every non-read request beneath `/api` is stopped by middleware before a legacy handler can load credentials, initialize its work, or contact a commerce platform. The response is HTTP `423` with the structured quarantine status. `GET`, `HEAD`, and `OPTIONS` remain available. |
+| HTTP API | Every non-read request beneath `/api` is stopped by middleware before a legacy handler can load credentials, initialize its work, or contact a commerce platform. The response is HTTP `423` with the structured quarantine status. The only mounted application reads are migration status, projected local listings, and capability metadata; legacy GET routes are unmounted and return `404`. |
 | Startup | The server does not mount the legacy mutation scheduler or cloud watcher. Startup logs that shadow read-only mode is active. |
-| Authentication | Shopify and eBay authentication routes are not mounted in the shadow application. The retained Shopify helper requests read scopes only and no longer registers webhooks during an OAuth callback. Existing credential records are never reported as proof of remote connectivity. |
-| Webhooks | Shopify and eBay webhook endpoints acknowledge receipts and may append redacted local metadata. They do not retain the payload and do not dispatch order, listing, price, inventory, fulfillment, pipeline, or watcher work. Shopify receipts still require HMAC verification before local evidence is recorded. |
+| Authentication | Shopify and eBay authentication routes are not mounted in the shadow application. Production API reads require a cryptographically verified Shopify App Bridge session JWT for the exact app and Used Camera Gear store. Origin, Referer, query keys, and production API keys never authorize. Existing credential records are never reported as proof of remote connectivity. |
+| Webhooks | Shopify and eBay webhook endpoints acknowledge receipts and dispatch no order, listing, price, inventory, fulfillment, pipeline, or watcher work. HMAC-valid Shopify receipts produce only a sanitized process log. Unauthenticated eBay receipts are not parsed and receive a static no-op acknowledgement. Neither route persists payload or receipt evidence. |
 | Legacy CLI | The `ebaysync` executable exposes only `status`. Former authentication, sync, import, publish, republish, watcher, pipeline, image, settings, and other action commands are not registered. |
 | eBay adapter | The base eBay client denies every method except `GET` and `HEAD`. Individual inventory, offer, listing, notification-preference, and fulfillment mutators also deny at their entry points. |
 | Shopify adapters | Shopify order creation and inventory-setting functions deny before credential loading or network access. |
 | Service functions | Legacy order, price, inventory, listing, fulfillment, draft-listing, image-upload, and related mutation services deny before their former external work. This prevents direct imports from bypassing HTTP or CLI controls. |
 
-The API middleware intentionally denies benign application POST/PUT/DELETE operations too. This broad posture prevents a forgotten route, chat-generated request, test endpoint, or legacy helper from becoming an alternate commerce-write path. A future narrower API must be introduced only with an explicit responsibility-specific design and authorization.
+The API middleware intentionally denies benign application POST/PUT/DELETE operations too. This broad posture prevents a forgotten route, chat-generated request, test endpoint, or legacy helper from becoming an alternate commerce-write path. The source runtime also allowlists only three redacted GET endpoints, so customer/order/log/settings/test readers and remote token-refresh readers are not reachable. A future wider API must be introduced only with an explicit responsibility-specific design and authorization.
 
 ### Local state that can still change
 
-`shadow-read-only` means no external Shopify/eBay commerce mutation. It does not mean the process is byte-for-byte read-only locally:
+The mounted web runtime is also storage-read-only:
 
-- normal server startup can initialize or migrate the local SQLite schema and seed help content;
-- verified webhooks can append redacted receipt metadata to the local notification log;
-- operator `preflight`, `ownership`, and `reconcile` commands append redacted hash-chained audit records beneath `.local/`; and
+- startup does not initialize, migrate, or seed the application database;
+- local-ledger views open only an existing SQLite file with `readonly`, `fileMustExist`, and `query_only` enforced, then close it;
+- operator `preflight`, `ownership`, and `reconcile` commands may append redacted hash-chained audit records beneath `.local/`; and
 - an operator may place an explicitly prepared reconciliation snapshot beneath `.local/operator-reconciliation/`.
 
-None of those local writes creates or changes a Shopify order, eBay order, listing, price, inventory level, fulfillment, Marketplace Connect setting, or cutover watermark.
+Those operator-owned `.local/` files are outside the web runtime and Git. None creates or changes a Shopify order, eBay order, listing, price, inventory level, fulfillment, Marketplace Connect setting, application-ledger row, or cutover watermark.
 
 ## Operator-visible status
 
@@ -74,13 +74,15 @@ npm run operator -- audit verify \
   --file .local/operator-audit/operator-cli.jsonl
 ```
 
-`reconcile` reads one strict, redacted, repository-local snapshot. It has no Shopify, eBay, Marketplace Connect, Railway, credential, application-database, sync, import, or publish adapter. The snapshot must:
+`reconcile` reads one strict, redacted, repository-local version-2 snapshot with independent provenance for ProductPipeline, Shopify, eBay, and Marketplace Connect. It has no Shopify, eBay, Marketplace Connect, Railway, credential, application-database, sync, import, or publish adapter. The snapshot must:
 
 - be a regular, non-symlink JSON file beneath `.local/operator-reconciliation/`;
 - be at most 4 MiB, with at most 5,000 records in any collection;
 - be no more than 24 hours old, with identities exactly matching the operator config;
 - contain only normalized stable platform IDs, SKU, price/inventory values, statuses, owners, and canonical UTC timestamps; and
 - exclude tokens, cookies, authorization material, buyers, customers, names, email, phone, addresses, notes, tags, line items, and raw payloads.
+- bind each normalized dataset to its digest, source subject, bounded query, capture/as-of time, and pagination/count evidence; partial or unavailable sources remain blockers.
+- reject ambiguous duplicate Shopify/eBay SKUs rather than silently choosing a row for price or inventory comparison.
 
 The result is either `consistent-with-supplied-snapshots` or `exceptions-found`. It always records:
 

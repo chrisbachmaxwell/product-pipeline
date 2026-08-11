@@ -3,24 +3,16 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getDb, getRawDb } from '../db/client.js';
 import { info, error as logError } from '../utils/logger.js';
 
 // Route imports
 import healthRoutes from './routes/health.js';
-import apiRoutes from './routes/api.js';
 import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
-import helpRoutes from './routes/help.js';
-import featureRoutes from './routes/features.js';
-import ebayOrderRoutes from './routes/ebay-orders.js';
-import ebayMetadataRoutes from './routes/ebay-metadata.js';
-import migrationRoutes from './routes/migration.js';
+import shadowApiRoutes from './routes/shadow-api.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
 import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
-import { initPhotoTemplatesTable } from '../services/photo-templates.js';
-import { seedHelpArticles } from './seeds/help-articles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,19 +75,19 @@ app.use('/webhooks/shopify', express.raw({ type: 'application/json' }), (req, _r
 // Raw body for eBay XML notifications
 app.use('/webhooks/ebay', express.text({ type: ['text/xml', 'application/xml', 'application/soap+xml'] }));
 
-// JSON for everything else
-app.use(express.json({ limit: '50mb' }));
+// Shadow APIs have no JSON write payload. Keep a small parser ceiling so an
+// unauthenticated request cannot allocate a legacy bulk-upload-sized body.
+app.use(express.json({ limit: '64kb' }));
 
 // --- Test Mode ---
 app.use(testModeMiddleware);
-app.get('/api/test-mode', testModeRoute);
+if (isTestMode()) {
+  app.get('/api/test-mode', testModeRoute);
+}
 
 // --- Security Middleware ---
 app.use(rateLimit);
-// In TEST_MODE, skip API key auth so browser tests can hit routes directly
-if (!isTestMode()) {
-  app.use('/api', apiKeyAuth);
-}
+app.use('/api', apiKeyAuth);
 
 // Shadow-mode invariant: every state-changing API request is denied before a
 // legacy handler can load credentials, touch the database, or contact a platform.
@@ -103,42 +95,19 @@ app.use('/api', writerQuarantineMiddleware);
 
 // --- Routes ---
 app.use(healthRoutes);
-app.use(migrationRoutes);
-app.use(apiRoutes);
+app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);
 app.use(shopifyWebhookRoutes);
-app.use(helpRoutes);
-app.use(featureRoutes);
-app.use(ebayOrderRoutes);
-app.use(ebayMetadataRoutes);
 
-// --- Capabilities discovery endpoint ---
-app.get('/api/capabilities', (_req, res) => {
-  res.json({
-    capabilities: [
-      {
-        id: 'migration-status',
-        name: 'Migration status',
-        description: 'Read the enforced ownership and writer-quarantine state.',
-        method: 'GET',
-        endpoint: '/api/migration/status',
-      },
-      {
-        id: 'local-listings',
-        name: 'Local listing observations',
-        description: 'View local mapping records without changing Shopify or eBay.',
-        method: 'GET',
-        endpoint: '/api/listings',
-      },
-    ],
-    mutationCapabilities: [],
-    legacyMutationCapabilitiesUnmounted: true,
-  });
+// No legacy API handler may fall through to the static app or become reachable
+// through an accidental route import.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API route is not available in shadow mode' });
 });
 
 // Serve static frontend (built Vite app)
 const webDistPath = path.join(__dirname, '..', '..', 'dist', 'web');
-app.use(express.static(webDistPath));
+app.use(express.static(webDistPath, { index: false }));
 
 // Global error handler - prevent stack trace exposure
 app.use((err: any, req: any, res: any, next: any) => {
@@ -184,7 +153,7 @@ app.get('/{*path}', (req, res) => {
         message: 'Frontend not built yet. Run: npm run build:web',
         endpoints: {
           health: '/health',
-          api: '/api/status',
+          api: '/api/migration/status',
         },
       });
     }
@@ -194,30 +163,10 @@ app.get('/{*path}', (req, res) => {
 // --- Initialize and Start ---
 async function start() {
   try {
-    // Initialize database (creates tables if needed)
-    await getDb();
-    const rawDb = await getRawDb();
-    info('[Server] Database initialized');
-
-    // Ensure new tables exist
-    initExtraTables(rawDb);
-
-    // Phase 3: Initialize photo templates table
-    await initPhotoTemplatesTable();
-
-    // Seed default settings
-    seedDefaultSettings(rawDb);
-
-    // Seed help articles (idempotent — skips existing articles)
-    seedHelpArticles(rawDb);
-
-    // Seed default field mappings
-    // seedDefaultMappings handled by db/client.ts using attribute_mappings table
-
     app.listen(PORT, () => {
       info(`[Server] ProductPipeline running on http://localhost:${PORT}`);
       info(`[Server] Health: http://localhost:${PORT}/health`);
-      info(`[Server] API: http://localhost:${PORT}/api/status`);
+      info(`[Server] API: http://localhost:${PORT}/api/migration/status`);
     });
 
     info('[Safety] Shadow read-only mode active; scheduler and watcher are not mounted');
@@ -226,165 +175,6 @@ async function start() {
     logError(`[Server] Failed to start: ${err}`);
     process.exit(1);
   }
-}
-
-/**
- * Create extra tables for the web app (notification_log, settings)
- */
-function initExtraTables(db: import('better-sqlite3').Database) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS notification_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source TEXT NOT NULL,
-      topic TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      processedAt TEXT,
-      status TEXT DEFAULT 'received',
-      error TEXT,
-      createdAt TEXT DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updatedAt TEXT DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS field_mappings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mapping_type TEXT NOT NULL,
-      source_value TEXT,
-      target_value TEXT NOT NULL,
-      is_default BOOLEAN DEFAULT FALSE,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-
-  info('[Server] Extra tables initialized');
-}
-
-/**
- * Seed default settings if they don't exist
- */
-function seedDefaultSettings(db: import('better-sqlite3').Database) {
-  const defaults: Record<string, string> = {
-    sync_price: 'false',
-    sync_inventory: 'false',
-    auto_list: 'false',
-    sync_interval_minutes: '5',
-    auto_sync_enabled: 'false',  // MUST be explicitly enabled
-    // eBay order import go-live cutoff (ISO timestamp). Empty = live order
-    // import refuses to run. Set when switching off Marketplace Connect.
-    ebay_order_import_cutoff: '',
-    // GCS photo-arrival watcher (only active when DRIVE_MODE=cloud)
-    cloud_watcher_enabled: 'true',
-    item_location: '305 W 700 S, Salt Lake City, UT 84101',
-    // AI Listing Management
-    listing_management_enabled: 'false',  // MUST be explicitly enabled
-    republish_max_age_days: '30',
-    price_drop_after_days: '14',
-    price_drop_percent: '10',
-  };
-
-  const stmt = db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`);
-  for (const [key, value] of Object.entries(defaults)) {
-    stmt.run(key, value);
-  }
-}
-
-/**
- * Seed default field mappings if they don't exist
- */
-function seedDefaultMappings(db: import('better-sqlite3').Database) {
-  const checkExisting = db.prepare(`SELECT COUNT(*) as count FROM field_mappings`).get() as any;
-  if (checkExisting?.count > 0) {
-    return; // Already seeded
-  }
-
-  const stmt = db.prepare(`
-    INSERT INTO field_mappings (mapping_type, source_value, target_value, is_default) 
-    VALUES (?, ?, ?, ?)
-  `);
-
-  // Condition mappings
-  const conditionMappings = [
-    ['condition', 'New', 'NEW', false],
-    ['condition', 'Like New', 'LIKE_NEW', false],
-    ['condition', 'Mint', 'LIKE_NEW', false],
-    ['condition', 'Excellent', 'VERY_GOOD', false],
-    ['condition', 'Good', 'GOOD', false],
-    ['condition', 'Fair', 'ACCEPTABLE', false],
-    ['condition', 'Acceptable', 'ACCEPTABLE', false],
-    ['condition', 'For Parts', 'FOR_PARTS_OR_NOT_WORKING', false],
-    ['condition', null, 'GOOD', true], // Default condition
-  ];
-
-  // Field mappings
-  const fieldMappings = [
-    ['field', 'title', 'Title', false],
-    ['field', 'body_html', 'Description', false],
-    ['field', 'vendor', 'Brand', false],
-    ['field', 'images[0]', 'GalleryURL', false],
-  ];
-
-  // Category mappings (from existing mapper.ts)
-  const categoryMappings = [
-    ['category', 'Camera', '31388', false],
-    ['category', 'Cameras', '31388', false],
-    ['category', 'Mirrorless', '31388', false],
-    ['category', 'DSLR', '31388', false],
-    ['category', 'Lens', '3323', false],
-    ['category', 'Lenses', '3323', false],
-    ['category', 'Flash', '48515', false],
-    ['category', 'Strobe', '48515', false],
-    ['category', 'Light', '183331', false],
-    ['category', 'LED', '183331', false],
-    ['category', 'Tripod', '30090', false],
-    ['category', 'Monopod', '30090', false],
-    ['category', 'Gimbal', '183329', false],
-    ['category', 'Stabilizer', '183329', false],
-    ['category', 'Head', '30090', false],
-    ['category', 'Bag', '16031', false],
-    ['category', 'Case', '16031', false],
-    ['category', 'Backpack', '16031', false],
-    ['category', 'Filter', '48518', false],
-    ['category', 'Memory', '96991', false],
-    ['category', 'Card', '96991', false],
-    ['category', 'SD', '96991', false],
-    ['category', 'Battery', '48511', false],
-    ['category', 'Charger', '48511', false],
-    ['category', 'Video', '29996', false],
-    ['category', 'Cinema', '29996', false],
-    ['category', 'Monitor', '29996', false],
-    ['category', 'Cable', '182094', false],
-    ['category', 'Adapter', '182094', false],
-    ['category', 'Converter', '182094', false],
-    ['category', null, '48519', true], // Default: Other Camera Accessories
-  ];
-
-  // Inventory location mapping
-  const inventoryMappings = [
-    ['inventory_location', 'default', 'all', true],
-  ];
-
-  // Insert all mappings
-  const allMappings = [
-    ...conditionMappings,
-    ...fieldMappings,
-    ...categoryMappings,
-    ...inventoryMappings,
-  ];
-
-  for (const mapping of allMappings) {
-    stmt.run(...mapping);
-  }
-
-  info('[Server] Seeded default field mappings');
 }
 
 start();

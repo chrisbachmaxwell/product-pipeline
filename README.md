@@ -6,6 +6,8 @@
 
 > **Enforced application state:** ProductPipeline is hard-coded in shadow read-only mode. Marketplace Connect owns production order import, price, and inventory; every non-read `/api` request is denied, background writers are unmounted, and low-level commerce writers fail closed. See [`docs/WRITER_QUARANTINE.md`](docs/WRITER_QUARANTINE.md) for operator behavior, enforcement layers, and proof limits.
 
+> **Evidence state:** The embedded runtime exposes only authenticated, redacted shadow reads. The operator reconciler accepts strict version-2 offline evidence with independent Shopify, eBay, Marketplace Connect, and ProductPipeline provenance. No authoritative Shopify/eBay snapshot or current Marketplace Connect export has been captured yet, so parity and every canary remain blocked. See [`docs/READ_ONLY_PARITY.md`](docs/READ_ONLY_PARITY.md).
+
 > Formerly "ebay-sync-app" / "Product Bridge". The current GitHub repository name is `product-pipeline`; a future product rename is anticipated but not authorized yet.
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
@@ -21,7 +23,7 @@ npm run operator -- reconcile --config config/operator-shadow.example.json --sna
 npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 ```
 
-The checked-in example intentionally reports unresolved ownership blockers outside the accepted order/price/inventory baseline. Passing a check proves only the declared local configuration or supplied snapshot—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
+The checked-in example intentionally reports unresolved ownership blockers outside the accepted order/price/inventory baseline. Passing a check proves only the declared local configuration or internally consistent supplied evidence—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
 
 ## Features
 
@@ -207,7 +209,7 @@ SQLite at `~/.clawdbot/ebaysync.db` with tables:
 ## eBay Account
 
 - **Seller:** usedcam-0 (https://www.ebay.com/usr/usedcam-0)
-- **Location:** 305 W 700 S, Salt Lake City, UT 84101
+- **Location:** supplied by the approved eBay listing policy; not embedded in this operator guide
 - **Current incumbent:** Marketplace Connect (Codisto); ProductPipeline replacement is gated and not yet complete
 
 ## Tech Stack
@@ -221,17 +223,17 @@ SQLite at `~/.clawdbot/ebaysync.db` with tables:
 
 ## TEST_MODE (Browser Testing)
 
-Set `TEST_MODE=true` to run the app on localhost without Shopify authentication or the admin iframe. This is for automated browser testing (QA agents, Playwright, etc.).
+Set `NODE_ENV=test` (or `development`) together with `TEST_MODE=true` to run the app locally without Shopify authentication or the admin iframe. Test mode fails closed when `NODE_ENV` is missing or `production`.
 
 ```bash
-TEST_MODE=true npm run dev
+NODE_ENV=test TEST_MODE=true npm run dev
 ```
 
 What it does:
-- **Skips API key auth** — all `/api/*` routes are accessible without credentials
+- **Skips API auth locally** — only the explicit shadow-read API allowlist is reachable
 - **Injects a mock Shopify session** — routes that expect a session get `test-store.myshopify.com`
 - **Allows localhost CORS** — no origin restrictions for local requests
 - **Disables App Bridge** — the frontend renders standalone (no Shopify admin iframe required)
 - **`GET /api/test-mode`** — returns `{ testMode: true }` so QA tools can verify the mode
 
-⚠️ **Never deploy with TEST_MODE=true** — it disables all authentication.
+Production rejects test mode regardless of `TEST_MODE`. Never rely on that guard as a substitute for correct environment configuration.

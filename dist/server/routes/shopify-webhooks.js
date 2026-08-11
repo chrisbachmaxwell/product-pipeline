@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import { loadShopifyCredentials } from '../../config/credentials.js';
-import { getRawDb } from '../../db/client.js';
-import { MARKETPLACE_CONNECT_BASELINE } from '../../safety/writer-quarantine.js';
-import { info, warn, error as logError } from '../../utils/logger.js';
+import { info, warn } from '../../utils/logger.js';
 const router = Router();
 async function verifyShopifyWebhook(req) {
     try {
@@ -21,30 +19,19 @@ async function verifyShopifyWebhook(req) {
     }
 }
 /**
- * Shopify webhooks remain observable, but every former dispatch path is
- * intentionally unmounted during the Marketplace Connect incumbent phase.
+ * Shopify webhooks retain verified process-log observability, but every former
+ * dispatch path and database receipt write is intentionally absent during the
+ * Marketplace Connect incumbent phase.
  */
 router.post('/webhooks/shopify/:topic', async (req, res) => {
     res.status(200).send('OK_READ_ONLY');
     const rawTopic = req.params.topic || req.get('X-Shopify-Topic') || 'unknown';
-    const topic = Array.isArray(rawTopic) ? rawTopic[0] : rawTopic;
+    const suppliedTopic = Array.isArray(rawTopic) ? rawTopic[0] : rawTopic;
+    const topic = /^[A-Za-z0-9._-]{1,80}$/.test(suppliedTopic) ? suppliedTopic : 'unknown';
     if (!(await verifyShopifyWebhook(req))) {
         warn(`[Shopify Webhook] HMAC verification failed: ${topic}`);
         return;
     }
-    try {
-        const evidence = JSON.stringify({
-            mode: MARKETPLACE_CONNECT_BASELINE.effectiveMode,
-            topic,
-            writerDispatched: false,
-            payloadStored: false,
-        });
-        const db = await getRawDb();
-        db.prepare(`INSERT INTO notification_log (source, topic, message, processed_at) VALUES (?, ?, ?, unixepoch())`).run('shopify', topic, evidence);
-        info(`[Shopify Webhook] ${topic} verified in shadow mode; no writer dispatched`);
-    }
-    catch (error) {
-        logError(`[Shopify Webhook] Redacted receipt error: ${error instanceof Error ? error.message : 'unknown'}`);
-    }
+    info(`[Shopify Webhook] ${topic} verified in shadow mode; no payload persisted or writer dispatched`);
 });
 export default router;

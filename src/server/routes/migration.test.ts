@@ -24,10 +24,44 @@ describe('migration status projection', () => {
     expect(result.externalWritesAllowed).toBe(false);
     expect(result.historicalBackfillAllowed).toBe(false);
     expect(result.cutoverWatermarkUtc).toBeNull();
-    expect(result.sourceOfTruth.productionWriter).toBe('shopify-marketplace-connect');
+    expect(result.servedAt).toBe('2026-08-11T18:00:00.000Z');
+    expect(result).not.toHaveProperty('observedAt');
+    expect(result.sourceOfTruth.acceptedProductionWriterBaseline).toBe(
+      'shopify-marketplace-connect',
+    );
+    expect(result.sourceOfTruth.baselineEvidence).toBe(
+      'operator-attested-browser-observation',
+    );
     expect(result.reconciliation.orderCreationEligible).toBe(false);
     expect(result.reconciliation.counts.historicalOrdersIneligible).toBe(244);
     expect(result.reconciliation.exceptions).toHaveLength(6);
+    expect(result.reconciliation.exceptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'STALE_LEGACY_SETTING',
+          setting: 'auto_sync_enabled',
+          matchesExpected: false,
+          effectiveBehavior: 'quarantined',
+        }),
+      ]),
+    );
+    expect(result.evidence.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          system: 'shopify',
+          evidenceClass: 'unavailable',
+          capturedAtUtc: null,
+        }),
+        expect.objectContaining({
+          system: 'marketplace-connect',
+          status: 'partial',
+          baselineDate: '2026-08-11',
+        }),
+      ]),
+    );
+    expect(
+      result.responsibilityEvidence.find((entry) => entry.responsibility === 'listingLifecycle'),
+    ).toEqual(expect.objectContaining({ acceptedOwner: 'unverified', canaryReady: false }));
     expect(
       result.responsibilities.find((entry) => entry.responsibility === 'orderImport'),
     ).toEqual(
@@ -53,5 +87,33 @@ describe('migration status projection', () => {
     );
 
     expect(serialized).not.toMatch(/access[_-]?token|refresh[_-]?token|password|buyer|email|address/i);
+  });
+
+  it('never returns a raw protected-setting value in status exceptions', () => {
+    const result = buildMigrationStatus(
+      {
+        listingMappings: 0,
+        orderMappings: 0,
+        historicalEbayOrders: 0,
+        settings: {
+          auto_sync_enabled: 'Bearer must-not-escape',
+          sync_price: 'operator@example.com',
+        },
+      },
+      '2026-08-11T18:00:00.000Z',
+    );
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain('must-not-escape');
+    expect(serialized).not.toContain('operator@example.com');
+    expect(result.reconciliation.exceptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'STALE_LEGACY_SETTING',
+          matchesExpected: false,
+          effectiveBehavior: 'quarantined',
+        }),
+      ]),
+    );
   });
 });

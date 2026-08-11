@@ -1,3 +1,4 @@
+import { type Request, type Response } from 'express';
 declare const router: import("express-serve-static-core").Router;
 type LocalMigrationState = {
     listingMappings: number;
@@ -5,11 +6,88 @@ type LocalMigrationState = {
     historicalEbayOrders: number;
     settings: Record<string, string>;
 };
-export declare function buildMigrationStatus(local: LocalMigrationState, observedAt?: string): {
+export declare function buildMigrationStatus(local: LocalMigrationState, servedAt?: string): {
     sourceOfTruth: {
-        productionWriter: string;
+        acceptedProductionWriterBaseline: string;
+        baselineEvidence: string;
+        baselineDate: string;
         productPipelineScope: string;
     };
+    evidence: {
+        sources: ({
+            sourceId: string;
+            system: string;
+            evidenceClass: string;
+            acquisition: string;
+            status: string;
+            capturedAtUtc: null;
+            completeness: string;
+            freshness: string;
+            counts: {
+                listingMappings: number;
+                orderMappings: number;
+                historicalEbayOrders: number;
+            } | {
+                listingMappings?: undefined;
+                orderMappings?: undefined;
+                historicalEbayOrders?: undefined;
+            };
+            normalizedPayloadDigest: null;
+            limitations: string[];
+            baselineDate?: undefined;
+            coverage?: undefined;
+        } | {
+            sourceId: string;
+            system: string;
+            evidenceClass: string;
+            acquisition: string;
+            status: string;
+            capturedAtUtc: null;
+            completeness: string;
+            freshness: string;
+            normalizedPayloadDigest: null;
+            limitations: string[];
+            counts?: undefined;
+            baselineDate?: undefined;
+            coverage?: undefined;
+        } | {
+            sourceId: string;
+            system: string;
+            evidenceClass: string;
+            acquisition: string;
+            status: string;
+            capturedAtUtc: null;
+            baselineDate: string;
+            completeness: string;
+            freshness: string;
+            coverage: {
+                complete: boolean;
+                records: number;
+                pages: number;
+            };
+            normalizedPayloadDigest: null;
+            limitations: string[];
+            counts?: undefined;
+        })[];
+    };
+    responsibilityEvidence: ({
+        responsibility: "orderImport" | "price" | "inventory";
+        acceptedOwner: string;
+        observedOwner: string;
+        evidenceStatus: string;
+        capturedAtUtc: null;
+        baselineDate: string;
+        canaryReady: boolean;
+        summary: string;
+    } | {
+        responsibility: "listingLifecycle" | "fulfillment" | "mapping" | "feedback";
+        acceptedOwner: string;
+        observedOwner: null;
+        evidenceStatus: string;
+        capturedAtUtc: null;
+        canaryReady: boolean;
+        summary: string;
+    })[];
     reconciliation: {
         scope: string;
         generatedAt: string;
@@ -27,8 +105,8 @@ export declare function buildMigrationStatus(local: LocalMigrationState, observe
         exceptions: {
             code: string;
             setting: string;
-            observed: string;
-            expected: string;
+            detail: string;
+            matchesExpected: boolean;
             effectiveBehavior: string;
         }[];
         audit: {
@@ -42,7 +120,7 @@ export declare function buildMigrationStatus(local: LocalMigrationState, observe
     historicalBackfillAllowed: false;
     cutoverWatermarkUtc: null;
     remoteVerification: "not-performed";
-    observedAt: string;
+    servedAt: string;
     responsibilities: ({
         owner: "marketplace-connect";
         productPipelineAccess: "disabled";
@@ -75,4 +153,5 @@ export declare function buildMigrationStatus(local: LocalMigrationState, observe
         runtimeOverrideAvailable: false;
     };
 };
+export declare function migrationStatusHandler(_req: Request, res: Response): Promise<void>;
 export default router;

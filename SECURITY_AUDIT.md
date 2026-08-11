@@ -1,21 +1,31 @@
 # eBay Sync App - Security Audit Report
 *Conducted: February 11, 2026*
 
+> **Historical report — superseded.** On 2026-08-11, a legacy production-like API key was found committed in `test-mappings.js` and mapping documentation. The current files have been redacted and the live mapping script is network-inert, but Git history still contains the former value. Treat that credential as exposed and rotate it through the authorized deployment owner. Current production API authorization must not trust the legacy API key; see `PROJECT_BRAIN.md` and `docs/READ_ONLY_PARITY.md`.
+
 ## Executive Summary
 
-The eBay Sync App has been audited for security vulnerabilities and configured for production deployment on Railway. Multiple security improvements have been implemented to protect the application and its data.
+The original February report stated that the eBay Sync App was production-ready. That conclusion is superseded and must not be used as current assurance.
+
+## Current correction — 2026-08-11
+
+- Production API-key, query-key, Referer, and Origin authorization are no longer accepted. The shadow runtime requires a verified Shopify App Bridge session JWT for the exact app and Used Camera Gear store.
+- Only migration status, projected local listings, and capability metadata API reads are mounted; legacy customer/order/log/settings/test and remote-reader routes are unmounted.
+- All commerce writers remain hard-quarantined. This is a safety boundary, not Shopify/eBay/Marketplace Connect parity proof.
+- The former hard-coded API key remains exposed in Git history and still requires external-owner rotation.
+- CORS, rate limiting, redacted output, and local tests are defense-in-depth; they do not establish production security or platform identity by themselves.
 
 ## Security Issues Found & Fixed
 
-### 🔐 **Authentication - FIXED**
+### 🔐 **Authentication - historical implementation**
 **Issue**: API endpoints were completely unprotected
 **Impact**: Anyone could access sensitive order/product data and trigger operations
-**Fix**: 
+**Historical fix**:
 - Added API key authentication middleware for all `/api/*` routes
 - API key required via `X-API-Key` header or `api_key` query parameter
 - Health endpoint remains public for monitoring
 
-### ⚡ **Rate Limiting - FIXED**
+### ⚡ **Rate Limiting - historical implementation**
 **Issue**: No rate limiting protection against abuse
 **Impact**: API could be overwhelmed by rapid requests
 **Fix**:
@@ -23,7 +33,7 @@ The eBay Sync App has been audited for security vulnerabilities and configured f
 - Returns proper HTTP 429 with rate limit headers
 - Automatic token refill over time
 
-### 🌐 **CORS Configuration - IMPROVED**
+### 🌐 **CORS Configuration - historical implementation**
 **Issue**: CORS was too permissive (any *.shopify.com domain)
 **Impact**: Potential cross-origin attacks from malicious subdomains
 **Fix**:
@@ -31,7 +41,7 @@ The eBay Sync App has been audited for security vulnerabilities and configured f
 - Added dynamic origin validation function
 - Included app's own domain in allowed origins
 
-### 🔒 **Error Handling - FIXED**
+### 🔒 **Error Handling - historical implementation**
 **Issue**: Stack traces could be exposed in production
 **Impact**: Information disclosure could aid attackers
 **Fix**:
@@ -39,14 +49,14 @@ The eBay Sync App has been audited for security vulnerabilities and configured f
 - Stack traces hidden in production (`NODE_ENV=production`)
 - Proper error sanitization
 
-### 🎣 **Webhook Security - IMPROVED**
+### 🎣 **Webhook Security - historical implementation**
 **Issue**: Shopify webhooks proceeded even with invalid signatures
 **Impact**: Malicious webhook calls could trigger unintended actions
 **Fix**:
 - Signature verification now blocks processing on failure
 - Improved error handling for missing raw body
 
-### 💾 **Database Configuration - SECURED**
+### 💾 **Database Configuration - historical implementation**
 **Issue**: Database path was hardcoded to local filesystem
 **Impact**: No persistent storage on Railway platform
 **Fix**:
@@ -54,9 +64,9 @@ The eBay Sync App has been audited for security vulnerabilities and configured f
 - Configured Railway volume mounted at `/data`
 - Backwards compatible with local development
 
-## Issues Not Found ✅
+## Historical findings that are no longer reliable
 
-- **No hardcoded secrets** - All credentials loaded from external files/env vars
+- **No hardcoded secrets** - Invalidated by the API key later found in tracked files and Git history
 - **No SQL injection risks** - Uses parameterized queries throughout
 - **Health endpoint appropriate** - Only exposes basic status, no sensitive data
 - **No console.log secrets** - Logger utility used properly
@@ -99,10 +109,10 @@ Based on code analysis, these credentials will be needed:
 
 1. **Set API credentials** - Configure the eBay and Shopify environment variables above
 2. **Monitor logs** - Watch for auth failures and rate limit hits
-3. **API key distribution** - Share the generated API key securely with authorized clients
+3. **Credential remediation** - Rotate the historically exposed API key; do not distribute or restore production API-key authorization
 4. **Regular updates** - Keep dependencies updated for security patches
 5. **Backup strategy** - Consider periodic volume backups for the SQLite database
 
-## Security Score: 🟢 GOOD
+## Current security conclusion: not a production-parity attestation
 
-The application is now production-ready from a security perspective. All major vulnerabilities have been addressed, and proper safeguards are in place.
+The current shadow runtime is intentionally fail-closed, but this historical audit does not prove production security, current credential scope, external integration health, or replacement readiness. Use current source tests, `PROJECT_BRAIN.md`, `docs/WRITER_QUARANTINE.md`, and `docs/READ_ONLY_PARITY.md` for the active safety boundary and remaining blockers.

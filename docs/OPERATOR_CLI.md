@@ -61,16 +61,20 @@ npm run operator -- reconcile \
   --snapshot .local/operator-reconciliation/snapshot.json
 ```
 
-`reconcile` accepts one strict JSON bundle with schema version `1`, kind `product-pipeline-shadow-reconciliation`, a canonical UTC capture time, identities matching the operator config exactly, and these normalized sections:
+`reconcile` accepts one strict JSON bundle with schema version `2`, kind `product-pipeline-shadow-reconciliation`, identities matching the operator config exactly, and four independently provenance-bearing source bundles:
 
 - ProductPipeline listing links and order observations;
 - Shopify variant price/inventory and eBay-source order links;
 - eBay inventory/offer/listing state and order identities; and
-- Marketplace Connect order-import, price-sync, and inventory-sync status.
+- Marketplace Connect order-import, price-sync, and inventory-sync settings.
 
-Snapshots are capped at 4 MiB and 5,000 rows per collection. The file must be a regular, non-symlink file beneath `.local/operator-reconciliation/`. Unknown fields and secret-like or personal-data fields are rejected. A snapshot must contain only stable platform IDs, SKU, normalized price/inventory, status, owner, and timestamps—never names, titles, buyers, customers, email, phone, addresses, notes, tags, line items, raw payloads, tokens, cookies, or authorization material.
+Each source is explicitly `complete`, `partial`, or `unavailable` and records its system-specific subject, acquisition method and attestation class, collector name/version/build, capture and as-of window, bounded query scope, pagination completion, page/record/reported totals, normalization/redaction versions, and normalized dataset digest. Partial and unavailable sources are valid evidence of a gap: they parse but block every dependent responsibility. The command evaluates freshness per source, rejects future timestamps and excessive cross-source skew, and never substitutes the bundle-generation time for source observation time.
 
-This command has no snapshot exporter and no live adapter. A trusted, separately reviewed process must create the redacted bundle. Reconciliation never reads the application database or credential files and never contacts a platform. An unlinked eBay order is reported as an incumbent-owned exception; it is never an import candidate.
+Direct Shopify/eBay evidence also requires an explicit API version and terminal-cursor digest. A complete source needs at least one terminal page, exact normalized/reported counts (including an explicitly proven zero result), complete pagination, terminal proof, and a matching dataset digest. Version 2 intentionally marks all nine operational responsibilities with `model-coverage-incomplete`: it does not yet represent listing policies/aspects/conditions, Marketplace Connect per-item links, price transformation rules, inventory location/reservation semantics, fulfillment, or feedback. Only the meta reconciliation responsibility can be internally consistent under this schema, and that still is not live proof or parity.
+
+Snapshots are capped at 4 MiB and 5,000 rows per collection. The file must be a regular, non-symlink file beneath `.local/operator-reconciliation/`. Unknown fields, identity/subject mismatches, count or digest mismatches, ambiguous duplicate Shopify/eBay SKUs, and secret-like or personal-data fields are rejected or reported as critical blockers. A snapshot contains only stable platform IDs, SKU, normalized price/inventory, status, owner, and timestamps—never names, titles, buyers, customers, email, phone, addresses, notes, tags, line items, raw payloads, tokens, cookies, or authorization material.
+
+This command has no snapshot exporter and no live adapter. A trusted, separately reviewed process must create the redacted bundle. Reconciliation never reads the application database or credential files and never contacts a platform. An unlinked eBay order is reported as an incumbent-owned exception; it is never an import candidate. See `docs/READ_ONLY_PARITY.md` for the current source matrix, verified ownership gaps, and live-collector gate.
 
 Verify the local audit chain:
 
@@ -103,10 +107,12 @@ npx vitest run src/operator-cli/__tests__
 npx tsc --noEmit
 ```
 
-Coverage includes unsafe-mode, writer, backfill, cutover, secret, personal-data, unknown-field, wildcard, identity, snapshot path, stale evidence, duplicate-order, observed price/inventory difference, no-network/no-database, command-boundary, audit-link, tamper, incomplete-write, and concurrent-lock denials.
+Coverage includes unsafe-mode, writer, backfill, cutover, secret, personal-data, unknown-field, wildcard, identity/subject, snapshot path, per-source stale/future/skew, pagination/count/digest, duplicate ID/SKU, duplicate order, observed price/inventory difference, unavailable-source, no-network/no-database, command-boundary, audit-link, tamper, incomplete-write, and concurrent-lock denials.
 
 ## Next gate
 
-The offline reconciliation result is deliberately limited to `consistent-with-supplied-snapshots` or `exceptions-found`. Every result states `liveProof: false`, `productionParity: false`, `externalWrites: 0`, `historicalBackfill: false`, and `orderCreationEligible: false`.
+The offline reconciliation result is deliberately limited to `consistent-with-supplied-snapshots` or `exceptions-found`. It reports per-source blockers and per-responsibility evidence state. Every result states `liveProof: false`, `productionParity: false`, `externalWrites: 0`, `historicalBackfill: false`, and `orderCreationEligible: false`.
+
+The pure evaluator in `src/safety/canary-readiness.ts` models the evidence, one-target/one-responsibility, exact Shopify/eBay account scope, ownership-version binding, observation window, expected before/after digests, single-writer proof, approval chronology, durable account-scoped idempotency, watermark, audit, reconciliation, and rollback facts a future canary packet would need. It is intentionally not imported by the runtime and returns `canaryAuthorized: false` and `externalWritesAllowed: false` even when a synthetic packet satisfies every modeled prerequisite.
 
 This slice does not authorize a live adapter, sandbox/live write, order or listing creation, ownership cutover, Marketplace Connect change, or production-parity claim. A future live read adapter requires its own credential boundary, read-only transport, redaction contract, and deployment review.

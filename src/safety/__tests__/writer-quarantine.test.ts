@@ -52,6 +52,8 @@ describe('writer quarantine policy', () => {
     expect(status.externalWritesAllowed).toBe(false);
     expect(status.historicalBackfillAllowed).toBe(false);
     expect(status.cutoverWatermarkUtc).toBeNull();
+    expect(status.servedAt).toBe('2026-08-11T18:00:00.000Z');
+    expect(status).not.toHaveProperty('observedAt');
     expect(status.quarantine.runtimeOverrideAvailable).toBe(false);
     expect(MARKETPLACE_CONNECT_BASELINE.responsibilities.orderImport.owner).toBe(
       'marketplace-connect',
@@ -168,21 +170,35 @@ describe('writer entry points fail before network or database work', () => {
     expect(server).not.toMatch(/startSyncScheduler|startCloudWatcher|runOrderSync|runListingManagement/);
     expect(server).not.toMatch(/shopifyAuthRoutes|ebayAuthRoutes|routes\/shopify-auth|routes\/ebay-auth/);
     expect(ebayWebhook).not.toMatch(/runOrderSync|syncOrders|fetchAllEbayOrders/);
+    expect(ebayWebhook).not.toMatch(/getRawDb|parseStringPromise|INSERT\s+INTO|\.prepare\s*\(/i);
     expect(shopifyWebhook).not.toMatch(
       /syncProducts|updateProductOnEbay|updateEbayInventory|createShippingFulfillment|autoListProduct/,
     );
+    expect(shopifyWebhook).not.toMatch(/getRawDb|INSERT\s+INTO|\.prepare\s*\(/i);
   });
 
   it('keeps tracked executable artifacts aligned with the source quarantine', async () => {
     const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const distRoot = path.resolve(sourceRoot, '../dist');
     const server = await fs.readFile(path.join(distRoot, 'server/index.js'), 'utf8');
+    const auth = await fs.readFile(path.join(distRoot, 'server/middleware/auth.js'), 'utf8');
+    const shadowApi = await fs.readFile(path.join(distRoot, 'server/routes/shadow-api.js'), 'utf8');
+    const shadowDb = await fs.readFile(path.join(distRoot, 'server/shadow-db.js'), 'utf8');
     const cli = await fs.readFile(path.join(distRoot, 'cli/index.js'), 'utf8');
 
     expect(server).toMatch(/writerQuarantineMiddleware/);
+    expect(server).toMatch(/shadowApiRoutes/);
     expect(server).not.toMatch(
       /shopifyAuthRoutes|ebayAuthRoutes|startSyncScheduler|startCloudWatcher|chatRoutes|pipelineRoutes/,
     );
+    expect(server).not.toMatch(
+      /apiRoutes|ebayOrderRoutes|ebayMetadataRoutes|helpRoutes|featureRoutes|getDb|getRawDb|seedHelpArticles/,
+    );
+    expect(auth).toMatch(/decodeSessionToken|ALLOW_OPERATOR_API_KEY/);
+    expect(auth).not.toMatch(/req\.headers\.referer|req\.query\.api_key|sameOrigin/);
+    expect(shadowApi).toMatch(/openShadowDatabase/);
+    expect(shadowApi).not.toMatch(/getRawDb|getValidEbayToken|\bfetch\s*\(/);
+    expect(shadowDb).toMatch(/readonly:\s*true|fileMustExist:\s*true|query_only = ON/);
     expect(cli).toMatch(/\.command\(['"]status['"]\)/);
     expect(cli).not.toMatch(
       /\.command\(['"](?:sync|import|publish|inventory|orders|products|watcher|pipeline|drafts|images|listings|tim)['"]\)/,

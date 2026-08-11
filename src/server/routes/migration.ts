@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { getRawDb } from '../../db/client.js';
 import { getMigrationPolicyStatus } from '../../safety/writer-quarantine.js';
+import { openShadowDatabase } from '../shadow-db.js';
 
 const router = Router();
 
@@ -20,29 +20,134 @@ const PROTECTED_SETTING_EXPECTATIONS: Record<string, string> = {
   ebay_order_import_cutoff: '',
 };
 
+const MARKETPLACE_CONNECT_BASELINE_DATE = '2026-08-11';
+
+function buildEvidenceProjection(local: LocalMigrationState | null) {
+  const localCounts = local
+    ? {
+        listingMappings: local.listingMappings,
+        orderMappings: local.orderMappings,
+        historicalEbayOrders: local.historicalEbayOrders,
+      }
+    : {};
+
+  return {
+    sources: [
+      {
+        sourceId: 'product-pipeline-local-ledger',
+        system: 'product-pipeline',
+        evidenceClass: 'local-ledger-observation',
+        acquisition: 'application-runtime-counts',
+        status: local ? 'partial' : 'unavailable',
+        capturedAtUtc: null,
+        completeness: 'partial',
+        freshness: 'unknown',
+        counts: localCounts,
+        normalizedPayloadDigest: null,
+        limitations: [
+          'Runtime counts have no source-capture timestamp, pagination proof, or signed digest.',
+          'The ProductPipeline ledger is not authoritative Shopify or eBay state.',
+        ],
+      },
+      {
+        sourceId: 'shopify-authoritative-read',
+        system: 'shopify',
+        evidenceClass: 'unavailable',
+        acquisition: 'none',
+        status: 'unavailable',
+        capturedAtUtc: null,
+        completeness: 'unavailable',
+        freshness: 'unknown',
+        normalizedPayloadDigest: null,
+        limitations: ['No bounded, redacted, provenance-bearing Shopify snapshot is available.'],
+      },
+      {
+        sourceId: 'ebay-authoritative-read',
+        system: 'ebay',
+        evidenceClass: 'unavailable',
+        acquisition: 'none',
+        status: 'unavailable',
+        capturedAtUtc: null,
+        completeness: 'unavailable',
+        freshness: 'unknown',
+        normalizedPayloadDigest: null,
+        limitations: ['No bounded, redacted, no-refresh eBay snapshot is available.'],
+      },
+      {
+        sourceId: 'marketplace-connect-browser-baseline',
+        system: 'marketplace-connect',
+        evidenceClass: 'operator-attested-browser-observation',
+        acquisition: 'signed-in-read-only-browser-walkthrough',
+        status: 'partial',
+        capturedAtUtc: null,
+        baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
+        completeness: 'partial',
+        freshness: 'unknown',
+        coverage: { complete: false, records: 3, pages: 1 },
+        normalizedPayloadDigest: null,
+        limitations: [
+          'The walkthrough observed order import, price sync, and inventory sync enabled.',
+          'It does not prove per-item coverage, current configuration, fulfillment, feedback, or parity.',
+        ],
+      },
+    ],
+  };
+}
+
+function buildResponsibilityEvidence() {
+  return [
+    ...(['orderImport', 'price', 'inventory'] as const).map((responsibility) => ({
+      responsibility,
+      acceptedOwner: 'marketplace-connect',
+      observedOwner: 'marketplace-connect',
+      evidenceStatus: 'historical-baseline-only',
+      capturedAtUtc: null,
+      baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
+      canaryReady: false,
+      summary:
+        'Marketplace Connect was observed as the incumbent on 2026-08-11; current authoritative cross-platform parity is unavailable.',
+    })),
+    ...(['listingLifecycle', 'mapping', 'fulfillment', 'feedback'] as const).map(
+      (responsibility) => ({
+        responsibility,
+        acceptedOwner: 'unverified',
+        observedOwner: null,
+        evidenceStatus: 'unverified',
+        capturedAtUtc: null,
+        canaryReady: false,
+        summary: 'Production ownership and authoritative parity evidence remain unverified.',
+      }),
+    ),
+  ];
+}
+
 export function buildMigrationStatus(
   local: LocalMigrationState,
-  observedAt = new Date().toISOString(),
+  servedAt = new Date().toISOString(),
 ) {
   const configurationExceptions = Object.entries(PROTECTED_SETTING_EXPECTATIONS)
     .filter(([key, expected]) => (local.settings[key] ?? '') !== expected)
-    .map(([key, expected]) => ({
+    .map(([key]) => ({
       code: 'STALE_LEGACY_SETTING',
       setting: key,
-      observed: local.settings[key] ?? null,
-      expected,
+      detail: 'Stored legacy setting differs from the enforced shadow policy.',
+      matchesExpected: false,
       effectiveBehavior: 'quarantined',
     }));
 
   return {
-    ...getMigrationPolicyStatus(observedAt),
+    ...getMigrationPolicyStatus(servedAt),
     sourceOfTruth: {
-      productionWriter: 'shopify-marketplace-connect',
+      acceptedProductionWriterBaseline: 'shopify-marketplace-connect',
+      baselineEvidence: 'operator-attested-browser-observation',
+      baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
       productPipelineScope: 'local-observation-only',
     },
+    evidence: buildEvidenceProjection(local),
+    responsibilityEvidence: buildResponsibilityEvidence(),
     reconciliation: {
       scope: 'local-ledger',
-      generatedAt: observedAt,
+      generatedAt: servedAt,
       liveProof: false,
       productionParity: false,
       externalWrites: 0,
@@ -63,36 +168,48 @@ export function buildMigrationStatus(
   };
 }
 
-router.get('/api/migration/status', async (_req: Request, res: Response) => {
+export async function migrationStatusHandler(_req: Request, res: Response): Promise<void> {
   try {
-    const db = await getRawDb();
-    const count = (table: 'product_mappings' | 'order_mappings' | 'ebay_orders') =>
-      (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count?: number } | undefined)
-        ?.count ?? 0;
-    const settingRows = db
-      .prepare(
-        `SELECT key, value FROM settings WHERE key IN (${Object.keys(PROTECTED_SETTING_EXPECTATIONS)
-          .map(() => '?')
-          .join(', ')})`,
-      )
-      .all(...Object.keys(PROTECTED_SETTING_EXPECTATIONS)) as Array<{ key: string; value: string }>;
+    const db = openShadowDatabase();
+    try {
+      const count = (table: 'product_mappings' | 'order_mappings' | 'ebay_orders') =>
+        (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as
+          | { count?: number }
+          | undefined)?.count ?? 0;
+      const settingRows = db
+        .prepare(
+          `SELECT key, value FROM settings WHERE key IN (${Object.keys(PROTECTED_SETTING_EXPECTATIONS)
+            .map(() => '?')
+            .join(', ')})`,
+        )
+        .all(...Object.keys(PROTECTED_SETTING_EXPECTATIONS)) as Array<{
+          key: string;
+          value: string;
+        }>;
 
-    res.json(
-      buildMigrationStatus({
-        listingMappings: count('product_mappings'),
-        orderMappings: count('order_mappings'),
-        historicalEbayOrders: count('ebay_orders'),
-        settings: Object.fromEntries(settingRows.map((row) => [row.key, row.value])),
-      }),
-    );
+      res.json(
+        buildMigrationStatus({
+          listingMappings: count('product_mappings'),
+          orderMappings: count('order_mappings'),
+          historicalEbayOrders: count('ebay_orders'),
+          settings: Object.fromEntries(settingRows.map((row) => [row.key, row.value])),
+        }),
+      );
+    } finally {
+      db.close();
+    }
   } catch {
     // Effective policy remains authoritative even if the legacy local ledger is unavailable.
     res.json({
       ...getMigrationPolicyStatus(),
       sourceOfTruth: {
-        productionWriter: 'shopify-marketplace-connect',
+        acceptedProductionWriterBaseline: 'shopify-marketplace-connect',
+        baselineEvidence: 'operator-attested-browser-observation',
+        baselineDate: MARKETPLACE_CONNECT_BASELINE_DATE,
         productPipelineScope: 'local-observation-only',
       },
+      evidence: buildEvidenceProjection(null),
+      responsibilityEvidence: buildResponsibilityEvidence(),
       reconciliation: {
         scope: 'local-ledger',
         liveProof: false,
@@ -105,6 +222,8 @@ router.get('/api/migration/status', async (_req: Request, res: Response) => {
       },
     });
   }
-});
+}
+
+router.get('/api/migration/status', migrationStatusHandler);
 
 export default router;

@@ -192,6 +192,7 @@ export interface MigrationException {
 
 export interface MigrationReconciliationSummary {
   scope?: string;
+  /** Legacy response-generation fields; never treat these as source observation time. */
   observedAt?: string;
   generatedAt?: string;
   counts?: Record<string, number>;
@@ -207,20 +208,112 @@ export interface MigrationReconciliationSummary {
   [key: string]: unknown;
 }
 
+export type MigrationEvidenceClass =
+  | 'authoritative-direct-read'
+  | 'platform-generated-export'
+  | 'operator-attested-browser-observation'
+  | 'local-ledger-observation'
+  | 'unavailable'
+  | string;
+
+/**
+ * Defensive projection of one redacted evidence source. The UI deliberately
+ * reads only the explicitly safe fields below; arbitrary payload fields are
+ * never rendered.
+ */
+export interface MigrationEvidenceSourceProjection {
+  sourceId?: string;
+  source?: string;
+  system?: string;
+  label?: string;
+  evidenceClass?: MigrationEvidenceClass;
+  acquisition?: string;
+  status?: string;
+  capturedAtUtc?: string | null;
+  capturedAt?: string | null;
+  baselineDate?: string | null;
+  asOfUtc?: string | null;
+  asOf?: string | null;
+  completeness?: unknown;
+  freshness?: unknown;
+  recordCount?: number;
+  records?: number;
+  counts?: Record<string, number>;
+  coverage?: {
+    status?: string;
+    complete?: boolean;
+    records?: number;
+    pages?: number;
+    [key: string]: unknown;
+  };
+  provenance?: {
+    availability?: string;
+    method?: string;
+    attestation?: string;
+    capturedAtUtc?: string | null;
+    asOfStartUtc?: string | null;
+    asOfEndUtc?: string | null;
+    paginationComplete?: boolean;
+    recordCount?: number | null;
+    reportedTotal?: number | null;
+    datasetDigest?: string | null;
+    [key: string]: unknown;
+  };
+  digest?: string | null;
+  normalizedPayloadDigest?: string | null;
+  evidenceDigest?: string | null;
+  limitations?: string[];
+  [key: string]: unknown;
+}
+
+export interface MigrationEvidenceProjection {
+  sources?:
+    | MigrationEvidenceSourceProjection[]
+    | Record<string, MigrationEvidenceSourceProjection | undefined>;
+  integrity?: {
+    status?: string;
+    digest?: string | null;
+    signatureVerified?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface MigrationResponsibilityEvidenceProjection {
+  responsibility?: string;
+  evidenceStatus?: string;
+  status?: string;
+  observedOwner?: string | null;
+  sourceId?: string | null;
+  evidenceClass?: MigrationEvidenceClass;
+  capturedAtUtc?: string | null;
+  asOfUtc?: string | null;
+  baselineDate?: string | null;
+  summary?: string;
+  [key: string]: unknown;
+}
+
 export interface MigrationStatusResponse {
-  phase: string;
-  effectiveMode: string;
-  externalWritesAllowed: boolean;
-  historicalBackfillAllowed: boolean;
-  cutoverWatermarkUtc: string | null;
-  remoteVerification: string;
-  observedAt: string;
-  responsibilities: MigrationResponsibilityStatus[];
-  quarantine: {
+  phase?: string;
+  effectiveMode?: string;
+  externalWritesAllowed?: boolean;
+  historicalBackfillAllowed?: boolean;
+  cutoverWatermarkUtc?: string | null;
+  remoteVerification?: string;
+  /** HTTP response time only. It is not evidence capture/as-of time. */
+  servedAt?: string;
+  /** Legacy field retained for compatibility; the UI must not label it as observation time. */
+  observedAt?: string;
+  responsibilities?: MigrationResponsibilityStatus[];
+  quarantine?: {
     enabled: boolean;
     channels: string[];
   };
   reconciliation?: MigrationReconciliationSummary;
+  evidence?: MigrationEvidenceProjection | MigrationEvidenceSourceProjection[];
+  responsibilityEvidence?:
+    | MigrationResponsibilityEvidenceProjection[]
+    | Record<string, MigrationResponsibilityEvidenceProjection | undefined>;
 }
 
 /** Single source for the operator-facing migration and quarantine state. */
