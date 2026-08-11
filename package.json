@@ -15,6 +15,7 @@
     "dev:web": "vite --config vite.config.ts",
     "start": "node dist/server/index.js",
     "cli": "tsx src/cli/index.ts",
+    "operator": "tsx src/operator-cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

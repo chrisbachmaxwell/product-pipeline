@@ -2,9 +2,10 @@ node_modules/
 *.db
 *.db-journal
 .env
+.local/
+config/operator-shadow.json
 
 # Training data (too large for git)
 image-service/training-data/originals/
 image-service/training-data/processed/
 image-service/test_output/
-

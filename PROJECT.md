@@ -326,6 +326,13 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-11: Local-Only Operator CLI Foundation (Feature Branch)
+
+- Added a separate operator entrypoint for local preflight, ownership reporting, and audit verification without importing the legacy CLI, credentials, database, server, platform clients, sync modules, schedulers, or watchers.
+- Added strict shadow/read-only configuration validation that rejects writes, order import, historical backfill, an active cutover watermark, ProductPipeline writer ownership, wildcard allowlists, unknown fields, unsafe paths, and credential-like material.
+- Added an append-only-by-tool, hash-chained local audit with lock, filesystem sync, full-chain verification, and explicit local immutability limitations.
+- Added focused tests and operator documentation. No external system was accessed, no deployment was performed, and the feature branch is not production parity or cutover evidence.
+
 ### 2026-08-11: Marketplace Connect Replacement Target and Test Lane
 
 - Revised the canonical target from listing-only coexistence to a staged, operator-approved replacement for Marketplace Connect's Used Camera Gear eBay integration.

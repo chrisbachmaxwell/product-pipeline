@@ -330,7 +330,7 @@ Remove or hide from the migration target: AI chat, AI prompts, description/image
 - Unmount chat, AI pipeline, image-processing, and TradeInManager mutation routes before deleting code.
 - Preserve historical database data read-only.
 
-**Next owned implementation slice after human review:** build the repository-only operator CLI/preflight foundation for shadow mode. It may validate environment identity, print the ownership matrix, inventory local route/worker capabilities, produce redacted read-only snapshots, and append audit records. It must have no production mutation command. Application behavior changes, environment changes, deployment, and external-system access remain separately gated.
+**Authorized foundation implemented on feature branch:** `agent/operator-cli-foundation` adds a separate `product-pipeline-operator` entrypoint with only local `preflight`, `ownership`, and `audit verify` commands. Its runtime import boundary excludes the legacy CLI, server, database, credentials, platform clients, sync code, schedulers, and watchers. Strict config validation fixes read-only/dry-run/no-write/no-import/no-backfill/no-watermark posture; exact allowlists and declared ownership fail closed. Preflight and ownership append a redacted, hash-chained local audit record. The local audit is tamper-evident, not production-immutable, and passing preflight is not remote proof. See `docs/OPERATOR_CLI.md`.
 
 ### Stage 2 — Durable safety foundation
 
@@ -436,10 +436,11 @@ Safest next action:
 
 ## 13. Current Handoff
 
-- Repository baseline: `main` at documentation commit `7459f614561dfaaafd7e478f0d1905fd1023d88a`; source behavior baseline remains `e6914f5657bf1d074dd8900ac7b6513f96654922`.
+- Repository baseline: `main` at replacement/Test Lane documentation commit `790d208a63798ccb2a71d317525b33d65b89e163`; source behavior baseline before the operator CLI remains `e6914f5657bf1d074dd8900ac7b6513f96654922`.
 - Inspection boundary: repository source/history plus the signed-in Shopify/embedded-app surfaces described above.
 - External access: GitHub clone/read and documentation push are authorized. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway, Lightspeed, token, credential, or configuration access occurred.
-- Runtime actions: no order import/sync, product sync, listing mutation, setting change, deployment command, build, or application execution.
+- Runtime actions: no order import/sync, product sync, listing mutation, setting change, credential read, deployment command, or legacy application execution. Only the isolated local operator CLI and local tests/typecheck were run.
 - Durable objective: transform ProductPipeline into a safe, simple Marketplace Connect replacement with no historical duplicate-order imports, explicit staged cutover/reconciliation evidence, and operator-approved production migration.
 - Current direction: Marketplace Connect remains the incumbent writer while ProductPipeline enters shadow mode, builds durable safety/reconciliation, proves one responsibility at a time, and receives explicit cutover approvals.
-- Next owned implementation scope after review: the repository-only, non-mutating operator CLI/preflight foundation described in Stage 1. No application code work or deployment is authorized by this documentation change alone.
+- Feature-branch status: the smallest CLI foundation is implemented and locally verified on `agent/operator-cli-foundation`; it is not merged to `main`, deployed, or connected to an external system. Review and an explicit merge/deployment decision are required before it can enter the deployed source path.
+- Next decision: accept or revise the responsibility ownership baseline, then separately authorize any writer-quarantine or read-only remote-reconciliation application slice. No further application behavior change or deployment is implied by this branch.

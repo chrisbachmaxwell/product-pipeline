@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "project": "product-pipeline",
+  "lane": "production-shadow",
+  "mode": "read-only",
+  "dryRun": true,
+  "writesEnabled": false,
+  "identities": {
+    "shopifyStoreDomain": "usedcameragear.myshopify.com",
+    "ebayEnvironment": "production",
+    "ebaySellerAccount": "usedcam-0",
+    "marketplaceConnectAccount": "usedcam-0"
+  },
+  "ownership": {
+    "listingCreate": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "listingRevise": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "listingEndRelist": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "mapping": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "price": {
+      "currentOwner": "marketplace-connect",
+      "productPipelineAccess": "read-only"
+    },
+    "inventory": {
+      "currentOwner": "marketplace-connect",
+      "productPipelineAccess": "read-only"
+    },
+    "orderImport": {
+      "currentOwner": "marketplace-connect",
+      "productPipelineAccess": "read-only"
+    },
+    "fulfillment": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "feedback": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    },
+    "reconciliation": {
+      "currentOwner": "unverified",
+      "productPipelineAccess": "read-only"
+    }
+  },
+  "orders": {
+    "importEnabled": false,
+    "historicalBackfill": false,
+    "cutoverWatermarkUtc": null
+  },
+  "testLane": {
+    "shopifyVariantGids": [],
+    "skus": [],
+    "ebayListingIds": [],
+    "responsibilities": []
+  },
+  "audit": {
+    "logPath": ".local/operator-audit/operator-cli.jsonl"
+  }
+}

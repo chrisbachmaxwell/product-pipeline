@@ -8,6 +8,18 @@
 
 Legacy implementation currently present: Lightspeed → Shopify → AI description → PhotoRoom images → eBay, plus Shopify/eBay sync functions. This does not define the target architecture or prove replacement of any live Marketplace Connect function.
 
+## Safe Operator CLI
+
+The new migration operator CLI is an isolated, local-only foundation for shadow configuration, responsibility ownership, and tamper-evident audit checks. It has no Shopify/eBay/Marketplace Connect client, database import, sync, publish, or mutation command.
+
+```bash
+npm run operator -- preflight --config config/operator-shadow.example.json
+npm run operator -- ownership --config config/operator-shadow.example.json
+npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
+```
+
+The checked-in example intentionally reports unresolved ownership blockers. Passing it would still prove only local configuration safety—not remote identity, parity, deployment, or cutover readiness. See [`docs/OPERATOR_CLI.md`](docs/OPERATOR_CLI.md).
+
 ## Features
 
 > The commands below describe legacy implementation surfaces, not approved migration actions. Do not run sync, import, publish, republish, or price-drop commands against live systems as a test.
