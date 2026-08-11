@@ -5,6 +5,7 @@ node_modules/
 .local/
 config/operator-shadow.json
 config/migration-state.json
+config/evidence-capture.json
 
 # Training data (too large for git)
 image-service/training-data/originals/

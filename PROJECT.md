@@ -45,6 +45,7 @@ src/
 ├── cli/            # CLI commands (ebaysync)
 ├── config/         # Credential loading (~/.clawdbot/credentials/)
 ├── db/             # SQLite database + Drizzle schema
+├── evidence-capture/ # Isolated exact-account Shopify/eBay reads + signed local evidence
 ├── ebay/           # eBay API clients (REST: fulfillment, inventory, browse, trading)
 ├── migration-store/ # Explicit, separate migration control-plane persistence (unwired)
 ├── operator-cli/   # Isolated local preflight, ownership, reconciliation, audit
@@ -317,6 +318,7 @@ Test files: `src/services/__tests__/`
 | **TIM integration** | Condition data from trade-ins improves AI description quality |
 | **Replace Marketplace Connect through staged cutover (2026-08-11)** | ProductPipeline is the intended eBay-integration replacement, but Marketplace Connect stays incumbent until each responsibility has parity, single-writer proof, canary, reconciliation, rollback, and operator approval; AI/enrichment is legacy scope |
 | **Hard-coded incumbent writer quarantine (2026-08-11)** | Marketplace Connect remains production owner for order import, price, and inventory; ProductPipeline external writes fail closed with no runtime override, no historical backfill, and no cutover watermark until a separately authorized transfer |
+| **Dedicated authoritative-read boundary (2026-08-11)** | Live source evidence must use a separate clean-build, exact-account, no-refresh collector with bounded recent order windows and signed private artifacts; it is never a path through the mounted app or legacy integration clients |
 
 ## 8. Next Steps
 
@@ -333,9 +335,17 @@ Test files: `src/services/__tests__/`
 7. **Batch operations** — Process multiple products through pipeline at once
 8. **eBay category mapping improvements** — Better auto-suggestion, more category coverage
 9. **Webhook reliability** — Retry/queue for failed Shopify/eBay webhooks
-10. **Read-collector trust boundary** — Choose a separately reviewed local or Railway one-off execution boundary for no-refresh, GET/HEAD-only authoritative Shopify/eBay evidence; Marketplace Connect still needs a supported export or reviewed attestation
+10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-11: Isolated Authoritative-Read Capture Foundation
+
+- Added an operator-run evidence-capture CLI with exactly `preflight`, `collect`, and `verify`. It requires a fixed ignored exact-identity configuration, an exact scope digest, a clean matching source revision, recent half-open order bounds, ephemeral environment-only read authority, and a pinned Ed25519 signing key.
+- Added a pinned Shopify Admin GraphQL `2026-07` reader using three compiled query documents only. It verifies store/app identity and least-privilege scopes, traverses variants/inventory locations and recent orders, retains `Order.app` attribution, and strips customer/order-detail data.
+- Added exact eBay identity, Inventory-item/offer, and bounded Fulfillment `GET` readers with no OAuth acquisition or refresh. Evidence explicitly covers Inventory-model records only and never claims a complete all-listings census.
+- Added canonical signed mode-`0600` local artifacts, exact source-schema verification, streaming response caps, PII/secret rejection, and a strict independently signed Marketplace Connect attestation verifier. Marketplace Connect UI settings remain configuration evidence; price/inventory ownership requires stronger evidence, and order ownership requires Shopify creator attribution or support evidence.
+- No collector configuration, ephemeral authority, or signing key was available in the task environment, so no live Shopify/eBay/Marketplace Connect capture occurred. No runtime route, commerce writer, order import, historical backfill, watermark, or cutover behavior changed. Historical artifact verification still needs an archived original configuration/public-key/build context.
 
 ### 2026-08-11: Inert Migration Administration and Read-Only Projection
 

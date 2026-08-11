@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "project": "product-pipeline",
+  "lane": "production-shadow",
+  "mode": "authoritative-read-capture",
+  "outputDirectory": ".local/evidence-capture",
+  "identities": {
+    "shopifyStoreDomain": "<replace-with-exact-myshopify-domain>",
+    "shopifyShopGid": "<replace-with-exact-shop-gid>",
+    "shopifyAppGid": "<replace-with-exact-app-gid>",
+    "ebayEnvironment": "production",
+    "ebayUserId": "<replace-with-exact-ebay-user-id>",
+    "ebayMarketplaceId": "EBAY_US",
+    "ebayRegistrationMarketplaceId": "EBAY_US"
+  },
+  "collector": {
+    "name": "product-pipeline-evidence-capture",
+    "version": 1,
+    "buildCommit": "<replace-with-reviewed-40-character-commit>"
+  },
+  "signing": {
+    "keyId": "<replace-with-pinned-signing-key-id>",
+    "publicKeySpkiDerBase64": "<replace-with-ed25519-public-key-spki-der-base64>"
+  },
+  "limits": {
+    "requestTimeoutMs": 15000,
+    "maxPagesPerSource": 100,
+    "maxRecordsPerSource": 10000,
+    "maxResponseBytes": 4194304,
+    "minimumEbayAccessValiditySeconds": 900,
+    "maxOrderWindowHours": 168
+  },
+  "safety": {
+    "externalPlatformReads": true,
+    "externalPlatformWrites": false,
+    "historicalBackfill": false,
+    "oauthAcquisition": false,
+    "accessRefresh": false,
+    "rawPayloadPersistence": false,
+    "personalDataPersistence": false,
+    "cutoverWatermarkUtc": null,
+    "ownershipTransferAllowed": false
+  }
+}

@@ -76,6 +76,20 @@ Do not disable Marketplace Connect, create a cutover watermark, import an order,
 
 Any live read connection, sandbox action, canary, ownership transfer, Marketplace Connect change, or external write requires its own scoped authorization and evidence.`,
   },
+  {
+    question: 'How do I capture Shopify or eBay read-only source evidence?',
+    category: 'Getting Started',
+    sort_order: 2,
+    answer: `Use the separate evidence-capture CLI only from a reviewed checkout whose collector paths are clean. It can collect one bounded Shopify or eBay source snapshot; it cannot sync, import, publish, refresh OAuth, establish a watermark, or transfer ownership.
+
+1. Copy \`config/evidence-capture.example.json\` to the ignored \`config/evidence-capture.json\` and replace every invalid placeholder with exact reviewed nonsecret identity/build/public-key values.
+2. Supply the required ephemeral read authority and signing key through the documented environment variables. Never place authority values in the repository or command line.
+3. Run \`npm run evidence-capture -- preflight --repo-root . --json\`. This performs no network request and prints an exact scope digest.
+4. Run one \`collect\` command for \`shopify\` or \`ebay\`, repeating that scope digest and a canonical recent half-open order window no longer than seven days.
+5. Run \`verify\` with the exact returned path below \`.local/evidence-capture/\`.
+
+A valid artifact proves signature/schema integrity and the bounded source observations it contains. It does not prove complete eBay listing coverage, Marketplace Connect parity, canary readiness, or cutover readiness. No production write or historical order backfill is ever allowed by this tool. See \`docs/AUTHORITATIVE_READ_CAPTURE.md\` for the exact authority, command, and proof boundaries.`,
+  },
 
   // ─────────────────────────────────────────────
   // Products / Review Queue
