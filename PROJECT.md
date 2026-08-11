@@ -342,7 +342,7 @@ Test files: `src/services/__tests__/`
 - Gated low-level eBay non-read requests plus Shopify order/inventory adapters and legacy mutation services so direct imports cannot bypass the route and startup controls.
 - Added read-only Overview, Listings, Orders, Reconciliation, and Settings migration surfaces with explicit Marketplace Connect ownership, quarantine status, proof limits, and operator-safe refresh/review actions.
 - Added strict local snapshot reconciliation and hash-chained audit evidence. It uses no credentials, remote clients, or application database; always records zero external writes/no historical backfill/no order eligibility; and cannot establish live parity.
-- Added focused tests and operator/help documentation. Commit, merge, Railway deployment, live-runtime verification, remote parity, and any responsibility cutover remain separate evidence gates.
+- Added focused tests and operator/help documentation. The merged application revision and public Railway health evidence are recorded in `PROJECT_BRAIN.md`; remote parity and every responsibility cutover remain separate evidence gates.
 
 ### 2026-08-11: Local-Only Operator CLI Foundation
 

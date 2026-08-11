@@ -2,7 +2,7 @@
 
 > Canonical orientation and handoff document for the Product Pipeline repository.
 > Initial architecture behavior was verified against `main` at `e6914f5657bf1d074dd8900ac7b6513f96654922` on 2026-08-11.
-> The writer-quarantine and offline-reconciliation behavior described below was source-verified on 2026-08-11; repository history, deployment, and live-runtime proof remain separate evidence.
+> The writer-quarantine and offline-reconciliation application revision `9c2b1fa766fd9345745f519b4799f7797eb6a4d4` was source-verified and observed on the public Railway health endpoint on 2026-08-11; remote Shopify/eBay parity remains separate evidence.
 > Time-specific Shopify and embedded-app facts were verified in a read-only browser walkthrough on 2026-08-11.
 > This is the canonical target and safety plan; it does not claim production parity or authorize a cutover.
 
@@ -398,7 +398,7 @@ The isolated `product-pipeline-operator` entrypoint provides local `preflight`, 
 
 ### Unknown until separately verified
 
-- Which exact commit Railway serves, whether it contains the current quarantine, and which Railway services/processes are active.
+- The public ProductPipeline Railway service served application revision `9c2b1fa766fd9345745f519b4799f7797eb6a4d4` with the quarantine policy on 2026-08-11; any additional Railway services/processes and their revisions remain unknown.
 - Current Shopify/eBay token validity, scopes, webhook registrations, and eBay notification subscriptions.
 - Marketplace Connect's complete listing/link coverage, per-item exceptions, fulfillment/feedback behavior, and subscription-dependent capabilities.
 - Which system currently owns listing creation/revision/end/relist in practice; the walkthrough verified Marketplace Connect's controls but did not audit every recent remote mutation.
@@ -445,11 +445,11 @@ Safest next action:
 
 ## 13. Current Handoff
 
-- Repository baseline: the writer-quarantine/reconciliation slice is source-verified on top of the previously documented `main` baseline. Its release and deployment evidence must be checked independently in repository history and the implementing handoff.
+- Repository baseline: `main` and the implementation feature branch were pushed at `9c2b1fa766fd9345745f519b4799f7797eb6a4d4` after a clean fast-forward from the previously documented baseline.
 - Inspection boundary: repository source/history plus the signed-in Shopify/embedded-app surfaces described above.
-- External access: GitHub clone/read and documentation push are authorized. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway, Lightspeed, token, credential, or configuration access occurred.
-- Runtime actions for this slice: repository implementation and local verification only; no order import/sync, product sync, listing mutation, setting change, credential read, direct commerce access, or Marketplace Connect change.
+- External access: GitHub repository operations and a credential-free GET of the public Railway health endpoint were used. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway project, Lightspeed, token, credential, or configuration access occurred.
+- Runtime actions for this slice: the authorized `main` push triggered the documented Railway auto-deploy. No order import/sync, product sync, listing mutation, setting change, credential read, direct commerce access, or Marketplace Connect change occurred.
 - Durable objective: transform ProductPipeline into a safe, simple Marketplace Connect replacement with no historical duplicate-order imports, explicit staged cutover/reconciliation evidence, and operator-approved production migration.
 - Accepted ownership baseline: Marketplace Connect remains the sole production owner for eBay-to-Shopify order import, price, and inventory until a separately authorized responsibility cutover. ProductPipeline is fail-closed and observation-only for them.
-- Implementation status: the local operator CLI foundation plus the hard writer quarantine, read-only control plane, and strict offline snapshot reconciliation are implemented in current source. Local consistency is not deployment evidence or live parity.
-- Next gate: complete scoped verification, commit/push/merge the authorized slice, and record Railway build/deployment evidence if available. Live runtime health and remote read-only parity still require separate evidence. Any writer reintroduction, cutover watermark, live canary, Marketplace Connect responsibility disable, or historical-order import remains blocked pending its own explicit authorization and proof packet.
+- Implementation status: the local operator CLI foundation, hard writer quarantine, read-only five-page control plane, and strict offline snapshot reconciliation are merged. At `2026-08-11T17:40:38Z`, the public health endpoint served application revision `9c2b1fa766fd9345745f519b4799f7797eb6a4d4` with `shadow-read-only`, external writes and historical backfill false, and a null cutover watermark. This is deployment/runtime-policy evidence, not Shopify/eBay connectivity or parity proof.
+- Next gate: establish a separately reviewed, credential-safe source for authoritative read-only Shopify/eBay/Marketplace Connect snapshots, resolve listing-lifecycle and fulfillment ownership, and produce reconciliation evidence. Any writer reintroduction, cutover watermark, live canary, Marketplace Connect responsibility disable, or historical-order import remains blocked pending its own explicit authorization and proof packet.
