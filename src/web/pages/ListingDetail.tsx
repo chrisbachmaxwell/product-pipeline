@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   Badge,
   BlockStack,
-  Box,
   Button,
   Card,
   Collapsible,
@@ -12,7 +11,6 @@ import {
   InlineStack,
   Page,
   SkeletonBodyText,
-  Tabs,
   Text,
   Thumbnail,
 } from '@shopify/polaris';
@@ -22,17 +20,14 @@ import { useAuthoritativeListing } from '../hooks/useAuthoritativeListings';
 import {
   formatListingPrice,
   formatVerifiedAt,
+  isLiveCatalogResponse,
+  listingAttentionText,
+  listingSkuLabel,
   listingStatusLabel,
   listingStatusTone,
+  verifiedEbayListingUrl,
   verifiedListingImageUrl,
 } from '../operator-ui';
-
-const DETAIL_TABS = [
-  { id: 'overview', content: 'Overview' },
-  { id: 'content', content: 'Content' },
-  { id: 'validation', content: 'Validation' },
-  { id: 'activity', content: 'Activity' },
-];
 
 const Fact: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <BlockStack gap="100">
@@ -44,23 +39,22 @@ const Fact: React.FC<{ label: string; children: React.ReactNode }> = ({ label, c
 const ListingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const detail = useAuthoritativeListing(id);
-  const [tab, setTab] = useState(0);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   if (detail.isLoading) {
     return (
       <Page title="Listing" backAction={{ content: 'Listings', url: '/listings' }}>
-        <Card><SkeletonBodyText lines={8} /></Card>
+        <Card><SkeletonBodyText lines={6} /></Card>
       </Page>
     );
   }
 
-  if (detail.error || !detail.data) {
+  if (detail.error || !detail.data || !isLiveCatalogResponse(detail.data.evidence)) {
     return (
       <Page title="Listing" backAction={{ content: 'Listings', url: '/listings' }}>
         <Card>
           <EmptyState heading="Listing unavailable" image="">
-            <Text as="p">The verified listing record could not be loaded.</Text>
+            <Text as="p">Shopify and eBay could not be checked.</Text>
           </EmptyState>
         </Card>
       </Page>
@@ -69,87 +63,69 @@ const ListingDetail: React.FC = () => {
 
   const { listing, evidence } = detail.data;
   const imageUrl = verifiedListingImageUrl(listing.shopify.primaryImageUrl);
-  const issueCount = listing.audit.unresolvedCount;
+  const attention = listingAttentionText(listing);
+  const active = listing.lifecycleStatus === 'active';
+  const ebayUrl = verifiedEbayListingUrl(listing.ebay.listingId, listing.ebay.url);
 
   return (
     <Page
       title={listing.shopify.title}
-      subtitle={listing.shopify.sku}
+      subtitle={listingSkuLabel(listing.shopify.sku)}
       backAction={{ content: 'Listings', url: '/listings' }}
       titleMetadata={(
         <Badge tone={listingStatusTone(listing.lifecycleStatus)}>
           {listingStatusLabel(listing.lifecycleStatus)}
         </Badge>
       )}
+      primaryAction={active && ebayUrl ? {
+        content: 'View on eBay',
+        url: ebayUrl,
+        external: true,
+      } : undefined}
       fullWidth
     >
-      <BlockStack gap="500">
-        <Card padding="0">
-          <Tabs tabs={DETAIL_TABS} selected={tab} onSelect={setTab}>
-            <Box padding="500">
-              {tab === 0 && (
-                <InlineGrid columns={{ xs: 1, md: '2fr 1fr' }} gap="500">
-                  <InlineStack gap="400" blockAlign="center" wrap={false}>
-                    <Thumbnail
-                      size="large"
-                      source={imageUrl ?? ProductIcon}
-                      alt={imageUrl ? listing.shopify.title : ''}
-                    />
-                    <BlockStack gap="200">
-                      <Text as="h2" variant="headingMd">{listing.shopify.title}</Text>
-                      <Text as="p" tone="subdued">SKU {listing.shopify.sku}</Text>
-                      <Text as="p" variant="headingLg">{formatListingPrice(listing.price)}</Text>
-                    </BlockStack>
-                  </InlineStack>
-                  <BlockStack gap="300">
-                    <Fact label="eBay listing">{listing.ebay.listingId}</Fact>
-                    <Fact label="Last checked">{formatVerifiedAt(listing.lastVerifiedAtUtc)}</Fact>
-                    <Button url={listing.ebay.url} external variant="primary">View on eBay</Button>
-                  </BlockStack>
-                </InlineGrid>
-              )}
+      <BlockStack gap="400">
+        <Card>
+          <InlineGrid columns={{ xs: 1, md: '2fr 1fr' }} gap="500">
+            <InlineStack gap="400" blockAlign="center" wrap={false}>
+              <Thumbnail
+                size="large"
+                source={imageUrl ?? ProductIcon}
+                alt={imageUrl ? listing.shopify.title : ''}
+              />
+              <BlockStack gap="150">
+                <Text as="h2" variant="headingMd">{listing.shopify.title}</Text>
+                {listing.shopify.variantTitle !== 'Default Title' && (
+                  <Text as="p" tone="subdued">{listing.shopify.variantTitle}</Text>
+                )}
+                <Text as="p" variant="headingLg">{formatListingPrice(listing.shopify.price)}</Text>
+              </BlockStack>
+            </InlineStack>
+            <InlineGrid columns={2} gap="400">
+              <Fact label="Available">{listing.shopify.available}</Fact>
+              <Fact label="Photos">{listing.shopify.imageCount}</Fact>
+              <Fact label="SKU">{listingSkuLabel(listing.shopify.sku)}</Fact>
+              <Fact label="Checked">{formatVerifiedAt(evidence.observedAtUtc).replace('Checked ', '')}</Fact>
+            </InlineGrid>
+          </InlineGrid>
+        </Card>
 
-              {tab === 1 && (
-                <InlineGrid columns={{ xs: 1, sm: 2 }} gap="500">
-                  <Fact label="Title">{listing.shopify.title}</Fact>
-                  <Fact label="SKU">{listing.shopify.sku}</Fact>
-                  <Fact label="Price">{formatListingPrice(listing.price)}</Fact>
-                  <Fact label="Photos">{listing.shopify.imageCount}</Fact>
-                </InlineGrid>
-              )}
-
-              {tab === 2 && (
-                <BlockStack gap="400">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="p">Listing evidence</Text>
-                    <Badge tone={listing.audit.verified ? 'success' : 'critical'}>
-                      {listing.audit.verified ? 'Verified' : 'Unavailable'}
-                    </Badge>
-                  </InlineStack>
-                  <Divider />
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="p">Open issues</Text>
-                    <Badge tone={issueCount === 0 ? 'success' : 'critical'}>{String(issueCount)}</Badge>
-                  </InlineStack>
-                  <Divider />
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="p">Recovery supported</Text>
-                    <Badge tone={listing.audit.recoverySupported ? 'info' : 'attention'}>
-                      {listing.audit.recoverySupported ? 'Yes' : 'No'}
-                    </Badge>
-                  </InlineStack>
-                </BlockStack>
-              )}
-
-              {tab === 3 && (
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">Listing checked</Text>
-                  <Text as="p" tone="subdued">{formatVerifiedAt(listing.lastVerifiedAtUtc)}</Text>
-                  <Text as="p">eBay listing {listing.ebay.listingId} was active in this verified snapshot.</Text>
-                </BlockStack>
-              )}
-            </Box>
-          </Tabs>
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <Text as="h2" variant="headingMd">eBay</Text>
+              <Badge tone={listingStatusTone(listing.lifecycleStatus)}>
+                {listingStatusLabel(listing.lifecycleStatus)}
+              </Badge>
+            </InlineStack>
+            {attention && <Text as="p" tone="critical">{attention}</Text>}
+            {active && listing.ebay.listingId && (
+              <Text as="p" tone="subdued">Listing {listing.ebay.listingId}</Text>
+            )}
+            {listing.lifecycleStatus === 'not_listed' && (
+              <Text as="p" tone="subdued">Review the product before publishing.</Text>
+            )}
+          </BlockStack>
         </Card>
 
         <Card>
@@ -160,19 +136,17 @@ const ListingDetail: React.FC = () => {
                 variant="plain"
                 onClick={() => setAdvancedOpen((open) => !open)}
                 ariaExpanded={advancedOpen}
-                ariaControls="listing-audit-details"
+                ariaControls="listing-catalog-details"
               >
                 {advancedOpen ? 'Hide' : 'Show'}
               </Button>
             </InlineStack>
-            <Collapsible id="listing-audit-details" open={advancedOpen}>
+            <Collapsible id="listing-catalog-details" open={advancedOpen}>
               <BlockStack gap="300">
                 <Divider />
                 <Fact label="Shopify product">{listing.shopify.productId}</Fact>
                 <Fact label="Shopify variant">{listing.shopify.variantId}</Fact>
-                <Fact label="eBay offer">{listing.ebay.offerId}</Fact>
-                <Fact label="Evidence">{evidence.evidenceKind.replace('_', ' ')}</Fact>
-                <Fact label="Current remote state">Not verified</Fact>
+                {listing.ebay.offerId && <Fact label="eBay offer">{listing.ebay.offerId}</Fact>}
               </BlockStack>
             </Collapsible>
           </BlockStack>
