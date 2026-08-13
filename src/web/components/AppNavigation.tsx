@@ -2,7 +2,7 @@ import React from 'react';
 import { Navigation } from '@shopify/polaris';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  ClipboardChecklistIcon,
+  AlertCircleIcon,
   HomeIcon,
   OrderIcon,
   SettingsIcon,
@@ -19,7 +19,7 @@ const AppNavigation: React.FC = () => {
     { label: 'Overview', icon: HomeIcon, path: '/' },
     { label: 'Listings', icon: ViewIcon, path: '/listings' },
     { label: 'Orders', icon: OrderIcon, path: '/orders' },
-    { label: 'Reconciliation', icon: ClipboardChecklistIcon, path: '/reconciliation' },
+    { label: 'Issues', icon: AlertCircleIcon, path: '/issues' },
     { label: 'Settings', icon: SettingsIcon, path: '/settings' },
   ];
 

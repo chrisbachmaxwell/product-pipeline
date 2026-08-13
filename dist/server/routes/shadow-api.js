@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { openShadowDatabase } from '../shadow-db.js';
 import { migrationStatusHandler } from './migration.js';
+import { readAuthoritativeListingsPage, } from '../authoritative-listings-reader.js';
 const router = Router();
 export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/migration/status',
+    '/api/authoritative-listings',
     '/api/listings',
     '/api/capabilities',
 ]);
@@ -32,6 +34,31 @@ router.use((_req, res, next) => {
     next();
 });
 router.get('/api/migration/status', migrationStatusHandler);
+/** GET /api/authoritative-listings — verified, deployable evidence snapshots only. */
+router.get('/api/authoritative-listings', (req, res) => {
+    const rawStatus = String(req.query.status ?? '').trim().toLowerCase();
+    const allowedStatuses = new Set([
+        'attention', 'ready', 'active', 'ended',
+    ]);
+    if (rawStatus && !allowedStatuses.has(rawStatus)) {
+        res.status(400).json({ error: 'Invalid listing status filter' });
+        return;
+    }
+    try {
+        const limit = boundedInteger(req.query.limit, 50, 1, 100);
+        const offset = boundedInteger(req.query.offset, 0, 0, 1_000_000);
+        const search = String(req.query.search ?? '').trim().slice(0, 200);
+        res.json(readAuthoritativeListingsPage({
+            limit,
+            offset,
+            search,
+            status: rawStatus ? rawStatus : undefined,
+        }));
+    }
+    catch {
+        res.status(503).json({ error: 'Verified listing evidence is unavailable' });
+    }
+});
 /** GET /api/listings — projected local observations only; no platform reader. */
 router.get('/api/listings', async (req, res) => {
     try {
@@ -99,6 +126,14 @@ router.get('/api/capabilities', (_req, res) => {
                 method: 'GET',
                 endpoint: '/api/migration/status',
                 remoteRead: false,
+            },
+            {
+                id: 'authoritative-listings',
+                method: 'GET',
+                endpoint: '/api/authoritative-listings',
+                remoteRead: false,
+                externalWrite: false,
+                evidenceKind: 'verified_snapshot',
             },
             {
                 id: 'local-listings',

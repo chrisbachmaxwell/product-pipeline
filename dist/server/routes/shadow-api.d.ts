@@ -1,5 +1,5 @@
 declare const router: import("express-serve-static-core").Router;
-export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/listings", "/api/capabilities"];
+export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/authoritative-listings", "/api/listings", "/api/capabilities"];
 export type LocalListingProjection = {
     id: number | string;
     shopify_product_id: string;

@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-08-11. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-08-13. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -338,6 +338,13 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-13: Minimal Verified Listings App
+
+- Added a credential-free, digest-bound snapshot of the verified Canon `CAN3570-U119` eBay canary and an authenticated read-only listings API. The API reports that the record is a historical verified snapshot, not a current remote read.
+- Replaced the operator shell with five focused pages: Overview, Listings, Orders, Issues, and Settings. Listing rows and detail remain concise, keyboard accessible, responsive, and fail closed when the snapshot is unavailable.
+- Kept all commerce writers quarantined. No order import, inventory or price sync, Marketplace Connect change, OAuth storage, or listing mutation is part of this release.
+- Verified the complete 38-file / 355-test suite, TypeScript, and production web build before release. Added a concise Listings help entry.
 
 ### 2026-08-11: Isolated Authoritative-Read Capture Foundation
 

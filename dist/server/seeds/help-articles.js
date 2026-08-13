@@ -180,25 +180,16 @@ Check **Pipeline → Images** for a full queue of pending, processing, and compl
     // eBay
     // ─────────────────────────────────────────────
     {
+        question: 'How do I use Listings?',
+        category: 'eBay',
+        sort_order: 0,
+        answer: `Open **Listings**, choose a status, and select **View**. The app shows when eBay last verified the listing. Use **View on eBay** for the public listing page.`,
+    },
+    {
         question: 'How do I list a product on eBay?',
         category: 'eBay',
         sort_order: 1,
-        answer: `There are two ways to list a product on eBay: the Review Queue approval flow and the manual Listing Prep page.
-
-**Via Review Queue (recommended):**
-1. Go to **Products → Review Queue**.
-2. Find the product you want to list. Review the description, photos, category, and condition.
-3. Make any edits needed, then click **Approve & List**.
-4. ProductPipeline creates the eBay listing immediately using your field mappings. You'll see the eBay listing ID in the product detail once it's live.
-
-**Via eBay Listing Prep:**
-1. Go to a product's detail page and click **eBay Listing Prep**.
-2. This page shows a pre-filled form with all the eBay fields: title, description, category, condition, price, shipping, and images.
-3. Review and edit any field, then click **List on eBay**.
-4. The listing goes live and the product is marked as "Listed."
-
-**After listing:**
-The product appears in **eBay → Listings** with its status. Inventory changes on Shopify will automatically sync to the eBay listing if inventory sync is enabled.`,
+        answer: `Publishing from the Shopify app is not available in this read-only release. **Listings** shows verified results and links to their public eBay pages. A future Publish action will require a fresh review and explicit confirmation for each item.`,
     },
     {
         question: 'How do I change the eBay category?',
@@ -353,24 +344,7 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
         question: 'How do I connect eBay?',
         category: 'Settings',
         sort_order: 2,
-        answer: `Connecting eBay allows ProductPipeline to create and manage listings, sync inventory, and import orders on your behalf.
-
-**Steps:**
-1. Go to **Settings → eBay**.
-2. Click **Connect eBay Account**.
-3. You'll be redirected to eBay's OAuth authorization page. Sign in with the eBay seller account you want to use.
-4. Review the permissions ProductPipeline is requesting (listing management, order management, inventory) and click **Agree**.
-5. You'll be redirected back to ProductPipeline. The Settings page will show your eBay username and token expiry date.
-
-**Token management:**
-- eBay access tokens expire after 2 hours but are refreshed automatically using the long-lived refresh token (valid 18 months).
-- If the refresh token expires, you'll need to re-authorize from this page.
-- The Dashboard shows a warning badge if eBay auth needs attention.
-
-**Troubleshooting:**
-- If listings fail with "Invalid token" errors, re-authorize here.
-- Make sure you're authorizing with the correct eBay seller account — the one where listings should appear.
-- eBay sandbox accounts require a separate authorization flow not covered here.`,
+        answer: `The current app does not store or manage an eBay connection. Its verified listing snapshot is credential-free. Connection controls will appear only when the scoped one-item publishing workflow is ready. Never paste an eBay token into Help or support messages.`,
     },
     {
         question: 'How do I edit condition descriptions?',

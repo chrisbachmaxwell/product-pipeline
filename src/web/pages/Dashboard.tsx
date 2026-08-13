@@ -9,102 +9,99 @@ import {
   SkeletonBodyText,
   Text,
 } from '@shopify/polaris';
+import { Link } from 'react-router-dom';
+import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import { useMigrationStatus } from '../hooks/useApi';
-import { formatEvidenceTime, normalizeEvidenceSources } from '../evidence';
 import {
-  humanize,
-  MigrationSafetyBanner,
-  OwnershipCards,
-} from '../components/MigrationSafety';
-import { DurableMigrationState } from '../components/DurableMigrationState';
+  formatVerifiedAt,
+  latestListingVerification,
+  listingCounts,
+  totalListingIssues,
+} from '../operator-ui';
+
+const CountCard: React.FC<{ label: string; value: number; tone?: 'critical' }> = ({
+  label,
+  value,
+  tone,
+}) => (
+  <Card>
+    <BlockStack gap="200">
+      <Text as="p" tone="subdued">{label}</Text>
+      <Text as="p" variant="heading2xl" tone={tone}>{value}</Text>
+    </BlockStack>
+  </Card>
+);
 
 const Dashboard: React.FC = () => {
-  const statusQuery = useMigrationStatus();
-  const { data: status, isLoading, error } = statusQuery;
-  const exceptions = status?.reconciliation?.exceptions ?? [];
-  const sources = normalizeEvidenceSources(status);
-  const sourceEvidenceIncomplete = sources.some((source) => source.critical);
+  const listings = useAuthoritativeListings({ limit: 100, offset: 0 });
+  const migration = useMigrationStatus();
+  const rows = listings.data?.data ?? [];
+  const counts = listingCounts(rows);
+  const issues = totalListingIssues(rows);
+  const verifiedAt = latestListingVerification(rows);
+  const statusUnavailable = Boolean(listings.error || migration.error);
 
   return (
-    <Page
-      title="Overview"
-      subtitle="Marketplace Connect replacement control plane"
-      primaryAction={{
-        content: 'Refresh evidence',
-        onAction: () => { void statusQuery.refetch(); },
-        loading: statusQuery.isFetching,
-      }}
-      fullWidth
-    >
+    <Page title="Overview" fullWidth>
       <BlockStack gap="500">
-        <MigrationSafetyBanner
-          status={status}
-          error={error instanceof Error ? error : null}
-        />
-
-        <BlockStack gap="300">
-          <Text variant="headingMd" as="h2">Production responsibility</Text>
-          {isLoading ? <SkeletonBodyText lines={4} /> : <OwnershipCards status={status} />}
-        </BlockStack>
-
-        <DurableMigrationState status={status} />
-
-        <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+        {listings.isLoading ? (
+          <SkeletonBodyText lines={4} />
+        ) : listings.error ? (
           <Card>
-            <BlockStack gap="200">
-              <Text as="p" tone="subdued">Migration phase</Text>
-              <Badge tone={status?.phase ? 'attention' : 'critical'}>{humanize(status?.phase)}</Badge>
-            </BlockStack>
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="p">Listing snapshot unavailable</Text>
+              <Badge tone="critical">Unavailable</Badge>
+            </InlineStack>
           </Card>
+        ) : (
+          <BlockStack gap="200">
+            <InlineStack align="end"><Badge tone="info">Verified snapshot</Badge></InlineStack>
+            <InlineGrid columns={{ xs: 2, md: 4 }} gap="300">
+              <CountCard label="Needs attention" value={counts.attention} tone={counts.attention > 0 ? 'critical' : undefined} />
+              <CountCard label="Ready" value={counts.ready} />
+              <CountCard label="Active when checked" value={counts.active} />
+              <CountCard label="Ended" value={counts.ended} />
+            </InlineGrid>
+          </BlockStack>
+        )}
+
+        {!listings.error && <InlineGrid columns={{ xs: 1, md: '2fr 1fr' }} gap="400">
           <Card>
-            <BlockStack gap="200">
-              <Text as="p" tone="subdued">Effective mode</Text>
-              <Badge tone={status?.effectiveMode === 'shadow-read-only' ? 'success' : 'critical'}>
-                {humanize(status?.effectiveMode)}
-              </Badge>
-            </BlockStack>
-          </Card>
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" tone="subdued">Remote parity</Text>
-              <Badge tone="critical">
-                {status?.remoteVerification === 'not-performed'
-                  ? 'Not verified'
-                  : humanize(status?.remoteVerification)}
-              </Badge>
-            </BlockStack>
-          </Card>
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" tone="subdued">Open exceptions</Text>
-              <Text variant="headingLg" as="p">
-                {status?.reconciliation?.exceptions ? exceptions.length : 'Unavailable'}
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h2" variant="headingMd">Issues</Text>
+                <Badge tone={issues > 0 ? 'critical' : 'success'}>{String(issues)}</Badge>
+              </InlineStack>
+              <Text as="p" tone="subdued">
+                {issues > 0 ? 'Listings need review.' : 'No listing issues in the verified snapshot.'}
               </Text>
+              <Link to="/issues">View issues</Link>
             </BlockStack>
           </Card>
-        </InlineGrid>
+
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h2" variant="headingMd">Connections</Text>
+                <Badge tone={statusUnavailable ? 'critical' : 'info'}>
+                  {statusUnavailable ? 'Unavailable' : 'Read only'}
+                </Badge>
+              </InlineStack>
+              <Text as="p">Canon listing · ProductPipeline</Text>
+              <Text as="p" tone="subdued">{formatVerifiedAt(verifiedAt)}</Text>
+              <Link to="/settings">View settings</Link>
+            </BlockStack>
+          </Card>
+        </InlineGrid>}
 
         <Card>
-          <BlockStack gap="300">
-            <InlineStack align="space-between" blockAlign="center">
-              <Text variant="headingMd" as="h2">Evidence boundary</Text>
-              <Badge tone={sourceEvidenceIncomplete ? 'critical' : 'attention'}>
-                {sourceEvidenceIncomplete ? 'Authoritative sources incomplete' : 'Source captures supplied'}
-              </Badge>
-            </InlineStack>
-            <Text as="p">
-              This screen reports the enforced ProductPipeline policy and local reconciliation
-              evidence. It does not prove current Shopify, eBay, or Marketplace Connect parity.
-            </Text>
-            <Text as="p" tone="subdued">
-              Response served: {formatEvidenceTime(status?.servedAt)}
-            </Text>
-            <Text as="p" tone="subdued">
-              Quarantined channels: {status?.quarantine?.channels?.length
-                ? status.quarantine.channels.map(humanize).join(', ')
-                : 'Not available'}
-            </Text>
-          </BlockStack>
+          <InlineStack align="space-between" blockAlign="center" gap="300">
+            <BlockStack gap="100">
+              <Text as="h2" variant="headingMd">Ownership</Text>
+              <Text as="p" tone="subdued">Orders, price, and inventory</Text>
+            </BlockStack>
+            <Badge tone="attention">Marketplace Connect</Badge>
+          </InlineStack>
         </Card>
       </BlockStack>
     </Page>
