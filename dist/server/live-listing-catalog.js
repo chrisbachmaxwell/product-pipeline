@@ -1,3 +1,4 @@
+export const MAX_LIVE_LISTING_SNAPSHOT_AGE_MS = 5 * 60_000;
 export class LiveListingCatalogError extends Error {
     constructor() {
         super('Live listing catalog is unavailable');
@@ -65,17 +66,19 @@ function requireUnique(values, key) {
 export function buildLiveListingCatalogSnapshot(input) {
     if (Number.isNaN(new Date(input.observedAtUtc).getTime()))
         throw new LiveListingCatalogError();
-    if (input.coverage.shopify.positiveStockVariants !== input.shopifyVariants.length
-        || input.coverage.shopify.totalVariantsCaptured
-            !== input.coverage.shopify.positiveStockVariants
-                + input.coverage.shopify.excludedZeroInventory
-                + input.coverage.shopify.excludedUnknownInventory
+    const positiveStockVariants = input.shopifyVariants.filter((variant) => variant.available !== null && variant.available > 0).length;
+    const nonpositiveStockVariants = input.shopifyVariants.filter((variant) => variant.available !== null && variant.available <= 0).length;
+    const unknownStockVariants = input.shopifyVariants.filter((variant) => variant.available === null).length;
+    if (input.coverage.shopify.totalVariantsCaptured !== input.shopifyVariants.length
+        || input.coverage.shopify.positiveStockVariants !== positiveStockVariants
+        || input.coverage.shopify.excludedZeroInventory !== nonpositiveStockVariants
+        || input.coverage.shopify.excludedUnknownInventory !== unknownStockVariants
         || input.coverage.ebay.trading.activeListingCount
             !== new Set(input.ebayActiveListings.map((value) => value.listingId)).size
         || input.coverage.ebay.inventory.inventoryItemCount !== input.ebayInventoryItems.length
         || input.coverage.ebay.inventory.offerCount !== input.ebayOffers.length
-        || input.shopifyVariants.some((variant) => !Number.isInteger(variant.available)
-            || variant.available <= 0))
+        || input.shopifyVariants.some((variant) => variant.available !== null
+            && !Number.isInteger(variant.available)))
         throw new LiveListingCatalogError();
     requireUnique(input.shopifyVariants, (value) => value.variantId);
     requireUnique(input.ebayActiveListings, (value) => `${value.listingId}\u0000${value.sku}`);
@@ -96,7 +99,8 @@ export function buildLiveListingCatalogSnapshot(input) {
     let missingShopifySkuCount = 0;
     let ambiguousActiveMatchCount = 0;
     let unpublishedArtifactSkuCount = 0;
-    const rows = input.shopifyVariants.map((variant) => {
+    let zeroStockActiveShopifyCount = 0;
+    const shopifyRows = input.shopifyVariants.flatMap((variant) => {
         const reasons = new Set();
         if (variant.productStatus.toUpperCase() !== 'ACTIVE')
             reasons.add('shopify_product_not_active');
@@ -111,14 +115,25 @@ export function buildLiveListingCatalogSnapshot(input) {
         if (nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku)) {
             reasons.add('ebay_sku_near_collision');
         }
-        const activeMatches = activeBySku.get(variant.sku) ?? [];
-        const inventoryItems = inventoryBySku.get(variant.sku) ?? [];
-        const offers = offersBySku.get(variant.sku) ?? [];
+        const skuCanJoin = variant.sku !== '';
+        const activeMatches = skuCanJoin ? activeBySku.get(variant.sku) ?? [] : [];
+        const inventoryItems = skuCanJoin ? inventoryBySku.get(variant.sku) ?? [] : [];
+        const offers = skuCanJoin ? offersBySku.get(variant.sku) ?? [] : [];
         if (activeMatches.length > 1) {
             reasons.add('ebay_multiple_active_matches');
             ambiguousActiveMatchCount += 1;
         }
         const activeListing = activeMatches.length === 1 ? activeMatches[0] : null;
+        const shouldInclude = (variant.available !== null && variant.available > 0)
+            || activeMatches.length > 0
+            || inventoryItems.length > 0
+            || offers.length > 0;
+        if (!shouldInclude)
+            return [];
+        if (activeMatches.length > 0 && (variant.available === null || variant.available <= 0)) {
+            reasons.add('shopify_inventory_not_positive');
+            zeroStockActiveShopifyCount += 1;
+        }
         const compatiblePublishedOffer = activeListing !== null
             && inventoryItems.length === 1
             && offers.length === 1
@@ -142,38 +157,86 @@ export function buildLiveListingCatalogSnapshot(input) {
         const matchingOffer = activeListing
             ? offers.find((offer) => offer.listingId === activeListing.listingId) ?? null
             : null;
-        return Object.freeze({
-            id: `shopify-variant:${variant.variantId}`,
-            shopify: Object.freeze({ ...variant, price: Object.freeze({ ...variant.price }) }),
-            ebay: Object.freeze({
-                state: lifecycleStatus,
-                listingId: activeListing?.listingId ?? null,
-                offerId: matchingOffer?.offerId ?? null,
-                url: activeListing ? `https://www.ebay.com/itm/${activeListing.listingId}` : null,
-                activeMatchCount: activeMatches.length,
-                inventoryItemCount: inventoryItems.length,
-                offerCount: offers.length,
-                unpublishedArtifactCount,
-            }),
-            lifecycleStatus,
-            lastVerifiedAtUtc: input.observedAtUtc,
-            audit: Object.freeze({
-                verified: true,
-                evidenceState: 'live_verified',
-                unresolvedCount: reasons.size,
-                attentionReasons: Object.freeze([...reasons].sort()),
-                recoverySupported: false,
-                currentRemoteStateVerified: true,
-            }),
+        return [Object.freeze({
+                id: `shopify-variant:${variant.variantId}`,
+                shopify: Object.freeze({ ...variant, price: Object.freeze({ ...variant.price }) }),
+                ebay: Object.freeze({
+                    sku: variant.sku,
+                    state: lifecycleStatus,
+                    listingId: activeListing?.listingId ?? null,
+                    offerId: matchingOffer?.offerId ?? null,
+                    url: activeListing ? `https://www.ebay.com/itm/${activeListing.listingId}` : null,
+                    activeMatchCount: activeMatches.length,
+                    inventoryItemCount: inventoryItems.length,
+                    offerCount: offers.length,
+                    unpublishedArtifactCount,
+                }),
+                lifecycleStatus,
+                lastVerifiedAtUtc: input.observedAtUtc,
+                audit: Object.freeze({
+                    verified: true,
+                    evidenceState: 'live_verified',
+                    unresolvedCount: reasons.size,
+                    attentionReasons: Object.freeze([...reasons].sort()),
+                    recoverySupported: false,
+                    currentRemoteStateVerified: true,
+                }),
+            })];
+    });
+    const shopifyRawSkus = new Set(input.shopifyVariants
+        .map((variant) => variant.sku)
+        .filter((sku) => sku !== ''));
+    const unmatchedActiveBySku = groupBy(input.ebayActiveListings.filter((listing) => listing.sku === '' || !shopifyRawSkus.has(listing.sku)), (listing) => listing.sku);
+    const unmatchedRows = [...unmatchedActiveBySku.entries()].flatMap(([sku, activeMatches]) => {
+        const byListingId = groupBy(activeMatches, (listing) => listing.listingId);
+        return [...byListingId.values()].map((listingMatches) => {
+            const activeListing = listingMatches[0];
+            const inventoryItems = sku === '' ? [] : inventoryBySku.get(sku) ?? [];
+            const offers = sku === '' ? [] : offersBySku.get(sku) ?? [];
+            const matchingOffer = offers.find((candidate) => candidate.listingId === activeListing.listingId)
+                ?? null;
+            const reasons = [
+                sku === '' ? 'ebay_active_without_sku' : 'ebay_active_without_shopify_variant',
+            ];
+            return Object.freeze({
+                id: `ebay-listing:${activeListing.listingId}:sku:${encodeURIComponent(sku || '(missing)')}`,
+                shopify: null,
+                ebay: Object.freeze({
+                    sku,
+                    state: 'attention',
+                    listingId: activeListing.listingId,
+                    offerId: matchingOffer?.offerId ?? null,
+                    url: `https://www.ebay.com/itm/${activeListing.listingId}`,
+                    activeMatchCount: 1,
+                    inventoryItemCount: inventoryItems.length,
+                    offerCount: offers.length,
+                    unpublishedArtifactCount: 0,
+                }),
+                lifecycleStatus: 'attention',
+                lastVerifiedAtUtc: input.observedAtUtc,
+                audit: Object.freeze({
+                    verified: true,
+                    evidenceState: 'live_verified',
+                    unresolvedCount: reasons.length,
+                    attentionReasons: Object.freeze(reasons),
+                    recoverySupported: false,
+                    currentRemoteStateVerified: true,
+                }),
+            });
         });
-    }).sort((left, right) => left.shopify.title.localeCompare(right.shopify.title)
-        || left.shopify.sku.localeCompare(right.shopify.sku)
-        || left.shopify.variantId.localeCompare(right.shopify.variantId));
+    });
+    const rows = [...shopifyRows, ...unmatchedRows].sort((left, right) => (left.shopify?.title ?? (left.ebay.sku || `eBay ${left.ebay.listingId ?? ''}`))
+        .localeCompare(right.shopify?.title ?? (right.ebay.sku || `eBay ${right.ebay.listingId ?? ''}`))
+        || (left.shopify?.sku ?? left.ebay.sku).localeCompare(right.shopify?.sku ?? right.ebay.sku)
+        || left.id.localeCompare(right.id));
     const summary = Object.freeze({
         active: rows.filter((row) => row.lifecycleStatus === 'active').length,
         notListed: rows.filter((row) => row.lifecycleStatus === 'not_listed').length,
         attention: rows.filter((row) => row.lifecycleStatus === 'attention').length,
-        totalInStock: rows.length,
+        unknown: 0,
+        totalInStock: rows.filter((row) => typeof row.shopify?.available === 'number'
+            && row.shopify.available > 0).length,
+        totalVisible: rows.length,
     });
     const coverage = Object.freeze({
         ...input.coverage,
@@ -187,6 +250,13 @@ export function buildLiveListingCatalogSnapshot(input) {
                 .map((variant) => variant.sku)).size,
             ambiguousActiveMatchCount,
             unpublishedArtifactSkuCount,
+            zeroStockActiveShopifyCount,
+            unmatchedEbaySkuCount: new Set(input.ebayActiveListings
+                .filter((listing) => listing.sku !== '' && !shopifyRawSkus.has(listing.sku))
+                .map((listing) => listing.sku)).size,
+            unmatchedEbayListingCount: new Set(input.ebayActiveListings
+                .filter((listing) => listing.sku === '' || !shopifyRawSkus.has(listing.sku))
+                .map((listing) => listing.listingId)).size,
         }),
     });
     return Object.freeze({
@@ -202,31 +272,79 @@ export function projectLiveListingCatalogPage(snapshot, input) {
         throw new LiveListingCatalogError();
     const search = input.search?.trim().toLocaleLowerCase('en-US') ?? '';
     const exactId = input.id?.trim() ?? '';
-    const filtered = snapshot.rows.filter((row) => {
+    const nowEpochMs = input.nowEpochMs ?? Date.now();
+    const maxAgeMs = input.maxAgeMs ?? MAX_LIVE_LISTING_SNAPSHOT_AGE_MS;
+    if (!Number.isSafeInteger(nowEpochMs) || nowEpochMs < 0
+        || !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1)
+        throw new LiveListingCatalogError();
+    const observedEpochMs = new Date(snapshot.observedAtUtc).getTime();
+    const ageMs = Math.max(0, nowEpochMs - observedEpochMs);
+    const staleByAge = ageMs > maxAgeMs;
+    const refreshFailed = input.refreshFailed === true;
+    const unknown = staleByAge || refreshFailed;
+    const unknownReason = refreshFailed
+        ? 'source_refresh_failed'
+        : 'source_snapshot_stale';
+    const projectedRows = unknown
+        ? Object.freeze(snapshot.rows.map((row) => Object.freeze({
+            ...row,
+            ebay: Object.freeze({ ...row.ebay, state: 'unknown' }),
+            lifecycleStatus: 'unknown',
+            audit: Object.freeze({
+                ...row.audit,
+                verified: false,
+                evidenceState: 'stale',
+                unresolvedCount: row.audit.unresolvedCount + 1,
+                attentionReasons: Object.freeze([
+                    ...new Set([...row.audit.attentionReasons, unknownReason]),
+                ]),
+                currentRemoteStateVerified: false,
+            }),
+        })))
+        : snapshot.rows;
+    const projectedSummary = unknown
+        ? Object.freeze({
+            active: 0,
+            notListed: 0,
+            attention: 0,
+            unknown: projectedRows.length,
+            totalInStock: snapshot.summary.totalInStock,
+            totalVisible: projectedRows.length,
+        })
+        : snapshot.summary;
+    const filtered = projectedRows.filter((row) => {
         if (exactId && row.id !== exactId)
             return false;
         if (input.status && row.lifecycleStatus !== input.status)
             return false;
         if (!search)
             return true;
-        return [row.id, row.shopify.productId, row.shopify.variantId, row.shopify.sku,
-            row.shopify.title, row.shopify.variantTitle, row.ebay.listingId, row.ebay.offerId]
+        return [row.id, row.shopify?.productId, row.shopify?.variantId, row.shopify?.sku,
+            row.shopify?.title, row.shopify?.variantTitle, row.ebay.sku,
+            row.ebay.listingId, row.ebay.offerId]
             .filter((value) => typeof value === 'string')
             .some((value) => value.toLocaleLowerCase('en-US').includes(search));
     });
     return Object.freeze({
-        schemaVersion: 2,
+        schemaVersion: 3,
         data: Object.freeze(filtered.slice(input.offset, input.offset + input.limit)),
         total: filtered.length,
         limit: input.limit,
         offset: input.offset,
-        summary: snapshot.summary,
+        summary: projectedSummary,
         source: 'shopify-admin-graphql+ebay-active-listings',
         evidenceKind: 'live_read',
-        authoritative: true,
+        authoritative: !unknown,
         remoteReadPerformed: true,
         externalWritesPerformed: 0,
         observedAtUtc: snapshot.observedAtUtc,
+        freshness: Object.freeze({
+            state: refreshFailed
+                ? 'refresh_failed'
+                : staleByAge ? 'stale' : 'fresh',
+            ageMs,
+            maxAgeMs,
+        }),
         coverage: snapshot.coverage,
     });
 }

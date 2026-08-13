@@ -34,6 +34,7 @@ const Dashboard: React.FC = () => {
   const summary = valid ? listings.data?.summary : undefined;
   const unavailable = Boolean(listings.error || (listings.data && !valid));
   const connectionsUnavailable = unavailable || Boolean(migration.error);
+  const connectionsCurrent = valid && listings.data?.authoritative === true && !migration.error;
 
   return (
     <Page title="Overview" fullWidth>
@@ -54,14 +55,15 @@ const Dashboard: React.FC = () => {
                 {formatVerifiedAt(listings.data?.observedAtUtc)}
               </Text>
             </InlineStack>
-            <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+            <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
               <CountCard
                 label="Needs attention"
                 value={summary.attention}
                 tone={summary.attention > 0 ? 'critical' : undefined}
               />
               <CountCard label="Not listed" value={summary.notListed} />
-              <CountCard label="Active when checked" value={summary.active} />
+              <CountCard label="Active" value={summary.active} />
+              <CountCard label="Unknown" value={summary.unknown} tone={summary.unknown > 0 ? 'critical' : undefined} />
             </InlineGrid>
           </BlockStack>
         )}
@@ -84,8 +86,8 @@ const Dashboard: React.FC = () => {
               <BlockStack gap="300">
                 <InlineStack align="space-between" blockAlign="center">
                   <Text as="h2" variant="headingMd">Connections</Text>
-                  <Badge tone={connectionsUnavailable ? 'critical' : 'success'}>
-                    {connectionsUnavailable ? 'Unavailable' : 'Checked'}
+                  <Badge tone={connectionsUnavailable ? 'critical' : connectionsCurrent ? 'success' : 'attention'}>
+                    {connectionsUnavailable ? 'Unavailable' : connectionsCurrent ? 'Current' : 'Unknown'}
                   </Badge>
                 </InlineStack>
                 <Text as="p">Shopify + eBay</Text>

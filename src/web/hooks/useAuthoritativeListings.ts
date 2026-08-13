@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from './useApi';
 
-export type AuthoritativeListingStatus = 'active' | 'not_listed' | 'attention';
+export type AuthoritativeListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 export type ListingAttentionReason =
   | 'shopify_product_not_active'
   | 'shopify_sku_missing'
@@ -10,7 +10,12 @@ export type ListingAttentionReason =
   | 'ebay_sku_near_collision'
   | 'ebay_multiple_active_matches'
   | 'ebay_unpublished_artifact'
-  | 'ebay_inventory_coverage_unavailable';
+  | 'ebay_inventory_coverage_unavailable'
+  | 'ebay_active_without_shopify_variant'
+  | 'ebay_active_without_sku'
+  | 'shopify_inventory_not_positive'
+  | 'source_snapshot_stale'
+  | 'source_refresh_failed';
 
 export interface AuthoritativeListingItem {
   id: string;
@@ -23,13 +28,14 @@ export interface AuthoritativeListingItem {
     productStatus: string;
     primaryImageUrl: string | null;
     imageCount: number;
-    available: number;
+    available: number | null;
     price: {
       amount: string;
       currency: string;
     };
-  };
+  } | null;
   ebay: {
+    sku: string;
     state: AuthoritativeListingStatus;
     listingId: string | null;
     offerId: string | null;
@@ -42,24 +48,24 @@ export interface AuthoritativeListingItem {
   lifecycleStatus: AuthoritativeListingStatus;
   lastVerifiedAtUtc: string;
   audit: {
-    verified: true;
-    evidenceState: 'live_verified';
+    verified: boolean;
+    evidenceState: 'live_verified' | 'stale';
     unresolvedCount: number;
     attentionReasons: ListingAttentionReason[];
     recoverySupported: false;
-    currentRemoteStateVerified: true;
+    currentRemoteStateVerified: boolean;
   };
 }
 
 export interface AuthoritativeListingsResponse {
-  schemaVersion: 2;
+  schemaVersion: 3;
   data: AuthoritativeListingItem[];
   total: number;
   limit: number;
   offset: number;
   source: 'shopify-admin-graphql+ebay-active-listings';
   evidenceKind: 'live_read';
-  authoritative: true;
+  authoritative: boolean;
   remoteReadPerformed: true;
   externalWritesPerformed: 0;
   observedAtUtc: string;
@@ -67,7 +73,9 @@ export interface AuthoritativeListingsResponse {
     active: number;
     notListed: number;
     attention: number;
+    unknown: number;
     totalInStock: number;
+    totalVisible: number;
   };
   coverage: {
     shopify: {
@@ -111,7 +119,15 @@ export interface AuthoritativeListingsResponse {
       ebayNearCollisionCount: number;
       ambiguousActiveMatchCount: number;
       unpublishedArtifactSkuCount: number;
+      zeroStockActiveShopifyCount: number;
+      unmatchedEbaySkuCount: number;
+      unmatchedEbayListingCount: number;
     };
+  };
+  freshness: {
+    state: 'fresh' | 'stale' | 'refresh_failed';
+    ageMs: number;
+    maxAgeMs: number;
   };
 }
 
@@ -123,7 +139,7 @@ export const useAuthoritativeListings = (params?: {
   id?: string;
 }) =>
   useQuery({
-    queryKey: ['authoritative-listings-v2', params],
+    queryKey: ['authoritative-listings-v3', params],
     queryFn: () => {
       const searchParams = new URLSearchParams();
       if (params?.limit) searchParams.set('limit', String(params.limit));
@@ -136,6 +152,9 @@ export const useAuthoritativeListings = (params?: {
         `/authoritative-listings${query ? `?${query}` : ''}`,
       );
     },
+    staleTime: 0,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
 export const useAuthoritativeListing = (id: string | undefined) => {

@@ -7,6 +7,7 @@ import type {
 } from './hooks/useAuthoritativeListings';
 import {
   formatListingPrice,
+  formatListingQuantity,
   formatVerifiedAt,
   isHistoricalBackfillProtected,
   isLiveCatalogResponse,
@@ -20,7 +21,9 @@ import {
   listingStatusTone,
   verifiedEbayListingUrl,
   verifiedListingImageUrl,
+  verifiedShopifyProductUrl,
 } from './operator-ui';
+import { isListingWorkspaceResponse } from './hooks/useListingWorkspace';
 
 const listing = (overrides: Partial<AuthoritativeListingItem> = {}): AuthoritativeListingItem => ({
   id: 'shopify-variant:gid://shopify/ProductVariant/1',
@@ -37,6 +40,7 @@ const listing = (overrides: Partial<AuthoritativeListingItem> = {}): Authoritati
     price: { amount: '39.95', currency: 'USD' },
   },
   ebay: {
+    sku: 'CAN3570-U119',
     state: 'active',
     listingId: '147502608418',
     offerId: null,
@@ -62,7 +66,7 @@ const listing = (overrides: Partial<AuthoritativeListingItem> = {}): Authoritati
 const response = (
   overrides: Partial<AuthoritativeListingsResponse> = {},
 ): AuthoritativeListingsResponse => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   data: [listing()],
   total: 1,
   limit: 25,
@@ -73,7 +77,7 @@ const response = (
   remoteReadPerformed: true,
   externalWritesPerformed: 0,
   observedAtUtc: '2026-08-13T17:30:00.000Z',
-  summary: { active: 1, notListed: 0, attention: 0, totalInStock: 1 },
+  summary: { active: 1, notListed: 0, attention: 0, unknown: 0, totalInStock: 1, totalVisible: 1 },
   coverage: {
     shopify: {
       source: 'shopify-admin-graphql',
@@ -112,30 +116,37 @@ const response = (
       ebayNearCollisionCount: 0,
       ambiguousActiveMatchCount: 0,
       unpublishedArtifactSkuCount: 0,
+      zeroStockActiveShopifyCount: 0,
+      unmatchedEbaySkuCount: 0,
+      unmatchedEbayListingCount: 0,
     },
   },
+  freshness: { state: 'fresh', ageMs: 0, maxAgeMs: 300_000 },
   ...overrides,
 });
 
 describe('stocked listings operator UI', () => {
-  it('uses one compact filter with exactly the three operator states', () => {
+  it('uses one compact filter for all four operator states', () => {
     expect(LISTING_FILTERS).toEqual([
       { label: 'All', value: 'all' },
       { label: 'Needs attention', value: 'attention' },
       { label: 'Not listed', value: 'not_listed' },
       { label: 'Active', value: 'active' },
+      { label: 'Unknown', value: 'unknown' },
     ]);
     expect(listingFilterOptions(response().summary)).toEqual([
       { label: 'All (1)', value: 'all' },
       { label: 'Needs attention (0)', value: 'attention' },
       { label: 'Not listed (0)', value: 'not_listed' },
       { label: 'Active (1)', value: 'active' },
+      { label: 'Unknown (0)', value: 'unknown' },
     ]);
   });
 
   it('keeps truthful temporal labels and review-only actions', () => {
-    expect(listingStatusLabel('active')).toBe('Active when checked');
-    expect(listingStatusLabel('not_listed')).toBe('Not listed when checked');
+    expect(listingStatusLabel('active')).toBe('Active');
+    expect(listingStatusLabel('not_listed')).toBe('Not listed');
+    expect(listingStatusLabel('unknown')).toBe('Unknown');
     expect(listingStatusLabel('attention')).toBe('Needs attention');
     expect(listingActionLabel('active')).toBe('View');
     expect(listingActionLabel('not_listed')).toBe('Review');
@@ -147,12 +158,58 @@ describe('stocked listings operator UI', () => {
     expect(verifiedEbayListingUrl('147502608418', 'https://evil.test/itm/147502608418')).toBeNull();
   });
 
-  it('formats source price, inventory, SKU, and checked time without inventing values', () => {
-    expect(formatListingPrice(listing().shopify.price)).toBe('$39.95');
-    expect(listing().shopify.available).toBe(1);
+  it('formats source price, inventory, SKU, and update time without inventing values', () => {
+    expect(formatListingPrice(listing().shopify?.price ?? null)).toBe('$39.95');
+    expect(listing().shopify?.available).toBe(1);
     expect(listingSkuLabel('')).toBe('Missing SKU');
-    expect(formatVerifiedAt('not-a-date')).toBe('Not checked');
-    expect(formatVerifiedAt('2026-08-13T17:30:00.000Z')).toMatch(/^Checked /);
+    expect(formatVerifiedAt('not-a-date')).toBe('Update unavailable');
+    expect(formatVerifiedAt('2026-08-13T17:30:00.000Z')).toMatch(/^Updated /);
+    expect(formatListingQuantity(null)).toBe('—');
+  });
+
+  it('supports eBay-only rows and rejects stale-state lies', () => {
+    const ebayOnly = listing({
+      id: 'ebay-listing:147502608418:sku:CAN3570-U119',
+      shopify: null,
+      lifecycleStatus: 'attention',
+      ebay: { ...listing().ebay, state: 'attention' },
+      audit: {
+        ...listing().audit,
+        unresolvedCount: 1,
+        attentionReasons: ['ebay_active_without_shopify_variant'],
+      },
+    });
+    expect(isLiveCatalogResponse(response({
+      data: [ebayOnly],
+      summary: { active: 0, notListed: 0, attention: 1, unknown: 0, totalInStock: 1, totalVisible: 1 },
+    }))).toBe(true);
+    expect(isLiveCatalogResponse(response({
+      authoritative: false,
+      freshness: { state: 'stale', ageMs: 300_001, maxAgeMs: 300_000 },
+    }))).toBe(false);
+
+    const refreshFailedRow = listing({
+      lifecycleStatus: 'unknown',
+      ebay: { ...listing().ebay, state: 'unknown' },
+      audit: {
+        ...listing().audit,
+        verified: false,
+        evidenceState: 'stale',
+        unresolvedCount: 1,
+        attentionReasons: ['source_refresh_failed'],
+        currentRemoteStateVerified: false,
+      },
+    });
+    expect(isLiveCatalogResponse(response({
+      authoritative: false,
+      freshness: { state: 'refresh_failed', ageMs: 1_000, maxAgeMs: 300_000 },
+      data: [refreshFailedRow],
+      summary: {
+        active: 0, notListed: 0, attention: 0, unknown: 1,
+        totalInStock: 1, totalVisible: 1,
+      },
+    }))).toBe(true);
+    expect(listingAttentionText(refreshFailedRow)).toBe('Current state unavailable');
   });
 
   it('shows the first authoritative reason for attention', () => {
@@ -183,14 +240,14 @@ describe('stocked listings operator UI', () => {
     expect(isLiveCatalogResponse(response({
       data: [],
       total: 0,
-      summary: { active: 0, notListed: 0, attention: 0, totalInStock: 0 },
+      summary: { active: 0, notListed: 0, attention: 0, unknown: 0, totalInStock: 0, totalVisible: 0 },
       coverage: {
         ...response().coverage,
         shopify: { ...response().coverage.shopify, positiveStockVariants: 0 },
       },
     }))).toBe(true);
     expect(isLiveCatalogResponse(response({
-      summary: { active: 1, notListed: 1, attention: 0, totalInStock: 1 },
+      summary: { active: 1, notListed: 1, attention: 0, unknown: 0, totalInStock: 1, totalVisible: 1 },
     }))).toBe(false);
     expect(isLiveCatalogResponse(response({
       coverage: {
@@ -204,7 +261,15 @@ describe('stocked listings operator UI', () => {
         },
       },
     }))).toBe(false);
-    expect(isLiveCatalogResponse(response({ data: [listing({ shopify: { ...listing().shopify, available: 0 } })] }))).toBe(false);
+    const stockItem = listing().shopify;
+    expect(stockItem).not.toBeNull();
+    expect(isLiveCatalogResponse(response({
+      data: [listing({ shopify: { ...stockItem!, available: 0 } })],
+      coverage: {
+        ...response().coverage,
+        shopify: { ...response().coverage.shopify, positiveStockVariants: 0 },
+      },
+    }))).toBe(false);
     expect(isLiveCatalogResponse(response({
       data: [listing({ ebay: { ...listing().ebay, activeMatchCount: Number.NaN } })],
     }))).toBe(false);
@@ -244,7 +309,7 @@ describe('stocked listings operator UI', () => {
     expect(isLiveCatalogResponse(response({
       data: [listing(), listing()],
       total: 2,
-      summary: { active: 2, notListed: 0, attention: 0, totalInStock: 2 },
+      summary: { active: 2, notListed: 0, attention: 0, unknown: 0, totalInStock: 2, totalVisible: 2 },
       coverage: {
         ...response().coverage,
         shopify: { ...response().coverage.shopify, positiveStockVariants: 2 },
@@ -260,7 +325,7 @@ describe('stocked listings operator UI', () => {
           attentionReasons: ['unknown_reason' as 'ebay_unpublished_artifact'],
         },
       })],
-      summary: { active: 0, notListed: 0, attention: 1, totalInStock: 1 },
+      summary: { active: 0, notListed: 0, attention: 1, unknown: 0, totalInStock: 1, totalVisible: 1 },
     }))).toBe(false);
     expect(isLiveCatalogResponse(response({
       data: [listing({
@@ -276,7 +341,7 @@ describe('stocked listings operator UI', () => {
           unpublishedArtifactCount: 1,
         },
       })],
-      summary: { active: 0, notListed: 1, attention: 0, totalInStock: 1 },
+      summary: { active: 0, notListed: 1, attention: 0, unknown: 0, totalInStock: 1, totalVisible: 1 },
     }))).toBe(false);
   });
 
@@ -333,5 +398,124 @@ describe('stocked listings operator UI', () => {
     expect(isMigrationPolicyAvailable({ historicalBackfillAllowed: false })).toBe(false);
     expect(isHistoricalBackfillProtected({ historicalBackfillAllowed: false })).toBe(true);
     expect(isHistoricalBackfillProtected(undefined)).toBe(false);
+  });
+
+  it('validates the listing workspace identity and remains read only', () => {
+    const catalog = listing();
+    const workspace = {
+      schemaVersion: 1,
+      evidence: {
+        catalogObservedAtUtc: '2026-08-13T17:30:00.000Z',
+        detailObservedAtUtc: null,
+        freshness: 'live',
+        backgroundRefreshSeconds: 60,
+        remoteReadPerformed: false,
+        externalWritesPerformed: 0,
+      },
+      catalog: {
+        ...catalog,
+        lifecycleStatus: 'not_listed',
+        ebay: {
+          ...catalog.ebay,
+          state: 'not_listed',
+          listingId: null,
+          offerId: null,
+          url: null,
+          activeMatchCount: 0,
+        },
+      },
+      mapping: {
+        state: 'shopify_only',
+        joinKey: 'exact_raw_sku',
+        shopifyProductId: catalog.shopify?.productId ?? null,
+        shopifyVariantId: catalog.shopify?.variantId ?? null,
+        inventorySku: catalog.shopify?.sku ?? null,
+        offerId: null,
+        listingId: null,
+        managementModel: 'none',
+        ownership: {
+          listing: 'unverified',
+          mapping: 'unverified',
+          price: 'marketplace_connect',
+          inventory: 'marketplace_connect',
+        },
+        editMode: 'read_only',
+      },
+      ebayDetail: null,
+    };
+    expect(isListingWorkspaceResponse(workspace, catalog.id)).toBe(true);
+    expect(isListingWorkspaceResponse({
+      ...workspace,
+      mapping: { ...workspace.mapping, editMode: 'write' },
+    }, catalog.id)).toBe(false);
+    expect(verifiedShopifyProductUrl('gid://shopify/Product/123')).toBe(
+      'https://admin.shopify.com/store/usedcameragear/products/123',
+    );
+    expect(verifiedShopifyProductUrl('gid://shopify/Order/123')).toBeNull();
+  });
+
+  it('accepts a SKU-less eBay exception without inventing remote detail', () => {
+    const catalog = listing({
+      id: 'ebay-listing:147502608418:sku:(missing)',
+      shopify: null,
+      ebay: {
+        ...listing().ebay,
+        sku: '',
+        state: 'attention',
+        offerId: null,
+      },
+      lifecycleStatus: 'attention',
+      audit: {
+        ...listing().audit,
+        unresolvedCount: 1,
+        attentionReasons: ['ebay_active_without_sku'],
+      },
+    });
+    const workspace = {
+      schemaVersion: 1,
+      evidence: {
+        catalogObservedAtUtc: '2026-08-13T17:30:00.000Z',
+        detailObservedAtUtc: null,
+        freshness: 'live',
+        backgroundRefreshSeconds: 60,
+        remoteReadPerformed: false,
+        externalWritesPerformed: 0,
+      },
+      catalog,
+      mapping: {
+        state: 'ebay_only_unmapped',
+        joinKey: 'exact_raw_sku',
+        shopifyProductId: null,
+        shopifyVariantId: null,
+        inventorySku: null,
+        offerId: null,
+        listingId: '147502608418',
+        managementModel: 'none',
+        ownership: {
+          listing: 'unverified',
+          mapping: 'unverified',
+          price: 'marketplace_connect',
+          inventory: 'marketplace_connect',
+        },
+        editMode: 'read_only',
+      },
+      ebayDetail: null,
+    };
+    expect(isListingWorkspaceResponse(workspace, catalog.id)).toBe(true);
+    expect(isListingWorkspaceResponse({
+      ...workspace,
+      mapping: { ...workspace.mapping, listingId: '999999999999' },
+    }, catalog.id)).toBe(false);
+  });
+
+  it('labels only price and inventory as Marketplace Connect owned', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('./pages/ListingDetail.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain('Owner unverified');
+    expect(source).toContain('Price · Marketplace Connect');
+    expect(source).toContain('Quantity · Marketplace Connect');
+    expect(source).not.toMatch(/<Badge[^>]*>Marketplace Connect<\/Badge>/u);
   });
 });

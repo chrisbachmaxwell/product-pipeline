@@ -173,6 +173,14 @@ const runtimeEbayToken = createTransientEbayTokenProvider({
     loadAuth: readRuntimeAuthMaterial,
     exchange: exchangeRuntimeEbayToken,
 });
+/**
+ * Internal read-authority seam for exact eBay GET detail readers. Callers must
+ * never return, persist, or log the token and must retain the same account and
+ * method allowlists as this module.
+ */
+export async function getRuntimeEbayReadToken() {
+    return catalogPhase('TOKEN_REFRESH_FAILED', runtimeEbayToken);
+}
 const SHOPIFY_PREFLIGHT = `query RuntimeListingCatalogPreflight {
   shop { id myshopifyDomain currencyCode }
   currentAppInstallation { accessScopes { handle } }
@@ -238,14 +246,15 @@ async function captureShopify(accessToken) {
             const product = asRecord(node.product);
             const productStatus = safeText(product.status, 32).toUpperCase();
             productStatusCounts[productStatus] = (productStatusCounts[productStatus] ?? 0) + 1;
+            let available = null;
             if (node.inventoryQuantity == null || !Number.isInteger(node.inventoryQuantity)) {
                 excludedUnknownInventory += 1;
-                continue;
             }
-            const available = node.inventoryQuantity;
-            if (available <= 0) {
+            else {
+                available = node.inventoryQuantity;
+            }
+            if (available !== null && available <= 0) {
                 excludedZeroInventory += 1;
-                continue;
             }
             const imageValue = optionalText(node.image?.url ?? product.featuredMedia?.preview?.image?.url, 2048);
             let primaryImageUrl = null;
@@ -301,7 +310,7 @@ async function captureShopify(accessToken) {
             paginationComplete: true,
             variantPageCount: pageCount,
             totalVariantsCaptured,
-            positiveStockVariants: variants.length,
+            positiveStockVariants: variants.filter((variant) => variant.available !== null && variant.available > 0).length,
             excludedZeroInventory,
             excludedUnknownInventory,
             productStatusCounts: Object.freeze({ ...productStatusCounts }),
@@ -351,6 +360,8 @@ function activeSkuRecords(item, listingId) {
             records.push(Object.freeze({ listingId, sku: variation.SKU }));
         }
     }
+    if (records.length === 0)
+        records.push(Object.freeze({ listingId, sku: '' }));
     return records;
 }
 async function captureTrading(accessToken) {
@@ -563,27 +574,76 @@ export function createLiveListingCatalogCache(capture, options = {}) {
     const ttlMs = options.ttlMs ?? SNAPSHOT_TTL_MS;
     let cached = null;
     let flight = null;
-    return async () => {
-        if (cached && cached.expiresAt > now())
-            return cached.value;
+    let lastAttemptAt = null;
+    let lastFailureAt = null;
+    const refresh = async () => {
         if (flight)
             return flight;
-        flight = capture();
+        lastAttemptAt = now();
+        flight = Promise.resolve().then(capture);
         try {
             const value = await flight;
-            cached = { value, expiresAt: now() + ttlMs };
+            const refreshedAt = now();
+            cached = { value, refreshedAt, expiresAt: refreshedAt + ttlMs };
+            lastFailureAt = null;
             return value;
+        }
+        catch (error) {
+            lastFailureAt = now();
+            throw error;
         }
         finally {
             flight = null;
         }
     };
+    const get = async () => {
+        if (cached && cached.expiresAt > now())
+            return cached.value;
+        try {
+            return await refresh();
+        }
+        catch (error) {
+            if (cached)
+                return cached.value;
+            throw error;
+        }
+    };
+    return Object.assign(get, {
+        refresh,
+        status: () => Object.freeze({
+            hasSuccessfulSnapshot: cached !== null,
+            observedAtUtc: cached?.value.observedAtUtc ?? null,
+            lastSuccessAtEpochMs: cached?.refreshedAt ?? null,
+            lastAttemptAtEpochMs: lastAttemptAt,
+            lastFailureAtEpochMs: lastFailureAt,
+            expiresAtEpochMs: cached?.expiresAt ?? null,
+            refreshInFlight: flight !== null,
+        }),
+    });
+}
+export function hasUnresolvedLiveListingRefreshFailure(status) {
+    return status?.lastFailureAtEpochMs !== null
+        && status?.lastFailureAtEpochMs !== undefined;
 }
 export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
+const LIVE_CATALOG_REFRESH_INTERVAL_MS = 60_000;
+export function startLiveListingCatalogRefresher(cache = getLiveListingCatalogSnapshot, options = {}) {
+    const intervalMs = options.intervalMs ?? LIVE_CATALOG_REFRESH_INTERVAL_MS;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 15_000 || intervalMs > 300_000)
+        deny();
+    const schedule = options.setIntervalImpl ?? setInterval;
+    const timer = schedule(() => {
+        void cache.refresh().catch(() => undefined);
+    }, intervalMs);
+    timer.unref?.();
+    void cache.refresh().catch(() => undefined);
+    return () => clearInterval(timer);
+}
 export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
     catalogPhase,
     captureShopify,
     tradingCall,
     captureTrading,
     captureInventory,
+    LIVE_CATALOG_REFRESH_INTERVAL_MS,
 });

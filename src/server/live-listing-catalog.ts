@@ -1,4 +1,4 @@
-export type LiveListingStatus = 'active' | 'not_listed' | 'attention';
+export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
 export type ListingAttentionReason =
   | 'shopify_product_not_active'
@@ -8,7 +8,12 @@ export type ListingAttentionReason =
   | 'ebay_sku_near_collision'
   | 'ebay_multiple_active_matches'
   | 'ebay_unpublished_artifact'
-  | 'ebay_inventory_coverage_unavailable';
+  | 'ebay_inventory_coverage_unavailable'
+  | 'ebay_active_without_shopify_variant'
+  | 'ebay_active_without_sku'
+  | 'shopify_inventory_not_positive'
+  | 'source_snapshot_stale'
+  | 'source_refresh_failed';
 
 export type CapturedShopifyVariant = Readonly<{
   productId: string;
@@ -19,7 +24,7 @@ export type CapturedShopifyVariant = Readonly<{
   productStatus: string;
   primaryImageUrl: string | null;
   imageCount: number;
-  available: number;
+  available: number | null;
   price: Readonly<{ amount: string; currency: string }>;
 }>;
 
@@ -80,6 +85,9 @@ export type LiveCatalogCoverage = Readonly<{
     ebayNearCollisionCount: number;
     ambiguousActiveMatchCount: number;
     unpublishedArtifactSkuCount: number;
+    zeroStockActiveShopifyCount: number;
+    unmatchedEbaySkuCount: number;
+    unmatchedEbayListingCount: number;
   }>;
 }>;
 
@@ -94,10 +102,11 @@ export type LiveListingCatalogRow = Readonly<{
     productStatus: string;
     primaryImageUrl: string | null;
     imageCount: number;
-    available: number;
+    available: number | null;
     price: Readonly<{ amount: string; currency: string }>;
-  }>;
+  }> | null;
   ebay: Readonly<{
+    sku: string;
     state: LiveListingStatus;
     listingId: string | null;
     offerId: string | null;
@@ -110,12 +119,12 @@ export type LiveListingCatalogRow = Readonly<{
   lifecycleStatus: LiveListingStatus;
   lastVerifiedAtUtc: string;
   audit: Readonly<{
-    verified: true;
-    evidenceState: 'live_verified';
+    verified: boolean;
+    evidenceState: 'live_verified' | 'stale';
     unresolvedCount: number;
     attentionReasons: readonly ListingAttentionReason[];
     recoverySupported: false;
-    currentRemoteStateVerified: true;
+    currentRemoteStateVerified: boolean;
   }>;
 }>;
 
@@ -126,13 +135,17 @@ export type LiveListingCatalogSnapshot = Readonly<{
     active: number;
     notListed: number;
     attention: number;
+    unknown: number;
     totalInStock: number;
+    totalVisible: number;
   }>;
   coverage: LiveCatalogCoverage;
 }>;
 
+export const MAX_LIVE_LISTING_SNAPSHOT_AGE_MS = 5 * 60_000;
+
 export type LiveListingCatalogPage = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 3;
   data: readonly LiveListingCatalogRow[];
   total: number;
   limit: number;
@@ -140,10 +153,15 @@ export type LiveListingCatalogPage = Readonly<{
   summary: LiveListingCatalogSnapshot['summary'];
   source: 'shopify-admin-graphql+ebay-active-listings';
   evidenceKind: 'live_read';
-  authoritative: true;
+  authoritative: boolean;
   remoteReadPerformed: true;
   externalWritesPerformed: 0;
   observedAtUtc: string;
+  freshness: Readonly<{
+    state: 'fresh' | 'stale' | 'refresh_failed';
+    ageMs: number;
+    maxAgeMs: number;
+  }>;
   coverage: LiveCatalogCoverage;
 }>;
 
@@ -227,17 +245,22 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
   coverage: Omit<LiveCatalogCoverage, 'join'>;
 }>): LiveListingCatalogSnapshot {
   if (Number.isNaN(new Date(input.observedAtUtc).getTime())) throw new LiveListingCatalogError();
-  if (input.coverage.shopify.positiveStockVariants !== input.shopifyVariants.length
-    || input.coverage.shopify.totalVariantsCaptured
-      !== input.coverage.shopify.positiveStockVariants
-        + input.coverage.shopify.excludedZeroInventory
-        + input.coverage.shopify.excludedUnknownInventory
+  const positiveStockVariants = input.shopifyVariants.filter((variant) =>
+    variant.available !== null && variant.available > 0).length;
+  const nonpositiveStockVariants = input.shopifyVariants.filter((variant) =>
+    variant.available !== null && variant.available <= 0).length;
+  const unknownStockVariants = input.shopifyVariants.filter((variant) =>
+    variant.available === null).length;
+  if (input.coverage.shopify.totalVariantsCaptured !== input.shopifyVariants.length
+    || input.coverage.shopify.positiveStockVariants !== positiveStockVariants
+    || input.coverage.shopify.excludedZeroInventory !== nonpositiveStockVariants
+    || input.coverage.shopify.excludedUnknownInventory !== unknownStockVariants
     || input.coverage.ebay.trading.activeListingCount
       !== new Set(input.ebayActiveListings.map((value) => value.listingId)).size
     || input.coverage.ebay.inventory.inventoryItemCount !== input.ebayInventoryItems.length
     || input.coverage.ebay.inventory.offerCount !== input.ebayOffers.length
-    || input.shopifyVariants.some((variant) => !Number.isInteger(variant.available)
-      || variant.available <= 0)) throw new LiveListingCatalogError();
+    || input.shopifyVariants.some((variant) => variant.available !== null
+      && !Number.isInteger(variant.available))) throw new LiveListingCatalogError();
   requireUnique(input.shopifyVariants, (value) => value.variantId);
   requireUnique(input.ebayActiveListings, (value) => `${value.listingId}\u0000${value.sku}`);
   requireUnique(input.ebayInventoryItems, (value) => value.sku);
@@ -262,8 +285,9 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
   let missingShopifySkuCount = 0;
   let ambiguousActiveMatchCount = 0;
   let unpublishedArtifactSkuCount = 0;
+  let zeroStockActiveShopifyCount = 0;
 
-  const rows = input.shopifyVariants.map((variant): LiveListingCatalogRow => {
+  const shopifyRows = input.shopifyVariants.flatMap((variant): LiveListingCatalogRow[] => {
     const reasons = new Set<ListingAttentionReason>();
     if (variant.productStatus.toUpperCase() !== 'ACTIVE') reasons.add('shopify_product_not_active');
     if (variant.sku.trim() === '') {
@@ -276,15 +300,25 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       reasons.add('ebay_sku_near_collision');
     }
 
-    const activeMatches = activeBySku.get(variant.sku) ?? [];
-    const inventoryItems = inventoryBySku.get(variant.sku) ?? [];
-    const offers = offersBySku.get(variant.sku) ?? [];
+    const skuCanJoin = variant.sku !== '';
+    const activeMatches = skuCanJoin ? activeBySku.get(variant.sku) ?? [] : [];
+    const inventoryItems = skuCanJoin ? inventoryBySku.get(variant.sku) ?? [] : [];
+    const offers = skuCanJoin ? offersBySku.get(variant.sku) ?? [] : [];
     if (activeMatches.length > 1) {
       reasons.add('ebay_multiple_active_matches');
       ambiguousActiveMatchCount += 1;
     }
 
     const activeListing = activeMatches.length === 1 ? activeMatches[0]! : null;
+    const shouldInclude = (variant.available !== null && variant.available > 0)
+      || activeMatches.length > 0
+      || inventoryItems.length > 0
+      || offers.length > 0;
+    if (!shouldInclude) return [];
+    if (activeMatches.length > 0 && (variant.available === null || variant.available <= 0)) {
+      reasons.add('shopify_inventory_not_positive');
+      zeroStockActiveShopifyCount += 1;
+    }
     const compatiblePublishedOffer = activeListing !== null
       && inventoryItems.length === 1
       && offers.length === 1
@@ -310,10 +344,11 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       ? offers.find((offer) => offer.listingId === activeListing.listingId) ?? null
       : null;
 
-    return Object.freeze({
+    return [Object.freeze({
       id: `shopify-variant:${variant.variantId}`,
       shopify: Object.freeze({ ...variant, price: Object.freeze({ ...variant.price }) }),
       ebay: Object.freeze({
+        sku: variant.sku,
         state: lifecycleStatus,
         listingId: activeListing?.listingId ?? null,
         offerId: matchingOffer?.offerId ?? null,
@@ -333,16 +368,67 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
         recoverySupported: false as const,
         currentRemoteStateVerified: true as const,
       }),
+    })];
+  });
+
+  const shopifyRawSkus = new Set(input.shopifyVariants
+    .map((variant) => variant.sku)
+    .filter((sku) => sku !== ''));
+  const unmatchedActiveBySku = groupBy(input.ebayActiveListings.filter((listing) =>
+    listing.sku === '' || !shopifyRawSkus.has(listing.sku)), (listing) => listing.sku);
+  const unmatchedRows = [...unmatchedActiveBySku.entries()].flatMap(([sku, activeMatches]) => {
+    const byListingId = groupBy(activeMatches, (listing) => listing.listingId);
+    return [...byListingId.values()].map((listingMatches): LiveListingCatalogRow => {
+      const activeListing = listingMatches[0]!;
+      const inventoryItems = sku === '' ? [] : inventoryBySku.get(sku) ?? [];
+      const offers = sku === '' ? [] : offersBySku.get(sku) ?? [];
+      const matchingOffer = offers.find((candidate) => candidate.listingId === activeListing.listingId)
+        ?? null;
+      const reasons: ListingAttentionReason[] = [
+        sku === '' ? 'ebay_active_without_sku' : 'ebay_active_without_shopify_variant',
+      ];
+      return Object.freeze({
+        id: `ebay-listing:${activeListing.listingId}:sku:${encodeURIComponent(sku || '(missing)')}`,
+        shopify: null,
+        ebay: Object.freeze({
+          sku,
+          state: 'attention' as const,
+          listingId: activeListing.listingId,
+          offerId: matchingOffer?.offerId ?? null,
+          url: `https://www.ebay.com/itm/${activeListing.listingId}`,
+          activeMatchCount: 1,
+          inventoryItemCount: inventoryItems.length,
+          offerCount: offers.length,
+          unpublishedArtifactCount: 0,
+        }),
+        lifecycleStatus: 'attention' as const,
+        lastVerifiedAtUtc: input.observedAtUtc,
+        audit: Object.freeze({
+          verified: true,
+          evidenceState: 'live_verified' as const,
+          unresolvedCount: reasons.length,
+          attentionReasons: Object.freeze(reasons),
+          recoverySupported: false as const,
+          currentRemoteStateVerified: true,
+        }),
+      });
     });
-  }).sort((left, right) => left.shopify.title.localeCompare(right.shopify.title)
-    || left.shopify.sku.localeCompare(right.shopify.sku)
-    || left.shopify.variantId.localeCompare(right.shopify.variantId));
+  });
+
+  const rows = [...shopifyRows, ...unmatchedRows].sort((left, right) =>
+    (left.shopify?.title ?? (left.ebay.sku || `eBay ${left.ebay.listingId ?? ''}`))
+      .localeCompare(right.shopify?.title ?? (right.ebay.sku || `eBay ${right.ebay.listingId ?? ''}`))
+    || (left.shopify?.sku ?? left.ebay.sku).localeCompare(right.shopify?.sku ?? right.ebay.sku)
+    || left.id.localeCompare(right.id));
 
   const summary = Object.freeze({
     active: rows.filter((row) => row.lifecycleStatus === 'active').length,
     notListed: rows.filter((row) => row.lifecycleStatus === 'not_listed').length,
     attention: rows.filter((row) => row.lifecycleStatus === 'attention').length,
-    totalInStock: rows.length,
+    unknown: 0,
+    totalInStock: rows.filter((row) => typeof row.shopify?.available === 'number'
+      && row.shopify.available > 0).length,
+    totalVisible: rows.length,
   });
   const coverage: LiveCatalogCoverage = Object.freeze({
     ...input.coverage,
@@ -356,6 +442,13 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
         .map((variant) => variant.sku)).size,
       ambiguousActiveMatchCount,
       unpublishedArtifactSkuCount,
+      zeroStockActiveShopifyCount,
+      unmatchedEbaySkuCount: new Set(input.ebayActiveListings
+        .filter((listing) => listing.sku !== '' && !shopifyRawSkus.has(listing.sku))
+        .map((listing) => listing.sku)).size,
+      unmatchedEbayListingCount: new Set(input.ebayActiveListings
+        .filter((listing) => listing.sku === '' || !shopifyRawSkus.has(listing.sku))
+        .map((listing) => listing.listingId)).size,
     }),
   });
 
@@ -375,34 +468,84 @@ export function projectLiveListingCatalogPage(
     search?: string;
     status?: LiveListingStatus;
     id?: string;
+    nowEpochMs?: number;
+    maxAgeMs?: number;
+    refreshFailed?: boolean;
   }>,
 ): LiveListingCatalogPage {
   if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100
     || !Number.isInteger(input.offset) || input.offset < 0) throw new LiveListingCatalogError();
   const search = input.search?.trim().toLocaleLowerCase('en-US') ?? '';
   const exactId = input.id?.trim() ?? '';
-  const filtered = snapshot.rows.filter((row) => {
+  const nowEpochMs = input.nowEpochMs ?? Date.now();
+  const maxAgeMs = input.maxAgeMs ?? MAX_LIVE_LISTING_SNAPSHOT_AGE_MS;
+  if (!Number.isSafeInteger(nowEpochMs) || nowEpochMs < 0
+    || !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1) throw new LiveListingCatalogError();
+  const observedEpochMs = new Date(snapshot.observedAtUtc).getTime();
+  const ageMs = Math.max(0, nowEpochMs - observedEpochMs);
+  const staleByAge = ageMs > maxAgeMs;
+  const refreshFailed = input.refreshFailed === true;
+  const unknown = staleByAge || refreshFailed;
+  const unknownReason: ListingAttentionReason = refreshFailed
+    ? 'source_refresh_failed'
+    : 'source_snapshot_stale';
+  const projectedRows: readonly LiveListingCatalogRow[] = unknown
+    ? Object.freeze(snapshot.rows.map((row) => Object.freeze({
+        ...row,
+        ebay: Object.freeze({ ...row.ebay, state: 'unknown' as const }),
+        lifecycleStatus: 'unknown' as const,
+        audit: Object.freeze({
+          ...row.audit,
+          verified: false,
+          evidenceState: 'stale' as const,
+          unresolvedCount: row.audit.unresolvedCount + 1,
+          attentionReasons: Object.freeze([
+            ...new Set([...row.audit.attentionReasons, unknownReason]),
+          ]),
+          currentRemoteStateVerified: false,
+        }),
+      })))
+    : snapshot.rows;
+  const projectedSummary = unknown
+    ? Object.freeze({
+        active: 0,
+        notListed: 0,
+        attention: 0,
+        unknown: projectedRows.length,
+        totalInStock: snapshot.summary.totalInStock,
+        totalVisible: projectedRows.length,
+      })
+    : snapshot.summary;
+  const filtered = projectedRows.filter((row) => {
     if (exactId && row.id !== exactId) return false;
     if (input.status && row.lifecycleStatus !== input.status) return false;
     if (!search) return true;
-    return [row.id, row.shopify.productId, row.shopify.variantId, row.shopify.sku,
-      row.shopify.title, row.shopify.variantTitle, row.ebay.listingId, row.ebay.offerId]
+    return [row.id, row.shopify?.productId, row.shopify?.variantId, row.shopify?.sku,
+      row.shopify?.title, row.shopify?.variantTitle, row.ebay.sku,
+      row.ebay.listingId, row.ebay.offerId]
       .filter((value): value is string => typeof value === 'string')
       .some((value) => value.toLocaleLowerCase('en-US').includes(search));
   });
   return Object.freeze({
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     data: Object.freeze(filtered.slice(input.offset, input.offset + input.limit)),
     total: filtered.length,
     limit: input.limit,
     offset: input.offset,
-    summary: snapshot.summary,
+    summary: projectedSummary,
     source: 'shopify-admin-graphql+ebay-active-listings' as const,
     evidenceKind: 'live_read' as const,
-    authoritative: true as const,
+    authoritative: !unknown,
     remoteReadPerformed: true as const,
     externalWritesPerformed: 0 as const,
     observedAtUtc: snapshot.observedAtUtc,
+    freshness: Object.freeze({
+      state: refreshFailed
+        ? 'refresh_failed' as const
+        : staleByAge ? 'stale' as const : 'fresh' as const,
+      ageMs,
+      maxAgeMs,
+    }),
     coverage: snapshot.coverage,
   });
 }

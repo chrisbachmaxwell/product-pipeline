@@ -11,6 +11,7 @@ export const LISTING_FILTERS: Array<{ label: string; value: ListingFilter }> = [
   { label: 'Needs attention', value: 'attention' },
   { label: 'Not listed', value: 'not_listed' },
   { label: 'Active', value: 'active' },
+  { label: 'Unknown', value: 'unknown' },
 ];
 
 export const listingFilterOptions = (
@@ -18,10 +19,11 @@ export const listingFilterOptions = (
 ): Array<{ label: string; value: ListingFilter }> => {
   if (!summary) return LISTING_FILTERS;
   const counts: Record<ListingFilter, number> = {
-    all: summary.totalInStock,
+    all: summary.totalVisible,
     attention: summary.attention,
     not_listed: summary.notListed,
     active: summary.active,
+    unknown: summary.unknown,
   };
   return LISTING_FILTERS.map((option) => ({
     ...option,
@@ -30,16 +32,18 @@ export const listingFilterOptions = (
 };
 
 export const listingStatusLabel = (status: AuthoritativeListingStatus): string => {
-  if (status === 'active') return 'Active when checked';
-  if (status === 'not_listed') return 'Not listed when checked';
+  if (status === 'active') return 'Active';
+  if (status === 'not_listed') return 'Not listed';
+  if (status === 'unknown') return 'Unknown';
   return 'Needs attention';
 };
 
 export const listingStatusTone = (
   status: AuthoritativeListingStatus,
-): 'critical' | 'success' | 'attention' => {
+): 'critical' | 'success' | 'attention' | 'info' => {
   if (status === 'attention') return 'critical';
   if (status === 'active') return 'success';
+  if (status === 'unknown') return 'info';
   return 'attention';
 };
 
@@ -53,7 +57,10 @@ export const listingActionLabel = (
 
 export const listingSkuLabel = (sku: string): string => sku.trim() || 'Missing SKU';
 
-export const formatListingPrice = (price: AuthoritativeListingItem['shopify']['price']): string => {
+export const formatListingPrice = (
+  price: NonNullable<AuthoritativeListingItem['shopify']>['price'] | null,
+): string => {
+  if (!price) return '—';
   const amount = Number(price.amount);
   if (!Number.isFinite(amount) || !price.currency) return '—';
   return new Intl.NumberFormat('en-US', {
@@ -62,11 +69,18 @@ export const formatListingPrice = (price: AuthoritativeListingItem['shopify']['p
   }).format(amount);
 };
 
+export const formatWorkspaceMoney = (
+  money: { value: string; currency: string } | null,
+): string => formatListingPrice(money ? { amount: money.value, currency: money.currency } : null);
+
+export const formatListingQuantity = (value: number | null): string =>
+  typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '—';
+
 export const formatVerifiedAt = (value: string | null | undefined): string => {
-  if (!value) return 'Not checked';
+  if (!value) return 'Update unavailable';
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not checked';
-  return `Checked ${new Intl.DateTimeFormat('en-US', {
+  if (Number.isNaN(date.getTime())) return 'Update unavailable';
+  return `Updated ${new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -104,7 +118,9 @@ export const isLiveCatalogResponse = (
     response.summary?.active,
     response.summary?.notListed,
     response.summary?.attention,
+    response.summary?.unknown,
     response.summary?.totalInStock,
+    response.summary?.totalVisible,
     response.coverage?.shopify?.variantPageCount,
     response.coverage?.shopify?.totalVariantsCaptured,
     response.coverage?.shopify?.positiveStockVariants,
@@ -122,20 +138,29 @@ export const isLiveCatalogResponse = (
     response.coverage?.join?.ebayNearCollisionCount,
     response.coverage?.join?.ambiguousActiveMatchCount,
     response.coverage?.join?.unpublishedArtifactSkuCount,
+    response.coverage?.join?.zeroStockActiveShopifyCount,
+    response.coverage?.join?.unmatchedEbaySkuCount,
+    response.coverage?.join?.unmatchedEbayListingCount,
+    response.freshness?.ageMs,
+    response.freshness?.maxAgeMs,
   ];
   if (!counts.every((count) => Number.isInteger(count) && count >= 0)) return false;
   if (response.limit < 1 || response.limit > 100) return false;
   if (response.data.length > response.limit || response.data.length > response.total) return false;
   if (new Set(response.data.map((listing) => listing.id)).size !== response.data.length) return false;
-  if (response.total > response.summary.totalInStock) return false;
+  if (response.total > response.summary.totalVisible) return false;
   if (
-    response.summary.totalInStock !==
+    response.summary.totalVisible !==
     response.summary.active + response.summary.notListed + response.summary.attention
+      + response.summary.unknown
+    || response.summary.totalInStock > response.summary.totalVisible
   ) {
     return false;
   }
 
-  const validStatuses = new Set<AuthoritativeListingStatus>(['active', 'not_listed', 'attention']);
+  const validStatuses = new Set<AuthoritativeListingStatus>([
+    'active', 'not_listed', 'attention', 'unknown',
+  ]);
   const validAttentionReasons = new Set<AuthoritativeListingItem['audit']['attentionReasons'][number]>([
     'shopify_product_not_active',
     'shopify_sku_missing',
@@ -145,6 +170,11 @@ export const isLiveCatalogResponse = (
     'ebay_multiple_active_matches',
     'ebay_unpublished_artifact',
     'ebay_inventory_coverage_unavailable',
+    'ebay_active_without_shopify_variant',
+    'ebay_active_without_sku',
+    'shopify_inventory_not_positive',
+    'source_snapshot_stale',
+    'source_refresh_failed',
   ]);
   const rowsValid = response.data.every((listing) => {
     const ebayCounts = [
@@ -154,23 +184,35 @@ export const isLiveCatalogResponse = (
       listing?.ebay?.unpublishedArtifactCount,
       listing?.audit?.unresolvedCount,
     ];
+    const shopifyValid = listing.shopify === null
+      ? listing.id === `ebay-listing:${listing.ebay?.listingId}:sku:${encodeURIComponent(listing.ebay?.sku || '(missing)')}`
+      : listing.id === `shopify-variant:${listing.shopify.variantId}` &&
+        typeof listing.shopify.title === 'string' &&
+        typeof listing.shopify.sku === 'string' &&
+        (listing.shopify.available === null || Number.isInteger(listing.shopify.available));
+    const freshRow = response.freshness.state === 'fresh';
     const commonValid =
       typeof listing?.id === 'string' &&
-      listing.id === `shopify-variant:${listing.shopify?.variantId}` &&
-      typeof listing.shopify?.title === 'string' &&
-      typeof listing.shopify?.sku === 'string' &&
-      typeof listing.shopify?.available === 'number' &&
-      listing.shopify.available > 0 &&
+      shopifyValid &&
+      typeof listing.ebay?.sku === 'string' &&
       validStatuses.has(listing.lifecycleStatus) &&
       listing.ebay?.state === listing.lifecycleStatus &&
-      listing.audit?.verified === true &&
-      listing.audit.evidenceState === 'live_verified' &&
-      listing.audit.currentRemoteStateVerified === true &&
+      listing.audit?.verified === freshRow &&
+      listing.audit.evidenceState === (freshRow ? 'live_verified' : 'stale') &&
+      listing.audit.currentRemoteStateVerified === freshRow &&
       Array.isArray(listing.audit.attentionReasons) &&
       listing.audit.attentionReasons.every((reason) => validAttentionReasons.has(reason)) &&
       ebayCounts.every((count) => Number.isInteger(count) && count >= 0) &&
       !Number.isNaN(new Date(listing.lastVerifiedAtUtc).getTime());
     if (!commonValid) return false;
+
+    if (listing.lifecycleStatus === 'unknown') {
+      return !freshRow &&
+        (listing.audit.attentionReasons.includes('source_snapshot_stale')
+          || listing.audit.attentionReasons.includes('source_refresh_failed')) &&
+        listing.audit.unresolvedCount > 0;
+    }
+    if (!freshRow || listing.shopify === null && listing.lifecycleStatus !== 'attention') return false;
 
     if (listing.lifecycleStatus === 'active') {
       const validArtifactShape =
@@ -189,7 +231,9 @@ export const isLiveCatalogResponse = (
         listing.audit.attentionReasons.length === 0;
     }
     if (listing.lifecycleStatus === 'not_listed') {
-      return listing.ebay.activeMatchCount === 0 &&
+      return listing.shopify !== null &&
+        typeof listing.shopify.available === 'number' && listing.shopify.available > 0 &&
+        listing.ebay.activeMatchCount === 0 &&
         listing.ebay.inventoryItemCount === 0 &&
         listing.ebay.offerCount === 0 &&
         listing.ebay.unpublishedArtifactCount === 0 &&
@@ -203,10 +247,10 @@ export const isLiveCatalogResponse = (
   });
 
   return rowsValid &&
-    response.schemaVersion === 2 &&
+    response.schemaVersion === 3 &&
     response.source === 'shopify-admin-graphql+ebay-active-listings' &&
     response.evidenceKind === 'live_read' &&
-    response.authoritative === true &&
+    response.authoritative === (response.freshness.state === 'fresh') &&
     response.remoteReadPerformed === true &&
     response.externalWritesPerformed === 0 &&
     response.coverage.shopify.source === 'shopify-admin-graphql' &&
@@ -220,12 +264,19 @@ export const isLiveCatalogResponse = (
     response.coverage.ebay.inventory.offersComplete === true &&
     response.coverage.ebay.inventory.unpublishedArtifactsChecked === true &&
     response.coverage.join.key === 'exact_raw_sku' &&
+    ((response.freshness.state === 'fresh' && response.summary.unknown === 0) ||
+      (['stale', 'refresh_failed'].includes(response.freshness.state) &&
+        response.summary.active === 0 &&
+        response.summary.notListed === 0 &&
+        response.summary.attention === 0 &&
+        response.summary.unknown === response.summary.totalVisible)) &&
     !Number.isNaN(new Date(response.coverage.shopify.observedAtUtc).getTime()) &&
     !Number.isNaN(new Date(response.coverage.ebay.observedAtUtc).getTime()) &&
     !Number.isNaN(new Date(response.observedAtUtc).getTime());
 };
 
 export const listingAttentionText = (listing: AuthoritativeListingItem): string | null => {
+  if (listing.lifecycleStatus === 'unknown') return 'Current state unavailable';
   if (listing.lifecycleStatus !== 'attention') return null;
   const labels: Record<AuthoritativeListingItem['audit']['attentionReasons'][number], string> = {
     shopify_product_not_active: 'Product is not active',
@@ -235,11 +286,50 @@ export const listingAttentionText = (listing: AuthoritativeListingItem): string 
     ebay_sku_near_collision: 'Similar eBay SKUs',
     ebay_multiple_active_matches: 'Multiple active matches',
     ebay_unpublished_artifact: 'eBay inventory needs review',
-    ebay_inventory_coverage_unavailable: 'eBay inventory could not be checked',
+    ebay_inventory_coverage_unavailable: 'Current eBay inventory is unavailable',
+    ebay_active_without_shopify_variant: 'No Shopify variant is mapped',
+    ebay_active_without_sku: 'eBay listing has no SKU',
+    shopify_inventory_not_positive: 'Shopify inventory is not available',
+    source_snapshot_stale: 'Current state unavailable',
+    source_refresh_failed: 'Latest refresh failed',
   };
   return listing.audit.attentionReasons[0]
     ? labels[listing.audit.attentionReasons[0]]
     : 'Review required';
+};
+
+export const listingDisplayTitle = (listing: AuthoritativeListingItem): string =>
+  listing.shopify?.title
+  ?? (listing.ebay.sku.trim() ? listing.ebay.sku : null)
+  ?? (listing.ebay.listingId ? `eBay listing ${listing.ebay.listingId}` : 'Unmapped eBay listing');
+
+export const listingDisplaySku = (listing: AuthoritativeListingItem): string =>
+  listing.shopify?.sku ?? listing.ebay.sku;
+
+export const descriptionSummary = (value: string | null, maximum = 240): string => {
+  if (!value) return '—';
+  const plain = value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, ' ')
+    .replace(/<[^>]+>/gu, ' ')
+    .replace(/&nbsp;/giu, ' ')
+    .replace(/&amp;/giu, '&')
+    .replace(/&lt;/giu, '<')
+    .replace(/&gt;/giu, '>')
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'")
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!plain) return '—';
+  return plain.length <= maximum ? plain : `${plain.slice(0, Math.max(1, maximum - 1)).trimEnd()}…`;
+};
+
+export const verifiedShopifyProductUrl = (productId: string | null): string | null => {
+  if (!productId) return null;
+  const match = /^gid:\/\/shopify\/Product\/(\d+)$/u.exec(productId);
+  return match?.[1]
+    ? `https://admin.shopify.com/store/usedcameragear/products/${match[1]}`
+    : null;
 };
 
 export const isMigrationPolicyAvailable = (

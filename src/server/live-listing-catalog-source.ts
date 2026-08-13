@@ -218,6 +218,15 @@ const runtimeEbayToken = createTransientEbayTokenProvider({
   exchange: exchangeRuntimeEbayToken,
 });
 
+/**
+ * Internal read-authority seam for exact eBay GET detail readers. Callers must
+ * never return, persist, or log the token and must retain the same account and
+ * method allowlists as this module.
+ */
+export async function getRuntimeEbayReadToken(): Promise<string> {
+  return catalogPhase('TOKEN_REFRESH_FAILED', runtimeEbayToken);
+}
+
 const SHOPIFY_PREFLIGHT = `query RuntimeListingCatalogPreflight {
   shop { id myshopifyDomain currencyCode }
   currentAppInstallation { accessScopes { handle } }
@@ -306,14 +315,14 @@ async function captureShopify(accessToken: string): Promise<{
       const product = asRecord(node.product);
       const productStatus = safeText(product.status, 32).toUpperCase();
       productStatusCounts[productStatus] = (productStatusCounts[productStatus] ?? 0) + 1;
+      let available: number | null = null;
       if (node.inventoryQuantity == null || !Number.isInteger(node.inventoryQuantity)) {
         excludedUnknownInventory += 1;
-        continue;
+      } else {
+        available = node.inventoryQuantity as number;
       }
-      const available = node.inventoryQuantity as number;
-      if (available <= 0) {
+      if (available !== null && available <= 0) {
         excludedZeroInventory += 1;
-        continue;
       }
       const imageValue = optionalText(node.image?.url ?? product.featuredMedia?.preview?.image?.url, 2048);
       let primaryImageUrl: string | null = null;
@@ -363,7 +372,8 @@ async function captureShopify(accessToken: string): Promise<{
       paginationComplete: true as const,
       variantPageCount: pageCount,
       totalVariantsCaptured,
-      positiveStockVariants: variants.length,
+      positiveStockVariants: variants.filter((variant) =>
+        variant.available !== null && variant.available > 0).length,
       excludedZeroInventory,
       excludedUnknownInventory,
       productStatusCounts: Object.freeze({ ...productStatusCounts }),
@@ -417,6 +427,7 @@ function activeSkuRecords(item: Record<string, any>, listingId: string): Capture
       records.push(Object.freeze({ listingId, sku: variation.SKU }));
     }
   }
+  if (records.length === 0) records.push(Object.freeze({ listingId, sku: '' }));
   return records;
 }
 
@@ -637,26 +648,90 @@ export function createLiveListingCatalogCache(
 ) {
   const now = options.now ?? Date.now;
   const ttlMs = options.ttlMs ?? SNAPSHOT_TTL_MS;
-  let cached: { value: LiveListingCatalogSnapshot; expiresAt: number } | null = null;
+  let cached: {
+    value: LiveListingCatalogSnapshot;
+    refreshedAt: number;
+    expiresAt: number;
+  } | null = null;
   let flight: Promise<LiveListingCatalogSnapshot> | null = null;
-  return async (): Promise<LiveListingCatalogSnapshot> => {
-    if (cached && cached.expiresAt > now()) return cached.value;
+  let lastAttemptAt: number | null = null;
+  let lastFailureAt: number | null = null;
+  const refresh = async (): Promise<LiveListingCatalogSnapshot> => {
     if (flight) return flight;
-    flight = capture();
+    lastAttemptAt = now();
+    flight = Promise.resolve().then(capture);
     try {
       const value = await flight;
-      cached = { value, expiresAt: now() + ttlMs };
+      const refreshedAt = now();
+      cached = { value, refreshedAt, expiresAt: refreshedAt + ttlMs };
+      lastFailureAt = null;
       return value;
+    } catch (error) {
+      lastFailureAt = now();
+      throw error;
     } finally {
       flight = null;
     }
   };
+  const get = async (): Promise<LiveListingCatalogSnapshot> => {
+    if (cached && cached.expiresAt > now()) return cached.value;
+    try {
+      return await refresh();
+    } catch (error) {
+      if (cached) return cached.value;
+      throw error;
+    }
+  };
+  return Object.assign(get, {
+    refresh,
+    status: () => Object.freeze({
+      hasSuccessfulSnapshot: cached !== null,
+      observedAtUtc: cached?.value.observedAtUtc ?? null,
+      lastSuccessAtEpochMs: cached?.refreshedAt ?? null,
+      lastAttemptAtEpochMs: lastAttemptAt,
+      lastFailureAtEpochMs: lastFailureAt,
+      expiresAtEpochMs: cached?.expiresAt ?? null,
+      refreshInFlight: flight !== null,
+    }),
+  });
+}
+
+export type LiveListingCatalogCacheStatus = ReturnType<
+  ReturnType<typeof createLiveListingCatalogCache>['status']
+>;
+
+export function hasUnresolvedLiveListingRefreshFailure(
+  status: LiveListingCatalogCacheStatus | null | undefined,
+): boolean {
+  return status?.lastFailureAtEpochMs !== null
+    && status?.lastFailureAtEpochMs !== undefined;
 }
 
 export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
 
+const LIVE_CATALOG_REFRESH_INTERVAL_MS = 60_000;
+
+export function startLiveListingCatalogRefresher(
+  cache: Readonly<{ refresh: () => Promise<unknown> }> = getLiveListingCatalogSnapshot,
+  options: Readonly<{
+    intervalMs?: number;
+    setIntervalImpl?: typeof setInterval;
+  }> = {},
+): () => void {
+  const intervalMs = options.intervalMs ?? LIVE_CATALOG_REFRESH_INTERVAL_MS;
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 15_000 || intervalMs > 300_000) deny();
+  const schedule = options.setIntervalImpl ?? setInterval;
+  const timer = schedule(() => {
+    void cache.refresh().catch(() => undefined);
+  }, intervalMs);
+  timer.unref?.();
+  void cache.refresh().catch(() => undefined);
+  return () => clearInterval(timer);
+}
+
 export type LiveListingCatalogRouteDependencies = Readonly<{
   getSnapshot: () => Promise<LiveListingCatalogSnapshot>;
+  getSnapshotStatus?: () => LiveListingCatalogCacheStatus;
 }>;
 
 export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
@@ -665,4 +740,5 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
   tradingCall,
   captureTrading,
   captureInventory,
+  LIVE_CATALOG_REFRESH_INTERVAL_MS,
 });

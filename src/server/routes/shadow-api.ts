@@ -7,12 +7,19 @@ import {
 } from '../live-listing-catalog.js';
 import {
   getLiveListingCatalogSnapshot,
+  hasUnresolvedLiveListingRefreshFailure,
   type LiveListingCatalogRouteDependencies,
 } from '../live-listing-catalog-source.js';
+import {
+  ListingWorkspaceReaderError,
+  readListingWorkspace,
+  type ListingWorkspaceDto,
+} from '../listing-workspace-reader.js';
 
 export const SHADOW_API_GET_PATHS = Object.freeze([
   '/api/migration/status',
   '/api/authoritative-listings',
+  '/api/listing-workspace',
   '/api/listings',
   '/api/capabilities',
 ] as const);
@@ -45,11 +52,16 @@ export function projectLocalListing(row: Record<string, unknown>): LocalListingP
 }
 
 export function createShadowApiRouter(
-  dependencies: LiveListingCatalogRouteDependencies = {
+  dependencies: LiveListingCatalogRouteDependencies & Readonly<{
+    readWorkspace?: (rowId: string) => Promise<ListingWorkspaceDto>;
+  }> = {
     getSnapshot: getLiveListingCatalogSnapshot,
+    getSnapshotStatus: getLiveListingCatalogSnapshot.status,
+    readWorkspace: readListingWorkspace,
   },
 ): Router {
 const router = Router();
+const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
 
 function boundedInteger(
   value: unknown,
@@ -73,7 +85,7 @@ router.get('/api/migration/status', migrationStatusHandler);
 router.get('/api/authoritative-listings', async (req: Request, res: Response) => {
   const rawStatus = String(req.query.status ?? '').trim().toLowerCase();
   const allowedStatuses = new Set<LiveListingStatus>([
-    'attention', 'not_listed', 'active',
+    'attention', 'not_listed', 'active', 'unknown',
   ]);
   if (rawStatus && !allowedStatuses.has(rawStatus as LiveListingStatus)) {
     res.status(400).json({ error: 'Invalid listing status filter' });
@@ -86,15 +98,33 @@ router.get('/api/authoritative-listings', async (req: Request, res: Response) =>
     const search = String(req.query.search ?? '').trim().slice(0, 200);
     const id = String(req.query.id ?? '').trim().slice(0, 256);
     const snapshot = await dependencies.getSnapshot();
+    const refreshFailed = hasUnresolvedLiveListingRefreshFailure(
+      dependencies.getSnapshotStatus?.(),
+    );
     res.json(projectLiveListingCatalogPage(snapshot, {
       limit,
       offset,
       search,
       id,
       status: rawStatus ? rawStatus as LiveListingStatus : undefined,
+      refreshFailed,
     }));
   } catch {
     res.status(503).json({ error: 'Verified listing evidence is unavailable' });
+  }
+});
+
+/** GET /api/listing-workspace — exact read-only listing control detail. */
+router.get('/api/listing-workspace', async (req: Request, res: Response) => {
+  const rowId = typeof req.query.id === 'string' ? req.query.id : '';
+  try {
+    res.json(await workspaceReader(rowId));
+  } catch (error) {
+    if (error instanceof ListingWorkspaceReaderError && error.kind === 'not_found') {
+      res.status(404).json({ error: 'Listing workspace was not found' });
+      return;
+    }
+    res.status(503).json({ error: 'Verified listing workspace is unavailable' });
   }
 });
 
@@ -185,6 +215,15 @@ router.get('/api/capabilities', (_req: Request, res: Response) => {
         remoteRead: true,
         externalWrite: false,
         evidenceKind: 'live_read',
+      },
+      {
+        id: 'listing-workspace',
+        method: 'GET',
+        endpoint: '/api/listing-workspace',
+        remoteRead: true,
+        externalWrite: false,
+        evidenceKind: 'live_read',
+        editMode: 'read_only',
       },
       {
         id: 'local-listings',

@@ -183,13 +183,14 @@ Check **Pipeline → Images** for a full queue of pending, processing, and compl
         question: 'How do I use Listings?',
         category: 'eBay',
         sort_order: 0,
-        answer: `Open **Listings** to see every Shopify variant with available inventory above zero, matched against the complete Shopify and eBay check shown by the page timestamp.
+        answer: `Open **Listings** to see the live Shopify and eBay catalog.
 
-- **Active when checked** means exactly one eBay listing matched the exact SKU.
-- **Not listed when checked** means no active listing, inventory item, or offer existed for that exact SKU.
-- **Needs attention** means the exact status is ambiguous, such as a missing/duplicate SKU or an eBay inventory artifact.
+- **Active** means one current eBay listing matches the exact SKU.
+- **Not listed** means no listing, inventory item, or offer matches that SKU.
+- **Needs attention** means the mapping is missing, ambiguous, or inconsistent.
+- **Unknown** means the latest complete refresh is too old or unavailable.
 
-Use search and filters to narrow the catalog. ProductPipeline performs reads only; publishing remains separately reviewed.`,
+The catalog refreshes automatically. Open a row to see its mapping, listing fields, management model, and verified ownership by responsibility. ProductPipeline is read-only; Marketplace Connect remains the verified price and inventory writer, while listing and mapping ownership are still unverified.`,
     },
     {
         question: 'How do I list a product on eBay?',
@@ -201,40 +202,17 @@ Use search and filters to narrow the catalog. ProductPipeline performs reads onl
         question: 'How do I change the eBay category?',
         category: 'eBay',
         sort_order: 2,
-        answer: `You can change the eBay category for a product from the Review Queue or the eBay Listing Prep page.
+        answer: `Open the item from **Listings** to see the category currently reported by eBay and its Shopify-to-eBay mapping.
 
-**Using the category dropdown:**
-1. Open the product in the **Review Queue** or **eBay Listing Prep**.
-2. Find the **eBay Category** field.
-3. Click the dropdown — it's searchable. Type a keyword (e.g. "mirrorless", "lens", "flash") to filter the list of eBay categories.
-4. Select the correct category from the results.
-
-**Manual category ID entry:**
-If you know the eBay category ID (a number like \`31388\` for cameras), you can type it directly into the category field. The field accepts both text search and numeric IDs.
-
-**Finding category IDs:**
-eBay's category tree is extensive. If you're unsure of an ID, search eBay for a similar item and note the category shown on that listing, or use eBay's Category Finder tool at developer.ebay.com.
-
-**Per-product overrides:**
-Category changes made in the Review Queue or Listing Prep are saved as per-product overrides. They persist across re-listings and don't affect the global category mapping for other products.`,
+Editing is not enabled in this release. The next listing-control release will save a versioned local draft, show the exact eBay change for review, and require explicit approval before one remote update.`,
     },
     {
         question: 'What are condition descriptions?',
         category: 'eBay',
         sort_order: 3,
-        answer: `Condition descriptions are short notes that explain the specific condition of an individual item — scratches, missing accessories, functional quirks, etc. They appear in the eBay listing to help buyers understand exactly what they're getting.
+        answer: `A condition description explains the condition of one item. Open the item from **Listings** to see the current eBay condition and description.
 
-**Auto-populated from Pictureline grades:**
-When a product enters the pipeline from Pictureline's grading system, its condition grade (e.g. "Excellent", "Good", "Fair") is mapped to a default condition description template. For example, "Excellent" might auto-fill as: *"Item shows light cosmetic wear consistent with normal use. All functions work perfectly."*
-
-**Editing condition descriptions:**
-1. Open the product in the **Review Queue** or **eBay Listing Prep**.
-2. Find the **Condition Description** field — it's pre-filled from the grade template.
-3. Edit the text to add specific details: which lens element has a scratch, whether the strap is missing, etc.
-4. Changes save automatically when you approve or list the product.
-
-**Managing templates:**
-To edit the default templates used for each grade, go to **Settings → Condition Descriptions** (coming soon — currently the templates live in \`src/config/condition-descriptions.ts\`).`,
+ProductPipeline does not edit it yet. A future edit will create a local draft and preview the exact eBay change before approval.`,
     },
     {
         question: 'How does eBay order sync work?',
@@ -356,28 +334,9 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
         question: 'How do I edit condition descriptions?',
         category: 'Settings',
         sort_order: 3,
-        answer: `Condition description templates define the default text used for each Pictureline condition grade when a product is auto-processed through the pipeline.
+        answer: `Condition editing is not enabled in the current Shopify app. Open an item from **Listings** to see the condition and description currently reported by eBay.
 
-**Current status: coming soon via UI**
-A dedicated Settings page for editing condition description templates is planned. For now, templates are defined in code at \`src/config/condition-descriptions.ts\`.
-
-**Current templates (as of Feb 2026):**
-
-| Grade | Default description |
-|-------|-------------------|
-| New | Brand new, unused, in original packaging. |
-| Excellent | Minimal cosmetic wear. All functions work perfectly. |
-| Good | Light use, minor cosmetic marks. Fully functional. |
-| Fair | Visible wear but fully functional. See photos for details. |
-| For Parts | Not fully functional. Sold as-is for parts or repair. |
-
-**Editing templates today:**
-1. Open \`src/config/condition-descriptions.ts\` in your editor.
-2. Update the text for any grade.
-3. Deploy the change (Railway auto-deploys on \`git push origin main\`).
-
-**Per-product overrides:**
-Regardless of the template, you can always edit the condition description for an individual product in the Review Queue or eBay Listing Prep page. Per-product edits override the template.`,
+The planned editor will save a local draft, compare it with the current Shopify and eBay values, and show the exact change before approval.`,
     },
     {
         question: 'How do I vote on feature requests?',
