@@ -9,8 +9,9 @@ import AppNavigation from './components/AppNavigation';
 import { useAppStore } from './store';
 
 const Listings = React.lazy(() => import('./pages/Listings'));
+const ListingDetail = React.lazy(() => import('./pages/ListingDetail'));
 const Orders = React.lazy(() => import('./pages/Orders'));
-const Reconciliation = React.lazy(() => import('./pages/Reconciliation'));
+const Issues = React.lazy(() => import('./pages/Issues'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 
 const queryClient = new QueryClient({
@@ -57,7 +58,7 @@ const ShopifyNavMenu: React.FC = () => (
     <Link to="/" rel="home">Overview</Link>
     <Link to="/listings">Listings</Link>
     <Link to="/orders">Orders</Link>
-    <Link to="/reconciliation">Reconciliation</Link>
+    <Link to="/issues">Issues</Link>
     <Link to="/settings">Settings</Link>
   </NavMenu>
 );
@@ -120,8 +121,10 @@ const AppFrame: React.FC = () => {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/listings" element={<Listings />} />
+              <Route path="/listings/:id" element={<ListingDetail />} />
               <Route path="/orders" element={<Orders />} />
-              <Route path="/reconciliation" element={<Reconciliation />} />
+              <Route path="/issues" element={<Issues />} />
+              <Route path="/reconciliation" element={<Navigate to="/issues" replace />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

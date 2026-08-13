@@ -91,35 +91,26 @@ describe('durable migration-state browser projection', () => {
     });
   });
 
-  it('keeps one inert projection on the existing five pages without adding an action surface', async () => {
-    const pageFiles = {
-      Dashboard: 'pages/Dashboard.tsx',
-      Listings: 'pages/Listings.tsx',
-      Orders: 'pages/Orders.tsx',
-      Reconciliation: 'pages/Reconciliation.tsx',
-      Settings: 'pages/Settings.tsx',
-    } as const;
-    const pages = Object.fromEntries(await Promise.all(
-      Object.entries(pageFiles).map(async ([name, filename]) => [
-        name,
-        await fs.readFile(path.join(webRoot, filename), 'utf8'),
-      ]),
-    ));
+  it('keeps one five-page operator surface without adding a commerce mutation', async () => {
+    const pageFiles = [
+      'pages/Dashboard.tsx',
+      'pages/Listings.tsx',
+      'pages/Orders.tsx',
+      'pages/Issues.tsx',
+      'pages/Settings.tsx',
+    ] as const;
+    const pages = await Promise.all(
+      pageFiles.map((filename) => fs.readFile(path.join(webRoot, filename), 'utf8')),
+    );
     const [component, app] = await Promise.all([
       fs.readFile(path.join(webRoot, 'components/DurableMigrationState.tsx'), 'utf8'),
       fs.readFile(path.join(webRoot, 'App.tsx'), 'utf8'),
     ]);
 
-    for (const [name, source] of Object.entries(pages)) {
-      expect(source, name).toMatch(/<DurableMigrationState/);
-      expect(source, name).toMatch(/content: 'Refresh evidence'/);
-      expect(source, name).not.toMatch(/secondaryActions=/);
+    for (const source of pages) {
+      expect(source).not.toMatch(/useMutation|apiClient\.(?:post|put|delete)|\bfetch\s*\(/);
+      expect(source).not.toMatch(/secondaryActions=/);
     }
-    expect(pages.Dashboard).toMatch(/<DurableMigrationState status=\{status\} \/>/);
-    expect(pages.Reconciliation).toMatch(/<DurableMigrationState status=\{status\} \/>/);
-    expect(pages.Settings).toMatch(/<DurableMigrationState status=\{status\} \/>/);
-    expect(pages.Listings).toMatch(/compact="listings"/);
-    expect(pages.Orders).toMatch(/compact="orders"/);
 
     expect(component).toMatch(/not authoritative\s+Shopify, eBay, or Marketplace Connect truth/);
     expect(component).toMatch(/Eligible orders[\s\S]*<Badge tone="info">0<\/Badge>/);
@@ -129,6 +120,15 @@ describe('durable migration-state browser projection', () => {
     expect(component).not.toMatch(/ebaySellerId/);
 
     const routePaths = [...app.matchAll(/<Route path="([^"]+)"/g)].map((match) => match[1]);
-    expect(routePaths).toEqual(['/', '/listings', '/orders', '/reconciliation', '/settings', '*']);
+    expect(routePaths).toEqual([
+      '/',
+      '/listings',
+      '/listings/:id',
+      '/orders',
+      '/issues',
+      '/reconciliation',
+      '/settings',
+      '*',
+    ]);
   });
 });

@@ -18,8 +18,10 @@ async function requestShadowPath(pathname) {
     app.use('/api', (_req, res) => {
         res.status(404).json({ error: 'not available' });
     });
-    const server = await new Promise((resolve) => {
-        const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    const server = http.createServer(app);
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
     });
     try {
         const address = server.address();
@@ -35,12 +37,63 @@ async function requestShadowPath(pathname) {
     }
     finally {
         await new Promise((resolve, reject) => {
-            server.close((error) => error ? reject(error) : resolve());
+            server.close((error) => {
+                if (!error || error.code === 'ERR_SERVER_NOT_RUNNING')
+                    resolve();
+                else
+                    reject(error);
+            });
+        });
+    }
+}
+async function requestShadowJson(pathname) {
+    const app = express();
+    app.use(shadowApiRoutes);
+    app.use('/api', (_req, res) => {
+        res.status(404).json({ error: 'not available' });
+    });
+    const server = http.createServer(app);
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
+    });
+    try {
+        const address = server.address();
+        if (!address || typeof address === 'string')
+            throw new Error('Test server address unavailable');
+        return await new Promise((resolve, reject) => {
+            const request = http.get({ hostname: '127.0.0.1', port: address.port, path: pathname }, (response) => {
+                let raw = '';
+                response.setEncoding('utf8');
+                response.on('data', (chunk) => { raw += chunk; });
+                response.on('end', () => {
+                    try {
+                        resolve({
+                            status: response.statusCode ?? 0,
+                            body: JSON.parse(raw),
+                        });
+                    }
+                    catch (error) {
+                        reject(error);
+                    }
+                });
+            });
+            request.on('error', reject);
+        });
+    }
+    finally {
+        await new Promise((resolve, reject) => {
+            server.close((error) => {
+                if (!error || error.code === 'ERR_SERVER_NOT_RUNNING')
+                    resolve();
+                else
+                    reject(error);
+            });
         });
     }
 }
 describe('shadow API allowlist', () => {
-    it('registers only the migration, projected-listing, and capability reads', () => {
+    it('registers only migration, verified/projected listing, and capability reads', () => {
         expect(registeredGetPaths()).toEqual([...SHADOW_API_GET_PATHS]);
         expect(SHADOW_API_GET_PATHS).not.toEqual(expect.arrayContaining([
             '/api/status',
@@ -82,6 +135,66 @@ describe('shadow API allowlist', () => {
         });
         expect(JSON.stringify(projected)).not.toMatch(/private operator note|must-not-escape|buyer|shipping|access[_-]?token|ad_rate/i);
     });
+    it('serves only the timestamped verified Canon snapshot from the authoritative-listings read', async () => {
+        const response = await requestShadowJson('/api/authoritative-listings');
+        expect(response.status).toBe(200);
+        expect(Object.keys(response.body).sort()).toEqual([
+            'authoritative',
+            'data',
+            'evidenceKind',
+            'externalWritesPerformed',
+            'limit',
+            'offset',
+            'remoteReadPerformed',
+            'schemaVersion',
+            'source',
+            'total',
+        ]);
+        expect(response.body).toMatchObject({
+            schemaVersion: 1,
+            total: 1,
+            source: 'production-listing-audit-ledger',
+            evidenceKind: 'verified_snapshot',
+            authoritative: false,
+            remoteReadPerformed: false,
+            externalWritesPerformed: 0,
+            data: [{
+                    id: 'production:EBAY_US:CAN3570-U119',
+                    shopify: {
+                        productId: 'gid://shopify/Product/10310708035875',
+                        variantId: 'gid://shopify/ProductVariant/55396000563491',
+                        sku: 'CAN3570-U119',
+                        title: 'Canon 35-70mm f/3.5-4.5 (#119) *USED*',
+                        imageCount: 6,
+                    },
+                    ebay: {
+                        offerId: '234942877011',
+                        listingId: '147502608418',
+                        url: 'https://www.ebay.com/itm/147502608418',
+                    },
+                    lifecycleStatus: 'active',
+                    lastVerifiedAtUtc: '2026-08-13T16:43:19.281Z',
+                    audit: {
+                        verified: true,
+                        evidenceState: 'verified',
+                        unresolvedCount: 0,
+                        recoverySupported: true,
+                        currentRemoteStateVerified: false,
+                    },
+                }],
+        });
+        expect(JSON.stringify(response.body)).not.toMatch(/access.?token|refresh.?token|authorization|sellerUser|buyerUsername|customerEmail|shipping.?address|listingDescription|policyId|merchantLocation|password|cookie|credential/i);
+    });
+    it('filters the verified snapshot and rejects unknown lifecycle states', async () => {
+        const active = await requestShadowJson('/api/authoritative-listings?status=active&search=147502608418&limit=1');
+        expect(active).toMatchObject({ status: 200, body: { total: 1 } });
+        const ready = await requestShadowJson('/api/authoritative-listings?status=ready');
+        expect(ready).toMatchObject({ status: 200, body: { total: 0, data: [] } });
+        const missing = await requestShadowJson('/api/authoritative-listings?search=not-the-canary');
+        expect(missing).toMatchObject({ status: 200, body: { total: 0, data: [] } });
+        const invalid = await requestShadowJson('/api/authoritative-listings?status=published');
+        expect(invalid).toEqual({ status: 400, body: { error: 'Invalid listing status filter' } });
+    });
     it.each([
         '/api/status',
         '/api/orders',
@@ -96,9 +209,10 @@ describe('shadow API allowlist', () => {
         await expect(requestShadowPath(pathname)).resolves.toBe(404);
     });
     it('does not mount legacy routers or a remote/token reader in the running server', async () => {
-        const [server, shadowRouter] = await Promise.all([
+        const [server, shadowRouter, authoritativeReader] = await Promise.all([
             fs.readFile(path.join(sourceRoot, 'server/index.ts'), 'utf8'),
             fs.readFile(path.join(sourceRoot, 'server/routes/shadow-api.ts'), 'utf8'),
+            fs.readFile(path.join(sourceRoot, 'server/authoritative-listings-reader.ts'), 'utf8'),
         ]);
         expect(server).toMatch(/shadowApiRoutes/);
         expect(server).not.toMatch(/apiRoutes|helpRoutes|featureRoutes|ebayOrderRoutes|ebayMetadataRoutes|migrationRoutes/);
@@ -111,5 +225,7 @@ describe('shadow API allowlist', () => {
         expect(shadowRouter).toMatch(/openShadowDatabase/);
         expect(shadowRouter).not.toMatch(/getDb|getRawDb|db\/client/);
         expect(shadowRouter).not.toMatch(/SELECT\s+\*/i);
+        expect(authoritativeReader).not.toMatch(/\bfetch\s*\(|auth_tokens|getValidEbayToken|refreshEbayUserToken|db\/client|sync\/|shopify\/products|ebay\/inventory/i);
+        expect(authoritativeReader).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|ALTER)\s+|\bCREATE\s+TABLE\b/i);
     });
 });

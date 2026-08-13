@@ -456,6 +456,9 @@ Safest next action:
 
 ## 13. Current Handoff
 
+- Latest verified listing result: the isolated, one-action Production canary published only `CAN3570-U119` to eBay listing `147502608418` (offer `234942877011`). Exact post-publish Inventory, Offer, and Trading evidence observed ACTIVE at `2026-08-13T16:43:19.281Z`; there was no create retry, unresolved dispatch, or rollback. This does not transfer order, price, or inventory-sync ownership from Marketplace Connect.
+- Current application release slice: a credential-free, digest-bound historical projection makes that verified Canon result visible in an authenticated read-only Listings catalog. The minimal operator shell has exactly Overview, Listings, Orders, Issues, and Settings; it labels the Canon state by its verification time and fails closed when the snapshot cannot load.
+- Scope boundary: this UI release adds no generic publishing route, token persistence, order import, inventory or price synchronization, Marketplace Connect mutation, or other-SKU action. All non-read API requests remain quarantined. A future generic listing workflow requires its own scoped OAuth, durable approval, reconciliation, and rollback integration.
 - Published application/runtime baseline: authoritative-read capture PR #4 merged as `57001ed777e5a75076cb159e306706eb7efd7d68` after review of feature commit `0244aabdb738d0174032549ea3700243f6f3d18a`. It extends the operator-only read-evidence tooling and does not mount a collector or change the writer-quarantine policy.
 - Inspection boundary: repository source/history plus the signed-in Shopify/embedded-app surfaces described above.
 - External access: GitHub repository operations and a credential-free GET of the public Railway health endpoint were used. Shopify, Marketplace Connect, and ProductPipeline UI inspection was read-only. No direct eBay, Railway project, Lightspeed, token, credential, or configuration access occurred.

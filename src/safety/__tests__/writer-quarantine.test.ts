@@ -213,7 +213,9 @@ describe('writer entry points fail before network or database work', () => {
     expect(routePaths).toEqual([
       '/',
       '/listings',
+      '/listings/:id',
       '/orders',
+      '/issues',
       '/reconciliation',
       '/settings',
       '*',

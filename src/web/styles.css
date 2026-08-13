@@ -1,4 +1,27 @@
 /* Custom styles that work alongside Polaris - enhanced modern UI */
+.operator-tabs {
+  overflow-x: auto;
+}
+
+.operator-listings-mobile {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .operator-listings-desktop {
+    display: none;
+  }
+
+  .operator-listings-mobile {
+    display: block;
+  }
+
+  .operator-tabs .Polaris-Tabs {
+    min-width: max-content;
+    flex-wrap: nowrap;
+  }
+}
+
 .status-indicator {
   display: flex;
   align-items: center;
