@@ -11,6 +11,7 @@ import {
   createLiveListingCatalogCache,
   createTransientEbayTokenProvider,
   exchangeRuntimeEbayToken,
+  hasUnresolvedLiveListingRefreshFailure,
   LIVE_LISTING_CATALOG_SOURCE_TESTING,
   LISTING_CATALOG_FAILURE_CODES,
   type RuntimeAuthMaterial,
@@ -78,9 +79,11 @@ function snapshot(input: Readonly<{
         paginationComplete: true,
         variantPageCount: 1,
         totalVariantsCaptured: variants.length,
-        positiveStockVariants: variants.length,
-        excludedZeroInventory: 0,
-        excludedUnknownInventory: 0,
+        positiveStockVariants: variants.filter((entry) =>
+          entry.available !== null && entry.available > 0).length,
+        excludedZeroInventory: variants.filter((entry) =>
+          entry.available !== null && entry.available <= 0).length,
+        excludedUnknownInventory: variants.filter((entry) => entry.available === null).length,
         productStatusCounts: { ACTIVE: variants.length },
       },
       ebay: {
@@ -152,10 +155,80 @@ describe('live listing catalog truth reducer', () => {
     expect(draft.audit.attentionReasons).toContain('shopify_product_not_active');
   });
 
-  it('fails closed on repeated stable IDs, nonpositive stock, and count mismatches', () => {
+  it('fails closed on repeated stable IDs and count mismatches', () => {
     expect(() => snapshot({ active: [active(), active()] })).toThrow();
     expect(() => snapshot({ offers: [offer(), offer()] })).toThrow();
-    expect(() => snapshot({ variants: [variant({ available: 0 })] })).toThrow();
+  });
+
+  it('keeps zero-stock active Shopify rows visible as attention', () => {
+    const built = snapshot({
+      variants: [variant({ available: 0 })],
+      active: [active()],
+    });
+    expect(built.rows).toHaveLength(1);
+    expect(built.rows[0]).toMatchObject({
+      lifecycleStatus: 'attention',
+      shopify: { available: 0 },
+      audit: { attentionReasons: ['shopify_inventory_not_positive'] },
+    });
+    expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
+  });
+
+  it('adds unmatched and SKU-less active eBay listings to the union as attention', () => {
+    const built = snapshot({
+      variants: [variant()],
+      active: [active('200', 'EBAY-ONLY'), active('201', '')],
+    });
+    expect(built.rows).toHaveLength(3);
+    expect(built.rows.filter((row) => row.shopify === null)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'ebay-listing:200:sku:EBAY-ONLY',
+        audit: expect.objectContaining({
+          attentionReasons: ['ebay_active_without_shopify_variant'],
+        }),
+      }),
+      expect.objectContaining({
+        id: 'ebay-listing:201:sku:(missing)',
+        audit: expect.objectContaining({ attentionReasons: ['ebay_active_without_sku'] }),
+      }),
+    ]));
+    expect(built.coverage.join).toMatchObject({
+      unmatchedEbaySkuCount: 1,
+      unmatchedEbayListingCount: 2,
+    });
+  });
+
+  it('never treats missing Shopify and eBay SKUs as a mapping', () => {
+    const built = snapshot({
+      variants: [variant({ sku: '' })],
+      active: [active('201', '')],
+    });
+    const shopifyRow = built.rows.find((row) => row.shopify !== null)!;
+    const ebayRow = built.rows.find((row) => row.shopify === null)!;
+    expect(shopifyRow).toMatchObject({
+      lifecycleStatus: 'attention',
+      ebay: { activeMatchCount: 0, listingId: null },
+    });
+    expect(ebayRow).toMatchObject({
+      id: 'ebay-listing:201:sku:(missing)',
+      lifecycleStatus: 'attention',
+    });
+  });
+
+  it('uses a unique stable row ID for each unmatched SKU in one variation listing', () => {
+    const built = snapshot({
+      active: [active('202', 'EBAY-A'), active('202', 'EBAY-B')],
+    });
+    const ebayOnly = built.rows.filter((row) => row.shopify === null);
+    expect(ebayOnly.map((row) => row.id)).toEqual([
+      'ebay-listing:202:sku:EBAY-A',
+      'ebay-listing:202:sku:EBAY-B',
+    ]);
+    expect(new Set(built.rows.map((row) => row.id)).size).toBe(built.rows.length);
+    expect(built.coverage.join).toMatchObject({
+      unmatchedEbaySkuCount: 2,
+      unmatchedEbayListingCount: 1,
+    });
   });
 
   it('returns full summary independent of page/filter and supports exact row IDs', () => {
@@ -168,15 +241,60 @@ describe('live listing catalog truth reducer', () => {
       offset: 0,
       status: 'not_listed',
       id: 'shopify-variant:gid://shopify/ProductVariant/2',
+      nowEpochMs: Date.parse(observedAtUtc),
     });
     expect(page).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       total: 1,
-      summary: { notListed: 2, totalInStock: 2 },
+      summary: { notListed: 2, totalInStock: 2, totalVisible: 2, unknown: 0 },
       authoritative: true,
       evidenceKind: 'live_read',
       remoteReadPerformed: true,
       externalWritesPerformed: 0,
+    });
+  });
+
+  it('downgrades every stale row to unknown and never presents stale active or not-listed truth', () => {
+    const built = snapshot({ active: [active()] });
+    const page = projectLiveListingCatalogPage(built, {
+      limit: 100,
+      offset: 0,
+      nowEpochMs: Date.parse(observedAtUtc) + 300_001,
+      maxAgeMs: 300_000,
+    });
+    expect(page).toMatchObject({
+      authoritative: false,
+      freshness: { state: 'stale', ageMs: 300_001, maxAgeMs: 300_000 },
+      summary: { active: 0, notListed: 0, attention: 0, unknown: 1 },
+    });
+    expect(page.data[0]).toMatchObject({
+      lifecycleStatus: 'unknown',
+      ebay: { state: 'unknown' },
+      audit: {
+        verified: false,
+        evidenceState: 'stale',
+        currentRemoteStateVerified: false,
+        attentionReasons: ['source_snapshot_stale'],
+      },
+    });
+  });
+
+  it('immediately downgrades rows to unknown after a known refresh failure', () => {
+    const built = snapshot({ active: [active()] });
+    const page = projectLiveListingCatalogPage(built, {
+      limit: 100,
+      offset: 0,
+      nowEpochMs: Date.parse(observedAtUtc) + 1_000,
+      refreshFailed: true,
+    });
+    expect(page).toMatchObject({
+      authoritative: false,
+      freshness: { state: 'refresh_failed', ageMs: 1_000 },
+      summary: { active: 0, notListed: 0, attention: 0, unknown: 1 },
+      data: [{
+        lifecycleStatus: 'unknown',
+        audit: { attentionReasons: ['source_refresh_failed'] },
+      }],
     });
   });
 });
@@ -211,6 +329,59 @@ describe('live catalog caching boundaries', () => {
     await expect(cache()).rejects.toThrow('unavailable');
     await expect(cache()).resolves.toBeDefined();
     expect(attempts).toBe(2);
+  });
+
+  it('retains the last successful snapshot after an explicit refresh failure', async () => {
+    let attempts = 0;
+    const built = snapshot();
+    const cache = createLiveListingCatalogCache(async () => {
+      attempts += 1;
+      if (attempts === 1) return built;
+      throw new Error('refresh unavailable');
+    });
+    await expect(cache()).resolves.toBe(built);
+    expect(cache.status()).toMatchObject({
+      hasSuccessfulSnapshot: true,
+      observedAtUtc,
+      refreshInFlight: false,
+    });
+    await expect(cache.refresh()).rejects.toThrow('refresh unavailable');
+    expect(cache.status()).toMatchObject({
+      hasSuccessfulSnapshot: true,
+      observedAtUtc,
+      refreshInFlight: false,
+    });
+    expect(hasUnresolvedLiveListingRefreshFailure(cache.status())).toBe(true);
+  });
+
+  it('returns the last successful snapshot when an expired-cache refresh fails', async () => {
+    let now = 0;
+    let attempts = 0;
+    const built = snapshot();
+    const cache = createLiveListingCatalogCache(async () => {
+      attempts += 1;
+      if (attempts === 1) return built;
+      throw new Error('refresh unavailable');
+    }, { now: () => now, ttlMs: 60_000 });
+    await expect(cache()).resolves.toBe(built);
+    now = 60_001;
+    await expect(cache()).resolves.toBe(built);
+    expect(attempts).toBe(2);
+  });
+
+  it('clears the unresolved refresh-failure state only after a complete success', async () => {
+    let attempts = 0;
+    const built = snapshot();
+    const cache = createLiveListingCatalogCache(async () => {
+      attempts += 1;
+      if (attempts === 2) throw new Error('refresh unavailable');
+      return built;
+    });
+    await cache.refresh();
+    await expect(cache.refresh()).rejects.toThrow('refresh unavailable');
+    expect(hasUnresolvedLiveListingRefreshFailure(cache.status())).toBe(true);
+    await cache.refresh();
+    expect(hasUnresolvedLiveListingRefreshFailure(cache.status())).toBe(false);
   });
 
   it('single-flights transient token refresh and never returns auth material except access authority', async () => {
@@ -306,7 +477,7 @@ describe('strict live source parsers', () => {
     }
   });
 
-  it('captures complete multi-page Shopify variants and excludes negative inventory', async () => {
+  it('captures complete multi-page Shopify variants including nonpositive inventory', async () => {
     globalThis.fetch = (async (_url, init) => {
       const request = JSON.parse(String(init?.body)) as {
         operationName: string;
@@ -326,7 +497,7 @@ describe('strict live source parsers', () => {
     }) as typeof fetch;
     try {
       const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority');
-      expect(result.variants.map((entry) => entry.sku)).toEqual(['FIRST', 'SECOND']);
+      expect(result.variants.map((entry) => entry.sku)).toEqual(['FIRST', 'NEGATIVE', 'SECOND']);
       expect(result.coverage).toMatchObject({
         variantPageCount: 2,
         totalVariantsCaptured: 3,
@@ -379,7 +550,7 @@ describe('strict live source parsers', () => {
     }
   });
 
-  it('excludes negative Shopify inventory and reports it as nonpositive', async () => {
+  it('retains negative Shopify inventory and reports it as nonpositive', async () => {
     let call = 0;
     globalThis.fetch = (async () => {
       call += 1;
@@ -400,7 +571,7 @@ describe('strict live source parsers', () => {
     }) as typeof fetch;
     try {
       const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority');
-      expect(result.variants).toEqual([]);
+      expect(result.variants).toEqual([expect.objectContaining({ sku: 'NEGATIVE', available: -2 })]);
       expect(result.coverage).toMatchObject({ totalVariantsCaptured: 1, excludedZeroInventory: 1 });
     } finally {
       globalThis.fetch = originalFetch;

@@ -339,6 +339,15 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-13: Continuous Listing Reconciliation and Mapping Workspace
+
+- Expanded Listings from a positive-stock intersection into a union reconciliation view: positive-stock Shopify variants, zero/unknown-stock Shopify variants with eBay state, and unmatched or SKU-less active eBay listings all remain visible. Blank, duplicate, and near-collision SKUs do not auto-map.
+- Added a server background refresh every 60 seconds, verified Shopify webhook invalidation, browser polling every 30 seconds, and a five-minute fail-closed freshness limit. A known refresh failure downgrades the prior snapshot to **Unknown** immediately. The UI now says **Active**, **Not listed**, **Needs attention**, or **Unknown**; stale or failed evidence cannot remain Active or Not listed.
+- Added an exact GET-only listing workspace that verifies current eBay Trading detail and, where applicable, the Inventory item and Offer. It shows the Shopify variant -> exact SKU -> management model -> offer -> public listing mapping and current listing/content/delivery fields. Price and inventory identify Marketplace Connect as their verified writer; listing and mapping ownership remain explicitly unverified.
+- The live audit found 112 active Trading listings but only five Inventory items and five Offers, so the control model explicitly supports both legacy Trading and Inventory/Offer listings.
+- Added a separate, explicitly initialized, append-only listing-control draft store with immutable revisions for the initial bounded field set and audit verification. It is deliberately unwired from routes, credentials, providers, approvals, and commerce writers; no application runtime path can use it to authorize a publish.
+- Kept Marketplace Connect as the price, inventory, and order writer. ProductPipeline remains shadow/read-only and all non-read `/api` requests remain quarantined. The detailed field model and responsibility-by-responsibility cutover plan are in `docs/LISTING_CONTROL_MODEL.md`.
+
 ### 2026-08-13: eBay Seller Identity Pin Incident and Repair
 
 - During the first complete live-catalog audit, the reader stopped at fixed phase `LISTING_CATALOG_TRADING_CAPTURE_FAILED`: its stale expected seller was `usedcam-0`, while strict Production Trading `GetUser` observed `usedcameragear`. The catalog failed closed before projection, returned no partial status, performed zero external writes, and did not log, return, or persist credential material.

@@ -2,8 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import { loadShopifyCredentials } from '../../config/credentials.js';
 import { info, warn } from '../../utils/logger.js';
-
-const router = Router();
+import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
 
 async function verifyShopifyWebhook(req: Request): Promise<boolean> {
   try {
@@ -24,18 +23,35 @@ async function verifyShopifyWebhook(req: Request): Promise<boolean> {
  * dispatch path and database receipt write is intentionally absent during the
  * Marketplace Connect incumbent phase.
  */
-router.post('/webhooks/shopify/:topic', async (req: Request, res: Response) => {
-  res.status(200).send('OK_READ_ONLY');
-  const rawTopic = req.params.topic || req.get('X-Shopify-Topic') || 'unknown';
-  const suppliedTopic = Array.isArray(rawTopic) ? rawTopic[0] : rawTopic;
-  const topic = /^[A-Za-z0-9._-]{1,80}$/.test(suppliedTopic) ? suppliedTopic : 'unknown';
+export function createShopifyWebhookRouter(
+  dependencies: Readonly<{
+    verify: (request: Request) => Promise<boolean>;
+    refreshListings: () => Promise<unknown>;
+  }> = {
+    verify: verifyShopifyWebhook,
+    refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
+  },
+): Router {
+  const router = Router();
 
-  if (!(await verifyShopifyWebhook(req))) {
-    warn(`[Shopify Webhook] HMAC verification failed: ${topic}`);
-    return;
-  }
+  router.post('/webhooks/shopify/:topic', async (req: Request, res: Response) => {
+    res.status(200).send('OK_READ_ONLY');
+    const rawTopic = req.params.topic || req.get('X-Shopify-Topic') || 'unknown';
+    const suppliedTopic = Array.isArray(rawTopic) ? rawTopic[0] : rawTopic;
+    const topic = /^[A-Za-z0-9._-]{1,80}$/.test(suppliedTopic) ? suppliedTopic : 'unknown';
 
-  info(`[Shopify Webhook] ${topic} verified in shadow mode; no payload persisted or writer dispatched`);
-});
+    if (!(await dependencies.verify(req))) {
+      warn(`[Shopify Webhook] HMAC verification failed: ${topic}`);
+      return;
+    }
 
-export default router;
+    info(`[Shopify Webhook] ${topic} verified in shadow mode; refreshing read-only listing evidence`);
+    void dependencies.refreshListings().catch(() => {
+      warn('LISTING_CATALOG_SHOPIFY_WEBHOOK_REFRESH_FAILED');
+    });
+  });
+
+  return router;
+}
+
+export default createShopifyWebhookRouter();

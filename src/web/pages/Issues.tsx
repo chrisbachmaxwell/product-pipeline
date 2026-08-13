@@ -15,6 +15,8 @@ import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import {
   isLiveCatalogResponse,
   listingAttentionText,
+  listingDisplaySku,
+  listingDisplayTitle,
   listingSkuLabel,
 } from '../operator-ui';
 
@@ -43,37 +45,40 @@ const Issues: React.FC = () => {
             image=""
             action={{ content: 'Try again', onAction: () => { void listings.refetch(); } }}
           >
-            <Text as="p">Shopify and eBay could not be checked.</Text>
+            <Text as="p">Current Shopify and eBay issues are unavailable.</Text>
           </EmptyState>
         </Card>
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState heading="No listing issues" image="">
-            <Text as="p">Everything checked is clear.</Text>
+            <Text as="p">Everything is clear.</Text>
           </EmptyState>
         </Card>
       ) : (
         <BlockStack gap="300">
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const title = listingDisplayTitle(row);
+            return (
             <Card key={row.id}>
               <InlineStack align="space-between" blockAlign="center" gap="300">
                 <BlockStack gap="100">
-                  <Text as="h2" variant="headingSm">{row.shopify.title}</Text>
-                  <Text as="p" tone="subdued">{listingSkuLabel(row.shopify.sku)}</Text>
+                  <Text as="h2" variant="headingSm">{title}</Text>
+                  <Text as="p" tone="subdued">{listingSkuLabel(listingDisplaySku(row))}</Text>
                   <Text as="p" tone="critical">{listingAttentionText(row)}</Text>
                 </BlockStack>
                 <InlineStack gap="300" blockAlign="center">
                   <Badge tone="critical">Needs attention</Badge>
                   <Link
                     to={`/listings/${encodeURIComponent(row.id)}`}
-                    aria-label={`View details for ${row.shopify.title}`}
+                    aria-label={`View details for ${title}`}
                   >
                     Details
                   </Link>
                 </InlineStack>
               </InlineStack>
             </Card>
-          ))}
+            );
+          })}
           {total > PAGE_SIZE && (
             <InlineStack align="center">
               <Pagination

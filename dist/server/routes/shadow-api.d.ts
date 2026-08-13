@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { type LiveListingCatalogRouteDependencies } from '../live-listing-catalog-source.js';
-export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/authoritative-listings", "/api/listings", "/api/capabilities"];
+import { type ListingWorkspaceDto } from '../listing-workspace-reader.js';
+export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/authoritative-listings", "/api/listing-workspace", "/api/listings", "/api/capabilities"];
 export type LocalListingProjection = {
     id: number | string;
     shopify_product_id: string;
@@ -14,6 +15,8 @@ export type LocalListingProjection = {
 };
 /** Keep browser responses narrower than the legacy product_mappings record. */
 export declare function projectLocalListing(row: Record<string, unknown>): LocalListingProjection;
-export declare function createShadowApiRouter(dependencies?: LiveListingCatalogRouteDependencies): Router;
+export declare function createShadowApiRouter(dependencies?: LiveListingCatalogRouteDependencies & Readonly<{
+    readWorkspace?: (rowId: string) => Promise<ListingWorkspaceDto>;
+}>): Router;
 declare const _default: Router;
 export default _default;

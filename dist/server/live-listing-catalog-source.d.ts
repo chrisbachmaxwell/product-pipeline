@@ -19,6 +19,12 @@ export declare function createTransientEbayTokenProvider(dependencies: Readonly<
     now?: () => number;
 }>): () => Promise<string>;
 export declare function exchangeRuntimeEbayToken(auth: RuntimeAuthMaterial, fetchImpl?: FetchLike): Promise<TransientEbayToken>;
+/**
+ * Internal read-authority seam for exact eBay GET detail readers. Callers must
+ * never return, persist, or log the token and must retain the same account and
+ * method allowlists as this module.
+ */
+export declare function getRuntimeEbayReadToken(): Promise<string>;
 declare function captureShopify(accessToken: string): Promise<{
     variants: CapturedShopifyVariant[];
     coverage: Omit<LiveListingCatalogSnapshot['coverage']['shopify'], never>;
@@ -39,10 +45,41 @@ export declare function captureLiveListingCatalog(): Promise<LiveListingCatalogS
 export declare function createLiveListingCatalogCache(capture: () => Promise<LiveListingCatalogSnapshot>, options?: Readonly<{
     now?: () => number;
     ttlMs?: number;
-}>): () => Promise<LiveListingCatalogSnapshot>;
-export declare const getLiveListingCatalogSnapshot: () => Promise<LiveListingCatalogSnapshot>;
+}>): (() => Promise<LiveListingCatalogSnapshot>) & {
+    refresh: () => Promise<LiveListingCatalogSnapshot>;
+    status: () => Readonly<{
+        hasSuccessfulSnapshot: boolean;
+        observedAtUtc: string | null;
+        lastSuccessAtEpochMs: number | null;
+        lastAttemptAtEpochMs: number | null;
+        lastFailureAtEpochMs: number | null;
+        expiresAtEpochMs: number | null;
+        refreshInFlight: boolean;
+    }>;
+};
+export type LiveListingCatalogCacheStatus = ReturnType<ReturnType<typeof createLiveListingCatalogCache>['status']>;
+export declare function hasUnresolvedLiveListingRefreshFailure(status: LiveListingCatalogCacheStatus | null | undefined): boolean;
+export declare const getLiveListingCatalogSnapshot: (() => Promise<LiveListingCatalogSnapshot>) & {
+    refresh: () => Promise<LiveListingCatalogSnapshot>;
+    status: () => Readonly<{
+        hasSuccessfulSnapshot: boolean;
+        observedAtUtc: string | null;
+        lastSuccessAtEpochMs: number | null;
+        lastAttemptAtEpochMs: number | null;
+        lastFailureAtEpochMs: number | null;
+        expiresAtEpochMs: number | null;
+        refreshInFlight: boolean;
+    }>;
+};
+export declare function startLiveListingCatalogRefresher(cache?: Readonly<{
+    refresh: () => Promise<unknown>;
+}>, options?: Readonly<{
+    intervalMs?: number;
+    setIntervalImpl?: typeof setInterval;
+}>): () => void;
 export type LiveListingCatalogRouteDependencies = Readonly<{
     getSnapshot: () => Promise<LiveListingCatalogSnapshot>;
+    getSnapshotStatus?: () => LiveListingCatalogCacheStatus;
 }>;
 export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     catalogPhase: typeof catalogPhase;
@@ -50,5 +87,6 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     tradingCall: typeof tradingCall;
     captureTrading: typeof captureTrading;
     captureInventory: typeof captureInventory;
+    LIVE_CATALOG_REFRESH_INTERVAL_MS: 60000;
 }>;
 export {};

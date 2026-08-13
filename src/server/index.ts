@@ -13,6 +13,7 @@ import shadowApiRoutes from './routes/shadow-api.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
 import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
+import { startLiveListingCatalogRefresher } from './live-listing-catalog-source.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,13 +164,14 @@ app.get('/{*path}', (req, res) => {
 // --- Initialize and Start ---
 async function start() {
   try {
+    startLiveListingCatalogRefresher();
     app.listen(PORT, () => {
       info(`[Server] ProductPipeline running on http://localhost:${PORT}`);
       info(`[Server] Health: http://localhost:${PORT}/health`);
       info(`[Server] API: http://localhost:${PORT}/api/migration/status`);
     });
 
-    info('[Safety] Shadow read-only mode active; scheduler and watcher are not mounted');
+    info('[Safety] Shadow read-only mode active; listing reader refreshes in background; commerce scheduler and watcher are not mounted');
 
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);

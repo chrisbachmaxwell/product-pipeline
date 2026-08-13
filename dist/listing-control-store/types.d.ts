@@ -1,0 +1,82 @@
+export type Digest = `sha256:${string}`;
+export declare const LISTING_MANAGEMENT_MODELS: readonly ["inventory_api", "trading_api", "unmanaged", "unknown"];
+export type ListingManagementModel = (typeof LISTING_MANAGEMENT_MODELS)[number];
+export declare const LISTING_DRAFT_STATES: readonly ["draft", "reviewed", "stale"];
+export type ListingDraftState = (typeof LISTING_DRAFT_STATES)[number];
+export declare const LISTING_FIELD_NAMES: readonly ["title", "category", "condition", "condition_description", "price", "quantity", "description", "images", "item_specifics", "identifiers", "fulfillment_policy", "payment_policy", "return_policy", "merchant_location"];
+export type ListingFieldName = (typeof LISTING_FIELD_NAMES)[number];
+export type ListingControlScope = Readonly<{
+    shopifyStoreDomain: string;
+    ebayEnvironment: 'sandbox' | 'production';
+    ebaySellerId: string;
+    ebayMarketplaceId: 'EBAY_US';
+}>;
+export type ListingIdentity = Readonly<{
+    shopifyProductGid: string;
+    shopifyVariantGid: string;
+    rawSku: string;
+    ebaySellerId: string;
+    ebayMarketplaceId: 'EBAY_US';
+    managementModel: ListingManagementModel;
+    ebayInventorySku: string | null;
+    ebayOfferId: string | null;
+    ebayListingId: string | null;
+}>;
+export type ListingFieldInput = Readonly<{
+    field: ListingFieldName;
+    sourceValue: string | null;
+    sourceDigest: Digest;
+    defaultValue: string | null;
+    defaultDigest: Digest;
+    overrideValue: string | null;
+    overrideDigest: Digest;
+    proposedValue: string | null;
+    proposedDigest: Digest;
+    proposedSource: 'source' | 'default' | 'override' | 'omit';
+    observedValue: string | null;
+    observedDigest: Digest;
+}>;
+export type ListingBaseDigests = Readonly<{
+    source: Digest;
+    ebay: Digest;
+}>;
+export type ListingRevisionInput = Readonly<{
+    revisionId: string;
+    identity: ListingIdentity;
+    baseSourceDigest: Digest;
+    baseSourceObservedAtUtc: string;
+    baseEbayObservationDigest: Digest;
+    baseEbayObservedAtUtc: string;
+    fields: readonly ListingFieldInput[];
+    actor: string;
+    state: ListingDraftState;
+    createdAtUtc: string;
+    expectedPreviousRevisionDigest: Digest | null;
+    expectedLatestBaseSourceDigest: Digest | null;
+    expectedLatestBaseEbayObservationDigest: Digest | null;
+    auditEventId: string;
+}>;
+export type ListingRevisionField = ListingFieldInput;
+export type ListingRevision = Readonly<{
+    revisionId: string;
+    revisionNumber: number;
+    scopeKey: Digest;
+    subjectKey: Digest;
+    revisionDigest: Digest;
+    previousRevisionDigest: Digest | null;
+    identity: ListingIdentity;
+    baseSourceDigest: Digest;
+    baseSourceObservedAtUtc: string;
+    baseEbayObservationDigest: Digest;
+    baseEbayObservedAtUtc: string;
+    actor: string;
+    state: ListingDraftState;
+    createdAtUtc: string;
+    fields: readonly ListingRevisionField[];
+}>;
+export type ListingControlAuditVerification = Readonly<{
+    valid: boolean;
+    recordCount: number;
+    headHash: Digest | null;
+    error?: string;
+}>;

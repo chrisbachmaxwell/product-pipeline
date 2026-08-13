@@ -10,6 +10,10 @@ import shadowApiRoutes, {
   SHADOW_API_GET_PATHS,
 } from './shadow-api.js';
 import { buildLiveListingCatalogSnapshot } from '../live-listing-catalog.js';
+import {
+  ListingWorkspaceReaderError,
+  type ListingWorkspaceDto,
+} from '../listing-workspace-reader.js';
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -22,7 +26,7 @@ function registeredGetPaths(): string[] {
     .map((layer) => layer.route!.path);
 }
 
-async function requestShadowPath(pathname: string): Promise<number> {
+async function requestShadowPath(pathname: string, method: 'GET' | 'POST' = 'GET'): Promise<number> {
   const app = express();
   app.use(shadowApiRoutes);
   app.use('/api', (_req, res) => {
@@ -38,14 +42,15 @@ async function requestShadowPath(pathname: string): Promise<number> {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Test server address unavailable');
     return await new Promise<number>((resolve, reject) => {
-      const request = http.get(
-        { hostname: '127.0.0.1', port: address.port, path: pathname },
+      const request = http.request(
+        { hostname: '127.0.0.1', port: address.port, path: pathname, method },
         (response) => {
           response.resume();
           response.on('end', () => resolve(response.statusCode ?? 0));
         },
       );
       request.on('error', reject);
+      request.end();
     });
   } finally {
     await new Promise<void>((resolve, reject) => {
@@ -157,8 +162,9 @@ describe('shadow API allowlist', () => {
     );
   });
 
+  const liveObservedAtUtc = new Date().toISOString();
   const liveSnapshot = buildLiveListingCatalogSnapshot({
-    observedAtUtc: '2026-08-13T20:00:00.000Z',
+    observedAtUtc: liveObservedAtUtc,
     shopifyVariants: [{
       productId: 'gid://shopify/Product/10310708035875',
       variantId: 'gid://shopify/ProductVariant/55396000563491',
@@ -180,14 +186,14 @@ describe('shadow API allowlist', () => {
     coverage: {
       shopify: {
         source: 'shopify-admin-graphql', storeDomain: 'usedcameragear.myshopify.com',
-        shopId: 'gid://shopify/Shop/86254518563', observedAtUtc: '2026-08-13T20:00:00.000Z',
+        shopId: 'gid://shopify/Shop/86254518563', observedAtUtc: liveObservedAtUtc,
         paginationComplete: true, variantPageCount: 1, totalVariantsCaptured: 1,
         positiveStockVariants: 1, excludedZeroInventory: 0, excludedUnknownInventory: 0,
         productStatusCounts: { ACTIVE: 1 },
       },
       ebay: {
         source: 'ebay-trading-api+ebay-inventory-api', marketplaceId: 'EBAY_US',
-        sellerAccountVerified: true, observedAtUtc: '2026-08-13T20:00:00.000Z',
+        sellerAccountVerified: true, observedAtUtc: liveObservedAtUtc,
         trading: { paginationComplete: true, pageCount: 1, activeListingCount: 1 },
         inventory: {
           inventoryItemsComplete: true, inventoryItemPageCount: 1, inventoryItemCount: 1,
@@ -199,7 +205,7 @@ describe('shadow API allowlist', () => {
   });
   const liveRouter = createShadowApiRouter({ getSnapshot: async () => liveSnapshot });
 
-  it('serves the exact live Shopify/eBay v2 catalog contract without secrets', async () => {
+  it('serves the exact live Shopify/eBay v3 catalog contract without secrets', async () => {
     const response = await requestShadowJson('/api/authoritative-listings', liveRouter);
     expect(response.status).toBe(200);
     expect(Object.keys(response.body).sort()).toEqual([
@@ -208,6 +214,7 @@ describe('shadow API allowlist', () => {
       'data',
       'evidenceKind',
       'externalWritesPerformed',
+      'freshness',
       'limit',
       'observedAtUtc',
       'offset',
@@ -218,14 +225,17 @@ describe('shadow API allowlist', () => {
       'total',
     ]);
     expect(response.body).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       total: 1,
       source: 'shopify-admin-graphql+ebay-active-listings',
       evidenceKind: 'live_read',
       authoritative: true,
       remoteReadPerformed: true,
       externalWritesPerformed: 0,
-      summary: { active: 1, notListed: 0, attention: 0, totalInStock: 1 },
+      summary: {
+        active: 1, notListed: 0, attention: 0, unknown: 0, totalInStock: 1, totalVisible: 1,
+      },
+      freshness: { state: 'fresh', maxAgeMs: 300000 },
       data: [{
         id: 'shopify-variant:gid://shopify/ProductVariant/55396000563491',
         shopify: {
@@ -236,12 +246,13 @@ describe('shadow API allowlist', () => {
           imageCount: 6,
         },
         ebay: {
+          sku: 'CAN3570-U119',
           offerId: '234942877011',
           listingId: '147502608418',
           url: 'https://www.ebay.com/itm/147502608418',
         },
         lifecycleStatus: 'active',
-        lastVerifiedAtUtc: '2026-08-13T20:00:00.000Z',
+        lastVerifiedAtUtc: liveObservedAtUtc,
         audit: {
           verified: true,
           evidenceState: 'live_verified',
@@ -256,7 +267,39 @@ describe('shadow API allowlist', () => {
     );
   });
 
-  it('filters the live snapshot by search/status/exact ID and rejects unknown lifecycle states', async () => {
+  it('projects the retained snapshot only as Unknown after a known refresh failure', async () => {
+    const failedRouter = createShadowApiRouter({
+      getSnapshot: async () => liveSnapshot,
+      getSnapshotStatus: () => ({
+        hasSuccessfulSnapshot: true,
+        observedAtUtc: liveObservedAtUtc,
+        lastSuccessAtEpochMs: Date.parse(liveObservedAtUtc),
+        lastAttemptAtEpochMs: Date.parse(liveObservedAtUtc) + 1,
+        lastFailureAtEpochMs: Date.parse(liveObservedAtUtc) + 1,
+        expiresAtEpochMs: Date.parse(liveObservedAtUtc) + 60_000,
+        refreshInFlight: false,
+      }),
+    });
+    const response = await requestShadowJson('/api/authoritative-listings', failedRouter);
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        authoritative: false,
+        freshness: { state: 'refresh_failed' },
+        summary: { active: 0, notListed: 0, attention: 0, unknown: 1 },
+        data: [{
+          lifecycleStatus: 'unknown',
+          audit: {
+            verified: false,
+            currentRemoteStateVerified: false,
+            attentionReasons: ['source_refresh_failed'],
+          },
+        }],
+      },
+    });
+  });
+
+  it('filters schema-v3 live rows by active/unknown/search/exact ID and rejects invalid states', async () => {
     const active = await requestShadowJson(
       '/api/authoritative-listings?status=active&search=147502608418&limit=1&id=shopify-variant%3Agid%3A%2F%2Fshopify%2FProductVariant%2F55396000563491',
       liveRouter,
@@ -269,8 +312,83 @@ describe('shadow API allowlist', () => {
     const missing = await requestShadowJson('/api/authoritative-listings?search=not-the-canary', liveRouter);
     expect(missing).toMatchObject({ status: 200, body: { total: 0, data: [] } });
 
+    const unknown = await requestShadowJson('/api/authoritative-listings?status=unknown', liveRouter);
+    expect(unknown).toMatchObject({ status: 200, body: { total: 0, data: [] } });
+
     const invalid = await requestShadowJson('/api/authoritative-listings?status=published', liveRouter);
     expect(invalid).toEqual({ status: 400, body: { error: 'Invalid listing status filter' } });
+  });
+
+  const workspaceDto = {
+    schemaVersion: 1,
+    evidence: {
+      catalogObservedAtUtc: liveObservedAtUtc,
+      detailObservedAtUtc: liveObservedAtUtc,
+      freshness: 'live',
+      backgroundRefreshSeconds: 60,
+      remoteReadPerformed: true,
+      externalWritesPerformed: 0,
+    },
+    catalog: liveSnapshot.rows[0],
+    mapping: {
+      state: 'mapped',
+      joinKey: 'exact_raw_sku',
+      shopifyProductId: 'gid://shopify/Product/10310708035875',
+      shopifyVariantId: 'gid://shopify/ProductVariant/55396000563491',
+      inventorySku: 'CAN3570-U119',
+      offerId: '234942877011',
+      listingId: '147502608418',
+      managementModel: 'inventory_offer',
+      ownership: {
+        listing: 'unverified',
+        mapping: 'unverified',
+        price: 'marketplace_connect',
+        inventory: 'marketplace_connect',
+      },
+      editMode: 'read_only',
+    },
+    ebayDetail: null,
+  } as ListingWorkspaceDto;
+
+  it('serves only the exact credential-free read-only workspace GET contract', async () => {
+    const requestedIds: string[] = [];
+    const router = createShadowApiRouter({
+      getSnapshot: async () => liveSnapshot,
+      readWorkspace: async (id) => {
+        requestedIds.push(id);
+        return workspaceDto;
+      },
+    });
+    const response = await requestShadowJson(
+      '/api/listing-workspace?id=shopify-variant%3Agid%3A%2F%2Fshopify%2FProductVariant%2F55396000563491',
+      router,
+    );
+    expect(response).toEqual({ status: 200, body: workspaceDto });
+    expect(requestedIds).toEqual([
+      'shopify-variant:gid://shopify/ProductVariant/55396000563491',
+    ]);
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /access.?token|refresh.?token|authorization|password|cookie|credential/i,
+    );
+    await expect(requestShadowPath('/api/listing-workspace', 'POST')).resolves.toBe(404);
+  });
+
+  it('maps exact workspace misses to 404 and evidence/read failures to generic 503', async () => {
+    const missing = await requestShadowJson('/api/listing-workspace?id=missing', createShadowApiRouter({
+      getSnapshot: async () => liveSnapshot,
+      readWorkspace: async () => { throw new ListingWorkspaceReaderError('not_found'); },
+    }));
+    expect(missing).toEqual({ status: 404, body: { error: 'Listing workspace was not found' } });
+
+    const unavailable = await requestShadowJson('/api/listing-workspace?id=secret', createShadowApiRouter({
+      getSnapshot: async () => liveSnapshot,
+      readWorkspace: async () => { throw new Error('Bearer upstream-secret'); },
+    }));
+    expect(unavailable).toEqual({
+      status: 503,
+      body: { error: 'Verified listing workspace is unavailable' },
+    });
+    expect(JSON.stringify(unavailable)).not.toMatch(/upstream-secret|Bearer/i);
   });
 
   it('fails closed with a generic 503 when any live source is incomplete', async () => {
@@ -289,6 +407,9 @@ describe('shadow API allowlist', () => {
       dataCapabilities: expect.arrayContaining([expect.objectContaining({
         id: 'authoritative-listings', remoteRead: true, externalWrite: false,
         evidenceKind: 'live_read',
+      }), expect.objectContaining({
+        id: 'listing-workspace', remoteRead: true, externalWrite: false,
+        evidenceKind: 'live_read', editMode: 'read_only',
       })]),
     });
   });

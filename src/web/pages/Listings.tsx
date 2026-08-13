@@ -25,7 +25,10 @@ import {
   type ListingFilter,
   listingActionLabel,
   listingAttentionText,
+  listingDisplaySku,
+  listingDisplayTitle,
   listingFilterOptions,
+  formatListingQuantity,
   listingSkuLabel,
   listingStatusLabel,
   listingStatusTone,
@@ -49,6 +52,7 @@ const Listings: React.FC = () => {
   const rows = valid ? listings.data?.data ?? [] : [];
   const total = valid ? listings.data?.total ?? 0 : 0;
   const nextReview = rows.find((row) =>
+    row.shopify !== null &&
     row.lifecycleStatus === 'not_listed' &&
     row.ebay.activeMatchCount === 0 &&
     row.ebay.inventoryItemCount === 0 &&
@@ -116,7 +120,7 @@ const Listings: React.FC = () => {
                   image=""
                   action={{ content: 'Try again', onAction: () => { void listings.refetch(); } }}
                 >
-                  <Text as="p">Shopify and eBay could not be checked.</Text>
+                  <Text as="p">Current Shopify and eBay listings are unavailable.</Text>
                 </EmptyState>
               ) : listings.isLoading ? (
                 <Box padding="1200">
@@ -144,7 +148,9 @@ const Listings: React.FC = () => {
                       ]}
                     >
                       {rows.map((row, index) => {
-                        const imageUrl = verifiedListingImageUrl(row.shopify.primaryImageUrl);
+                        const title = listingDisplayTitle(row);
+                        const sku = listingDisplaySku(row);
+                        const imageUrl = verifiedListingImageUrl(row.shopify?.primaryImageUrl ?? null);
                         const attention = listingAttentionText(row);
                         const action = listingActionLabel(row.lifecycleStatus);
                         return (
@@ -154,14 +160,14 @@ const Listings: React.FC = () => {
                                 <Thumbnail
                                   size="small"
                                   source={imageUrl ?? ProductIcon}
-                                  alt={imageUrl ? row.shopify.title : ''}
+                                  alt={imageUrl ? title : ''}
                                 />
                                 <BlockStack gap="050">
-                                  <Text as="span" fontWeight="semibold">{row.shopify.title}</Text>
+                                  <Text as="span" fontWeight="semibold">{title}</Text>
                                   <Text as="span" variant="bodySm" tone="subdued">
-                                    {row.shopify.variantTitle !== 'Default Title'
-                                      ? `${row.shopify.variantTitle} · ${listingSkuLabel(row.shopify.sku)}`
-                                      : listingSkuLabel(row.shopify.sku)}
+                                    {row.shopify && row.shopify.variantTitle !== 'Default Title'
+                                      ? `${row.shopify.variantTitle} · ${listingSkuLabel(sku)}`
+                                      : listingSkuLabel(sku)}
                                   </Text>
                                 </BlockStack>
                               </InlineStack>
@@ -174,12 +180,12 @@ const Listings: React.FC = () => {
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>
                             </IndexTable.Cell>
-                            <IndexTable.Cell>{row.shopify.available}</IndexTable.Cell>
-                            <IndexTable.Cell>{formatListingPrice(row.shopify.price)}</IndexTable.Cell>
+                            <IndexTable.Cell>{formatListingQuantity(row.shopify?.available ?? null)}</IndexTable.Cell>
+                            <IndexTable.Cell>{formatListingPrice(row.shopify?.price ?? null)}</IndexTable.Cell>
                             <IndexTable.Cell>
                               <Link
                                 to={`/listings/${encodeURIComponent(row.id)}`}
-                                aria-label={`${action} ${row.shopify.title}`}
+                                aria-label={`${action} ${title}`}
                               >
                                 {action}
                               </Link>
@@ -193,7 +199,9 @@ const Listings: React.FC = () => {
                   <div className="operator-listings-mobile">
                     <BlockStack gap="300">
                       {rows.map((row) => {
-                        const imageUrl = verifiedListingImageUrl(row.shopify.primaryImageUrl);
+                        const title = listingDisplayTitle(row);
+                        const sku = listingDisplaySku(row);
+                        const imageUrl = verifiedListingImageUrl(row.shopify?.primaryImageUrl ?? null);
                         const attention = listingAttentionText(row);
                         const action = listingActionLabel(row.lifecycleStatus);
                         return (
@@ -203,12 +211,12 @@ const Listings: React.FC = () => {
                                 <Thumbnail
                                   size="small"
                                   source={imageUrl ?? ProductIcon}
-                                  alt={imageUrl ? row.shopify.title : ''}
+                                  alt={imageUrl ? title : ''}
                                 />
                                 <BlockStack gap="050">
-                                  <Text as="span" fontWeight="semibold">{row.shopify.title}</Text>
+                                  <Text as="span" fontWeight="semibold">{title}</Text>
                                   <Text as="span" variant="bodySm" tone="subdued">
-                                    {listingSkuLabel(row.shopify.sku)}
+                                    {listingSkuLabel(sku)}
                                   </Text>
                                 </BlockStack>
                               </InlineStack>
@@ -217,17 +225,17 @@ const Listings: React.FC = () => {
                                   {listingStatusLabel(row.lifecycleStatus)}
                                 </Badge>
                                 <Text as="span" fontWeight="semibold">
-                                  {formatListingPrice(row.shopify.price)}
+                                  {formatListingPrice(row.shopify?.price ?? null)}
                                 </Text>
                               </InlineStack>
                               {attention && <Text as="p" variant="bodySm" tone="critical">{attention}</Text>}
                               <InlineStack align="space-between" blockAlign="center">
                                 <Text as="span" variant="bodySm" tone="subdued">
-                                  {row.shopify.available} available
+                                  {formatListingQuantity(row.shopify?.available ?? null)} available
                                 </Text>
                                 <Link
                                   to={`/listings/${encodeURIComponent(row.id)}`}
-                                  aria-label={`${action} ${row.shopify.title}`}
+                                  aria-label={`${action} ${title}`}
                                 >
                                   {action}
                                 </Link>

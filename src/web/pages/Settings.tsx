@@ -31,7 +31,8 @@ const Settings: React.FC = () => {
   const migration = useMigrationStatus();
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
   const migrationAvailable = !migration.error && isMigrationPolicyAvailable(migration.data);
-  const ebayVerified = !listings.error && isLiveCatalogResponse(listings.data);
+  const ebayAvailable = !listings.error && isLiveCatalogResponse(listings.data);
+  const ebayCurrent = ebayAvailable && listings.data?.authoritative === true;
   const backfillProtected = isHistoricalBackfillProtected(migration.data);
 
   const shopifyState = migration.isLoading
@@ -41,8 +42,10 @@ const Settings: React.FC = () => {
       : { value: 'Unavailable', tone: 'critical' as const };
   const ebayState = listings.isLoading
     ? { value: 'Checking', tone: 'info' as const }
-    : ebayVerified
-      ? { value: 'Checked', tone: 'success' as const }
+    : ebayCurrent
+      ? { value: 'Current', tone: 'success' as const }
+      : ebayAvailable
+        ? { value: 'Unknown', tone: 'attention' as const }
       : { value: 'Unavailable', tone: 'critical' as const };
   const protectionState = migration.isLoading
     ? { value: 'Checking', tone: 'info' as const }

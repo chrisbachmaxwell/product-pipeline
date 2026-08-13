@@ -1,5 +1,5 @@
-export type LiveListingStatus = 'active' | 'not_listed' | 'attention';
-export type ListingAttentionReason = 'shopify_product_not_active' | 'shopify_sku_missing' | 'shopify_sku_duplicate' | 'shopify_sku_near_collision' | 'ebay_sku_near_collision' | 'ebay_multiple_active_matches' | 'ebay_unpublished_artifact' | 'ebay_inventory_coverage_unavailable';
+export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
+export type ListingAttentionReason = 'shopify_product_not_active' | 'shopify_sku_missing' | 'shopify_sku_duplicate' | 'shopify_sku_near_collision' | 'ebay_sku_near_collision' | 'ebay_multiple_active_matches' | 'ebay_unpublished_artifact' | 'ebay_inventory_coverage_unavailable' | 'ebay_active_without_shopify_variant' | 'ebay_active_without_sku' | 'shopify_inventory_not_positive' | 'source_snapshot_stale' | 'source_refresh_failed';
 export type CapturedShopifyVariant = Readonly<{
     productId: string;
     variantId: string;
@@ -9,7 +9,7 @@ export type CapturedShopifyVariant = Readonly<{
     productStatus: string;
     primaryImageUrl: string | null;
     imageCount: number;
-    available: number;
+    available: number | null;
     price: Readonly<{
         amount: string;
         currency: string;
@@ -71,6 +71,9 @@ export type LiveCatalogCoverage = Readonly<{
         ebayNearCollisionCount: number;
         ambiguousActiveMatchCount: number;
         unpublishedArtifactSkuCount: number;
+        zeroStockActiveShopifyCount: number;
+        unmatchedEbaySkuCount: number;
+        unmatchedEbayListingCount: number;
     }>;
 }>;
 export type LiveListingCatalogRow = Readonly<{
@@ -84,13 +87,14 @@ export type LiveListingCatalogRow = Readonly<{
         productStatus: string;
         primaryImageUrl: string | null;
         imageCount: number;
-        available: number;
+        available: number | null;
         price: Readonly<{
             amount: string;
             currency: string;
         }>;
-    }>;
+    }> | null;
     ebay: Readonly<{
+        sku: string;
         state: LiveListingStatus;
         listingId: string | null;
         offerId: string | null;
@@ -103,12 +107,12 @@ export type LiveListingCatalogRow = Readonly<{
     lifecycleStatus: LiveListingStatus;
     lastVerifiedAtUtc: string;
     audit: Readonly<{
-        verified: true;
-        evidenceState: 'live_verified';
+        verified: boolean;
+        evidenceState: 'live_verified' | 'stale';
         unresolvedCount: number;
         attentionReasons: readonly ListingAttentionReason[];
         recoverySupported: false;
-        currentRemoteStateVerified: true;
+        currentRemoteStateVerified: boolean;
     }>;
 }>;
 export type LiveListingCatalogSnapshot = Readonly<{
@@ -118,12 +122,15 @@ export type LiveListingCatalogSnapshot = Readonly<{
         active: number;
         notListed: number;
         attention: number;
+        unknown: number;
         totalInStock: number;
+        totalVisible: number;
     }>;
     coverage: LiveCatalogCoverage;
 }>;
+export declare const MAX_LIVE_LISTING_SNAPSHOT_AGE_MS: number;
 export type LiveListingCatalogPage = Readonly<{
-    schemaVersion: 2;
+    schemaVersion: 3;
     data: readonly LiveListingCatalogRow[];
     total: number;
     limit: number;
@@ -131,10 +138,15 @@ export type LiveListingCatalogPage = Readonly<{
     summary: LiveListingCatalogSnapshot['summary'];
     source: 'shopify-admin-graphql+ebay-active-listings';
     evidenceKind: 'live_read';
-    authoritative: true;
+    authoritative: boolean;
     remoteReadPerformed: true;
     externalWritesPerformed: 0;
     observedAtUtc: string;
+    freshness: Readonly<{
+        state: 'fresh' | 'stale' | 'refresh_failed';
+        ageMs: number;
+        maxAgeMs: number;
+    }>;
     coverage: LiveCatalogCoverage;
 }>;
 export declare class LiveListingCatalogError extends Error {
@@ -154,4 +166,7 @@ export declare function projectLiveListingCatalogPage(snapshot: LiveListingCatal
     search?: string;
     status?: LiveListingStatus;
     id?: string;
+    nowEpochMs?: number;
+    maxAgeMs?: number;
+    refreshFailed?: boolean;
 }>): LiveListingCatalogPage;
