@@ -347,6 +347,7 @@ Test files: `src/services/__tests__/`
 - The live audit found 112 active Trading listings but only five Inventory items and five Offers, so the control model explicitly supports both legacy Trading and Inventory/Offer listings.
 - Added a separate, explicitly initialized, append-only listing-control draft store with immutable revisions for the initial bounded field set and audit verification. It is deliberately unwired from routes, credentials, providers, approvals, and commerce writers; no application runtime path can use it to authorize a publish.
 - Kept Marketplace Connect as the price, inventory, and order writer. ProductPipeline remains shadow/read-only and all non-read `/api` requests remain quarantined. The detailed field model and responsibility-by-responsibility cutover plan are in `docs/LISTING_CONTROL_MODEL.md`.
+- PR #8 merged to `main` as `6a8918677478f919aead632b8d885c23cb6ab738`; Railway reported success and `/health` served that exact commit with shadow read-only mode, external writes disabled, historical backfill disabled, and the full writer quarantine enabled at `2026-08-13T23:20:16.302Z`. Signed-in embedded-app data rendering remains a separate operator verification after reload.
 
 ### 2026-08-13: eBay Seller Identity Pin Incident and Repair
 
