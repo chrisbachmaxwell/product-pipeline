@@ -6,7 +6,7 @@ This document defines the evidence boundary for replacing Shopify Marketplace Co
 
 The signed-in Shopify walkthrough on 2026-08-11 established these operator-attested facts for Used Camera Gear:
 
-- The active store was `usedcameragear` and the eBay seller context was `eBay.com / usedcam-0`.
+- The active store was `usedcameragear` and Marketplace Connect displayed the eBay seller context `eBay.com / usedcam-0`. This remains dated walkthrough evidence only; a later signed-in eBay ownership check plus Production Trading `GetUser` verified the current seller identity as `usedcameragear`, making `usedcam-0` a prior/stale label rather than the current API pin.
 - Marketplace Connect showed recent eBay rows linked to Shopify order numbers. Its order setting was `All orders` at `Complete`; it is the accepted incumbent eBay-to-Shopify importer.
 - Marketplace Connect had price and inventory synchronization enabled.
 - Its listing and mapping surfaces exposed link, grid-edit, status, SKU, quantity, price, title, category, condition, shipping, payment, and item-specific controls. Quantity used all Shopify locations in the visible mapping baseline.
@@ -109,7 +109,7 @@ That fixture boundary is test infrastructure, not a live adapter. Arbitrary inje
 
 Before a live snapshot can be captured, the operator must choose and approve one trusted execution boundary, such as an isolated local command or Railway one-off command, and provide read credentials that:
 
-- identify the exact Used Camera Gear store and `usedcam-0` account;
+- identify the exact Used Camera Gear store and current `usedcameragear` account; the prior `usedcam-0` walkthrough label is not accepted as current API identity;
 - have verified read scopes and no capture-time OAuth exchange or refresh;
 - remain outside repository files, output, errors, and audit payloads;
 - fail closed when missing, expired, near expiry, over-scoped, or identity-mismatched;

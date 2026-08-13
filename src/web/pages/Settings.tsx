@@ -12,8 +12,8 @@ import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import { useMigrationStatus } from '../hooks/useApi';
 import {
   isHistoricalBackfillProtected,
+  isLiveCatalogResponse,
   isMigrationPolicyAvailable,
-  isVerifiedListingSnapshot,
 } from '../operator-ui';
 
 const Row: React.FC<{ label: string; value: string; tone: 'info' | 'attention' | 'success' | 'critical' }> = ({
@@ -31,7 +31,7 @@ const Settings: React.FC = () => {
   const migration = useMigrationStatus();
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
   const migrationAvailable = !migration.error && isMigrationPolicyAvailable(migration.data);
-  const ebayVerified = !listings.error && isVerifiedListingSnapshot(listings.data);
+  const ebayVerified = !listings.error && isLiveCatalogResponse(listings.data);
   const backfillProtected = isHistoricalBackfillProtected(migration.data);
 
   const shopifyState = migration.isLoading
@@ -42,7 +42,7 @@ const Settings: React.FC = () => {
   const ebayState = listings.isLoading
     ? { value: 'Checking', tone: 'info' as const }
     : ebayVerified
-      ? { value: 'Verified snapshot', tone: 'info' as const }
+      ? { value: 'Checked', tone: 'success' as const }
       : { value: 'Unavailable', tone: 'critical' as const };
   const protectionState = migration.isLoading
     ? { value: 'Checking', tone: 'info' as const }

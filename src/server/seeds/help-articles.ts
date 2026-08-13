@@ -195,7 +195,13 @@ Check **Pipeline → Images** for a full queue of pending, processing, and compl
     question: 'How do I use Listings?',
     category: 'eBay',
     sort_order: 0,
-    answer: `Open **Listings**, choose a status, and select **View**. The app shows when eBay last verified the listing. Use **View on eBay** for the public listing page.`,
+    answer: `Open **Listings** to see every Shopify variant with available inventory above zero, matched against the complete Shopify and eBay check shown by the page timestamp.
+
+- **Active when checked** means exactly one eBay listing matched the exact SKU.
+- **Not listed when checked** means no active listing, inventory item, or offer existed for that exact SKU.
+- **Needs attention** means the exact status is ambiguous, such as a missing/duplicate SKU or an eBay inventory artifact.
+
+Use search and filters to narrow the catalog. ProductPipeline performs reads only; publishing remains separately reviewed.`,
   },
   {
     question: 'How do I list a product on eBay?',
@@ -358,7 +364,7 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
     question: 'How do I connect eBay?',
     category: 'Settings',
     sort_order: 2,
-    answer: `The current app does not store or manage an eBay connection. Its verified listing snapshot is credential-free. Connection controls will appear only when the scoped one-item publishing workflow is ready. Never paste an eBay token into Help or support messages.`,
+    answer: `The eBay read connection is preconfigured. Listings verifies the expected Production seller before every completed catalog check and shows **Unavailable** if authorization fails. There is no token display, paste box, or connection control in this release. Never paste an eBay token into Help or support messages.`,
   },
   {
     question: 'How do I edit condition descriptions?',

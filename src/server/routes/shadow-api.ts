@@ -2,11 +2,13 @@ import { Router, type Request, type Response } from 'express';
 import { openShadowDatabase } from '../shadow-db.js';
 import { migrationStatusHandler } from './migration.js';
 import {
-  readAuthoritativeListingsPage,
-  type AuthoritativeListingStatus,
-} from '../authoritative-listings-reader.js';
-
-const router = Router();
+  projectLiveListingCatalogPage,
+  type LiveListingStatus,
+} from '../live-listing-catalog.js';
+import {
+  getLiveListingCatalogSnapshot,
+  type LiveListingCatalogRouteDependencies,
+} from '../live-listing-catalog-source.js';
 
 export const SHADOW_API_GET_PATHS = Object.freeze([
   '/api/migration/status',
@@ -42,6 +44,13 @@ export function projectLocalListing(row: Record<string, unknown>): LocalListingP
   };
 }
 
+export function createShadowApiRouter(
+  dependencies: LiveListingCatalogRouteDependencies = {
+    getSnapshot: getLiveListingCatalogSnapshot,
+  },
+): Router {
+const router = Router();
+
 function boundedInteger(
   value: unknown,
   fallback: number,
@@ -60,13 +69,13 @@ router.use((_req, res, next) => {
 
 router.get('/api/migration/status', migrationStatusHandler);
 
-/** GET /api/authoritative-listings — verified, deployable evidence snapshots only. */
-router.get('/api/authoritative-listings', (req: Request, res: Response) => {
+/** GET /api/authoritative-listings — complete live Shopify/eBay read-only census. */
+router.get('/api/authoritative-listings', async (req: Request, res: Response) => {
   const rawStatus = String(req.query.status ?? '').trim().toLowerCase();
-  const allowedStatuses = new Set<AuthoritativeListingStatus>([
-    'attention', 'ready', 'active', 'ended',
+  const allowedStatuses = new Set<LiveListingStatus>([
+    'attention', 'not_listed', 'active',
   ]);
-  if (rawStatus && !allowedStatuses.has(rawStatus as AuthoritativeListingStatus)) {
+  if (rawStatus && !allowedStatuses.has(rawStatus as LiveListingStatus)) {
     res.status(400).json({ error: 'Invalid listing status filter' });
     return;
   }
@@ -75,11 +84,14 @@ router.get('/api/authoritative-listings', (req: Request, res: Response) => {
     const limit = boundedInteger(req.query.limit, 50, 1, 100);
     const offset = boundedInteger(req.query.offset, 0, 0, 1_000_000);
     const search = String(req.query.search ?? '').trim().slice(0, 200);
-    res.json(readAuthoritativeListingsPage({
+    const id = String(req.query.id ?? '').trim().slice(0, 256);
+    const snapshot = await dependencies.getSnapshot();
+    res.json(projectLiveListingCatalogPage(snapshot, {
       limit,
       offset,
       search,
-      status: rawStatus ? rawStatus as AuthoritativeListingStatus : undefined,
+      id,
+      status: rawStatus ? rawStatus as LiveListingStatus : undefined,
     }));
   } catch {
     res.status(503).json({ error: 'Verified listing evidence is unavailable' });
@@ -170,9 +182,9 @@ router.get('/api/capabilities', (_req: Request, res: Response) => {
         id: 'authoritative-listings',
         method: 'GET',
         endpoint: '/api/authoritative-listings',
-        remoteRead: false,
+        remoteRead: true,
         externalWrite: false,
-        evidenceKind: 'verified_snapshot',
+        evidenceKind: 'live_read',
       },
       {
         id: 'local-listings',
@@ -184,9 +196,12 @@ router.get('/api/capabilities', (_req: Request, res: Response) => {
     mutationCapabilities: [],
     mountedApiGetRoutes: [...SHADOW_API_GET_PATHS],
     legacyApiRoutesMounted: false,
-    remoteReadersMounted: false,
+    remoteReadersMounted: true,
     productionOperatorApiKeyAllowed: false,
   });
 });
 
-export default router;
+return router;
+}
+
+export default createShadowApiRouter();

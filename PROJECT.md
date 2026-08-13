@@ -21,7 +21,7 @@
 
 **Business context:** Pictureline photographs used camera gear on a StyleShoots machine. Products flow from Lightspeed POS → Shopify → need AI descriptions + processed photos → eBay listings. This app automates that entire pipeline.
 
-**eBay seller:** usedcam-0 (https://www.ebay.com/usr/usedcam-0)
+**Current eBay seller:** usedcameragear (https://www.ebay.com/usr/usedcameragear). The older `usedcam-0` label is retained only in dated historical evidence and must not be used as the current API identity pin.
 **Shopify store:** usedcameragear.myshopify.com
 
 ## 2. Architecture
@@ -176,7 +176,7 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 ### eBay API
 - **Auth:** OAuth2 with token auto-refresh (`token-manager.ts`)
 - **APIs used:** Fulfillment (orders), Inventory (items + offers), Browse (search), Trading (account/policies)
-- **Seller:** usedcam-0
+- **Current seller:** usedcameragear (`usedcam-0` was a prior/stale Marketplace Connect display label)
 - **Webhooks:** Platform notifications at `/webhooks/ebay`
 
 ### Image Processing
@@ -338,6 +338,20 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-13: eBay Seller Identity Pin Incident and Repair
+
+- During the first complete live-catalog audit, the reader stopped at fixed phase `LISTING_CATALOG_TRADING_CAPTURE_FAILED`: its stale expected seller was `usedcam-0`, while strict Production Trading `GetUser` observed `usedcameragear`. The catalog failed closed before projection, returned no partial status, performed zero external writes, and did not log, return, or persist credential material.
+- Independent signed-in eBay evidence resolved the contradiction: item `147502608418` showed **Your item is for sale** and **Revise listing**, the public store was **Used Camera Gear**, and the seller messaging URL identified `requested=usedcameragear`. That proof matches Trading `GetUser`; the earlier `usedcam-0` Marketplace Connect label is now explicitly historical/stale evidence.
+- Updated the exact seller pin to `usedcameragear` without weakening the gate. Focused regressions require the corrected seller and explicitly reject both the stale `usedcam-0` identity and an unrelated seller before any catalog result can be published.
+- The corrected same-source predeployment audit then completed in 7,515 ms with zero external writes: Shopify captured 2,026 variants across 21 pages and retained 176 positive-stock variants; the exact join classified 111 Active, 44 Not listed, and 21 Needs attention. eBay captured 112 active entries in one Trading page, five Inventory items in one page, and five Offers across five per-SKU pages. These are point-in-time read counts, not deployment or ownership-transfer proof.
+
+### 2026-08-13: Complete Live In-Stock Listing Catalog
+
+- Added an authenticated, read-only catalog that captures a complete timestamped Shopify variant inventory and includes only variants with available inventory above zero.
+- Joined exact raw SKUs against complete eBay Trading active listings plus Inventory API items and offers. `Not listed` is returned only when all complete sources prove no active or unpublished eBay artifact; missing, duplicate, near-collision, non-active-product, and ambiguous artifact states require attention.
+- Added strict store/seller identity checks, bounded pagination and response limits, short-lived in-memory-only eBay authority, a 60-second single-flight snapshot cache, independent summary/coverage counts, exact-ID lookup, generic redacted failures, and no commerce mutation capability.
+- Final predeployment verification passed 39 test files / 393 tests, TypeScript, the production build, and whitespace checks.
 
 ### 2026-08-13: Minimal Verified Listings App
 

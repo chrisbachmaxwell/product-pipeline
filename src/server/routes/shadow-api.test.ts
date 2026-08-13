@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { describe, expect, it } from 'vitest';
 import shadowApiRoutes, {
+  createShadowApiRouter,
   projectLocalListing,
   SHADOW_API_GET_PATHS,
 } from './shadow-api.js';
+import { buildLiveListingCatalogSnapshot } from '../live-listing-catalog.js';
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -55,12 +57,15 @@ async function requestShadowPath(pathname: string): Promise<number> {
   }
 }
 
-async function requestShadowJson(pathname: string): Promise<{
+async function requestShadowJson(
+  pathname: string,
+  router = shadowApiRoutes,
+): Promise<{
   status: number;
   body: Record<string, any>;
 }> {
   const app = express();
-  app.use(shadowApiRoutes);
+  app.use(router);
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not available' });
   });
@@ -152,31 +157,77 @@ describe('shadow API allowlist', () => {
     );
   });
 
-  it('serves only the timestamped verified Canon snapshot from the authoritative-listings read', async () => {
-    const response = await requestShadowJson('/api/authoritative-listings');
+  const liveSnapshot = buildLiveListingCatalogSnapshot({
+    observedAtUtc: '2026-08-13T20:00:00.000Z',
+    shopifyVariants: [{
+      productId: 'gid://shopify/Product/10310708035875',
+      variantId: 'gid://shopify/ProductVariant/55396000563491',
+      sku: 'CAN3570-U119',
+      title: 'Canon 35-70mm f/3.5-4.5 (#119) *USED*',
+      variantTitle: 'Default Title',
+      productStatus: 'ACTIVE',
+      primaryImageUrl: null,
+      imageCount: 6,
+      available: 1,
+      price: { amount: '39.95', currency: 'USD' },
+    }],
+    ebayActiveListings: [{ listingId: '147502608418', sku: 'CAN3570-U119' }],
+    ebayInventoryItems: [{ sku: 'CAN3570-U119' }],
+    ebayOffers: [{
+      offerId: '234942877011', sku: 'CAN3570-U119', status: 'PUBLISHED',
+      listingId: '147502608418', listingStatus: 'ACTIVE',
+    }],
+    coverage: {
+      shopify: {
+        source: 'shopify-admin-graphql', storeDomain: 'usedcameragear.myshopify.com',
+        shopId: 'gid://shopify/Shop/86254518563', observedAtUtc: '2026-08-13T20:00:00.000Z',
+        paginationComplete: true, variantPageCount: 1, totalVariantsCaptured: 1,
+        positiveStockVariants: 1, excludedZeroInventory: 0, excludedUnknownInventory: 0,
+        productStatusCounts: { ACTIVE: 1 },
+      },
+      ebay: {
+        source: 'ebay-trading-api+ebay-inventory-api', marketplaceId: 'EBAY_US',
+        sellerAccountVerified: true, observedAtUtc: '2026-08-13T20:00:00.000Z',
+        trading: { paginationComplete: true, pageCount: 1, activeListingCount: 1 },
+        inventory: {
+          inventoryItemsComplete: true, inventoryItemPageCount: 1, inventoryItemCount: 1,
+          offersComplete: true, offerPageCount: 1, offerCount: 1,
+          unpublishedArtifactsChecked: true,
+        },
+      },
+    },
+  });
+  const liveRouter = createShadowApiRouter({ getSnapshot: async () => liveSnapshot });
+
+  it('serves the exact live Shopify/eBay v2 catalog contract without secrets', async () => {
+    const response = await requestShadowJson('/api/authoritative-listings', liveRouter);
     expect(response.status).toBe(200);
     expect(Object.keys(response.body).sort()).toEqual([
       'authoritative',
+      'coverage',
       'data',
       'evidenceKind',
       'externalWritesPerformed',
       'limit',
+      'observedAtUtc',
       'offset',
       'remoteReadPerformed',
       'schemaVersion',
       'source',
+      'summary',
       'total',
     ]);
     expect(response.body).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       total: 1,
-      source: 'production-listing-audit-ledger',
-      evidenceKind: 'verified_snapshot',
-      authoritative: false,
-      remoteReadPerformed: false,
+      source: 'shopify-admin-graphql+ebay-active-listings',
+      evidenceKind: 'live_read',
+      authoritative: true,
+      remoteReadPerformed: true,
       externalWritesPerformed: 0,
+      summary: { active: 1, notListed: 0, attention: 0, totalInStock: 1 },
       data: [{
-        id: 'production:EBAY_US:CAN3570-U119',
+        id: 'shopify-variant:gid://shopify/ProductVariant/55396000563491',
         shopify: {
           productId: 'gid://shopify/Product/10310708035875',
           variantId: 'gid://shopify/ProductVariant/55396000563491',
@@ -190,13 +241,13 @@ describe('shadow API allowlist', () => {
           url: 'https://www.ebay.com/itm/147502608418',
         },
         lifecycleStatus: 'active',
-        lastVerifiedAtUtc: '2026-08-13T16:43:19.281Z',
+        lastVerifiedAtUtc: '2026-08-13T20:00:00.000Z',
         audit: {
           verified: true,
-          evidenceState: 'verified',
+          evidenceState: 'live_verified',
           unresolvedCount: 0,
-          recoverySupported: true,
-          currentRemoteStateVerified: false,
+          recoverySupported: false,
+          currentRemoteStateVerified: true,
         },
       }],
     });
@@ -205,20 +256,41 @@ describe('shadow API allowlist', () => {
     );
   });
 
-  it('filters the verified snapshot and rejects unknown lifecycle states', async () => {
+  it('filters the live snapshot by search/status/exact ID and rejects unknown lifecycle states', async () => {
     const active = await requestShadowJson(
-      '/api/authoritative-listings?status=active&search=147502608418&limit=1',
+      '/api/authoritative-listings?status=active&search=147502608418&limit=1&id=shopify-variant%3Agid%3A%2F%2Fshopify%2FProductVariant%2F55396000563491',
+      liveRouter,
     );
     expect(active).toMatchObject({ status: 200, body: { total: 1 } });
 
-    const ready = await requestShadowJson('/api/authoritative-listings?status=ready');
-    expect(ready).toMatchObject({ status: 200, body: { total: 0, data: [] } });
+    const notListed = await requestShadowJson('/api/authoritative-listings?status=not_listed', liveRouter);
+    expect(notListed).toMatchObject({ status: 200, body: { total: 0, data: [] } });
 
-    const missing = await requestShadowJson('/api/authoritative-listings?search=not-the-canary');
+    const missing = await requestShadowJson('/api/authoritative-listings?search=not-the-canary', liveRouter);
     expect(missing).toMatchObject({ status: 200, body: { total: 0, data: [] } });
 
-    const invalid = await requestShadowJson('/api/authoritative-listings?status=published');
+    const invalid = await requestShadowJson('/api/authoritative-listings?status=published', liveRouter);
     expect(invalid).toEqual({ status: 400, body: { error: 'Invalid listing status filter' } });
+  });
+
+  it('fails closed with a generic 503 when any live source is incomplete', async () => {
+    const response = await requestShadowJson('/api/authoritative-listings', createShadowApiRouter({
+      getSnapshot: async () => { throw new Error('Bearer secret-value source detail'); },
+    }));
+    expect(response).toEqual({ status: 503, body: { error: 'Verified listing evidence is unavailable' } });
+    expect(JSON.stringify(response)).not.toContain('secret-value');
+  });
+
+  it('advertises only a read-only live catalog capability', async () => {
+    const response = await requestShadowJson('/api/capabilities', liveRouter);
+    expect(response.body).toMatchObject({
+      remoteReadersMounted: true,
+      mutationCapabilities: [],
+      dataCapabilities: expect.arrayContaining([expect.objectContaining({
+        id: 'authoritative-listings', remoteRead: true, externalWrite: false,
+        evidenceKind: 'live_read',
+      })]),
+    });
   });
 
   it.each([
@@ -235,11 +307,11 @@ describe('shadow API allowlist', () => {
     await expect(requestShadowPath(pathname)).resolves.toBe(404);
   });
 
-  it('does not mount legacy routers or a remote/token reader in the running server', async () => {
-    const [server, shadowRouter, authoritativeReader] = await Promise.all([
+  it('mounts the narrow live reader without legacy routers or commerce writers', async () => {
+    const [server, shadowRouter, liveSource] = await Promise.all([
       fs.readFile(path.join(sourceRoot, 'server/index.ts'), 'utf8'),
       fs.readFile(path.join(sourceRoot, 'server/routes/shadow-api.ts'), 'utf8'),
-      fs.readFile(path.join(sourceRoot, 'server/authoritative-listings-reader.ts'), 'utf8'),
+      fs.readFile(path.join(sourceRoot, 'server/live-listing-catalog-source.ts'), 'utf8'),
     ]);
 
     expect(server).toMatch(/shadowApiRoutes/);
@@ -253,16 +325,12 @@ describe('shadow API allowlist', () => {
     expect(server).not.toMatch(/limit:\s*['"]50mb['"]/i);
     expect(server).toMatch(/if \(isTestMode\(\)\) \{\s*app\.get\('\/api\/test-mode'/s);
     expect(server).toMatch(/express\.static\(webDistPath, \{ index: false \}\)/);
-    expect(shadowRouter).not.toMatch(
-      /\bfetch\s*\(|getValidEbayToken|refreshEbayUserToken|auth_tokens|shopify\/products|ebay\/inventory/,
-    );
+    expect(shadowRouter).not.toMatch(/getValidEbayToken|refreshEbayUserToken|shopify\/products|ebay\/inventory/);
     expect(shadowRouter).toMatch(/openShadowDatabase/);
     expect(shadowRouter).not.toMatch(/getDb|getRawDb|db\/client/);
     expect(shadowRouter).not.toMatch(/SELECT\s+\*/i);
-    expect(authoritativeReader).not.toMatch(
-      /\bfetch\s*\(|auth_tokens|getValidEbayToken|refreshEbayUserToken|db\/client|sync\/|shopify\/products|ebay\/inventory/i,
-    );
-    expect(authoritativeReader).not.toMatch(
+    expect(liveSource).not.toMatch(/getValidEbayToken|refreshEbayUserToken|db\/client|sync\//i);
+    expect(liveSource).not.toMatch(
       /\b(?:INSERT|UPDATE|DELETE|REPLACE|ALTER)\s+|\bCREATE\s+TABLE\b/i,
     );
   });
