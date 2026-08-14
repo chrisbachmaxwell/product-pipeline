@@ -315,23 +315,9 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
         question: 'How do I connect Shopify?',
         category: 'Settings',
         sort_order: 1,
-        answer: `Connecting Shopify gives ProductPipeline access to read your products, create orders, and sync inventory.
+        answer: `Shopify is preconfigured for the Used Camera Gear store. This release has no token paste box or user-facing connection control.
 
-**Steps:**
-1. Go to **Settings → Shopify**.
-2. Enter your Shopify store URL (e.g. \`yourstore.myshopify.com\`).
-3. Enter your Shopify Admin API access token. To generate one:
-   - In Shopify Admin, go to **Settings → Apps and sales channels → Develop apps**.
-   - Create a new app (or use an existing one).
-   - Under **Configuration**, grant the scopes: \`read_products\`, \`write_products\`, \`read_orders\`, \`write_orders\`, \`read_inventory\`, \`write_inventory\`.
-   - Under **API credentials**, copy the **Admin API access token**.
-4. Paste the token into ProductPipeline and click **Save**.
-5. The Dashboard will show a green "Shopify Connected" status.
-
-**Troubleshooting:**
-- If you see "Unauthorized", double-check the token and scopes.
-- Tokens don't expire but can be revoked from Shopify's app settings.
-- ProductPipeline only needs access to your Shopify Admin, not the Storefront API.`,
+ProductPipeline verifies the exact store and app with four read-only scopes: products, inventory, orders, and fulfillments. Marketplace Connect remains the production writer for price, inventory, and eBay-to-Shopify orders. If Shopify access is unavailable, stop and contact an authorized operator; never paste a token or secret into the app, Help, or a support message.`,
     },
     {
         question: 'How do I connect eBay?',
@@ -350,7 +336,7 @@ The value is append-only local draft state. It does not update eBay, and this re
     {
         question: 'How do I vote on feature requests?',
         category: 'Settings',
-        sort_order: 4,
+        sort_order: 5,
         answer: `Feature Requests are a shared wishlist for ProductPipeline improvements. You can upvote requests to help prioritize what gets built next.
 
 **How to vote:**
@@ -362,6 +348,12 @@ The value is append-only local draft state. It does not update eBay, and this re
 **Tips:**
 - Add context in the description when you submit your own request — clear use cases get prioritized faster.
 - Sort requests by status to see what's planned or in progress.`,
+    },
+    {
+        question: 'Can I rotate Shopify credentials in ProductPipeline?',
+        category: 'Settings',
+        sort_order: 4,
+        answer: `No. Credential rotation is intentionally absent from the app. An authorized operator must use the separate reviewed maintenance procedure; it cannot publish or change commerce data. Do not retry a failed rotation or paste credentials into ProductPipeline.`,
     },
 ];
 /**

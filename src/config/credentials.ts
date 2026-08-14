@@ -95,7 +95,11 @@ const loadEbayCredentials = async (): Promise<EbayCredentials> => {
 
 const loadShopifyCredentials = async (): Promise<ShopifyCredentials> => {
   const filePath = path.join(CREDENTIALS_DIR, 'shopify-usedcameragear-api.txt');
-  const data = await safeParseFile(filePath);
+  // Production and ambiguous environments are environment-only. Credential
+  // file fallback is retained solely for explicit local development and tests.
+  const allowDevelopmentFile = process.env.NODE_ENV === 'development'
+    || process.env.NODE_ENV === 'test';
+  const data = allowDevelopmentFile ? await safeParseFile(filePath) : {};
 
   const clientId =
     process.env.SHOPIFY_CLIENT_ID ||
