@@ -1,10 +1,14 @@
 # Listing-Control Store Administration
 
-This runbook governs the local-draft SQLite store only. It does not authorize an eBay/Shopify write, approval, publish, ownership transfer, Marketplace Connect change, or order action.
+This runbook governs the local-draft and local-proposal SQLite store only. It does not authorize an eBay/Shopify write, Apply, Publish, ownership transfer, Marketplace Connect change, or order action. A human may approve AI-selected content locally; that reviewed revision still has no commerce-provider effect.
 
 ## Release state
 
 PR #11 repair `bab71a5` merged to `main` as `789dc7782cea5da33a5fddd8617d1c364cbb783e`. Railway serves that repair on the existing one-replica `/data` deployment, the dedicated Production store remains verified, and the long-description listing-workspace incident is closed. This proves the observed read/mapping flow with the Edit control visible; no Save or provider write was exercised.
+
+The newer AI-proposal source candidate requires canonical schema version 3. The last verified Production store is still version 2. Proposal preparation and local approval therefore remain unproved in Production until the explicit stopped-writer migration, dedicated AI configuration, deployment, and signed-in verification in `docs/AI_LISTING_PROPOSALS.md` are complete.
+
+**Current freeze:** release-maintenance incident `RMI-2026-08-14-001` is open, maintenance is stopped, and containment is in progress. Maintenance tooling exposed credential material; the active deployment still has its earlier environment snapshot. No commerce write occurred, but local writes and the version-3 migration remain frozen until every exposed credential class is rotated or invalidated, the safe fixed-command boundary is proven, the store baseline is re-verified, and an authorized human explicitly opens a new maintenance window. See `docs/RELEASE_MAINTENANCE_INCIDENTS.md`. Do not use any output from the failed attempt as state or readiness evidence.
 
 ## Fixed Production scope and path
 
@@ -17,11 +21,11 @@ PR #11 repair `bab71a5` merged to `main` as `789dc7782cea5da33a5fddd8617d1c364cb
 - Private parent: `/data/product-pipeline` with mode `0700`
 - Database: `/data/product-pipeline/listing-control.sqlite` with mode `0600`
 - Required configuration: `LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite`
-- Save-enable acknowledgement: `LISTING_CONTROL_SINGLE_WRITER_ACK=product-pipeline-local-draft-v1`
+- Local-write acknowledgement: `LISTING_CONTROL_SINGLE_WRITER_ACK=product-pipeline-local-draft-v1`
 
 The acknowledgement is an operator assertion, not a lock or proof. Do not set it until the topology gate below passes.
 
-## Verified Production initialization — 2026-08-14
+## Verified Production version-2 initialization — 2026-08-14
 
 - Topology: one ProductPipeline replica on the exact service above, using the `/data` persistent volume.
 - Store: `/data/product-pipeline/listing-control.sqlite`, regular mode-`0600` file, canonical schema version 2, fixed Used Camera Gear scope, `local_draft_only`, admin `verify` successful, `externalWritesPerformed: 0`.
@@ -49,11 +53,19 @@ Before initialization or every release that can save drafts:
 3. Confirm the volume is mounted at `/data` and will remain attached to this service. Railway services with a volume cannot use multiple simultaneous active deployments for that mount; still verify the actual replica/deployment state rather than treating platform behavior as proof.
 4. Confirm the exact target and parent are not symlinks, hard links, shared writable paths, or aliases to the legacy application ledger.
 5. Confirm there are no `-wal` or `-shm` sidecars and no pre-existing target before `init`.
-6. Confirm a documented, restorable volume-backup procedure. Before the first Production draft is saved, take a baseline backup and verify restoration to a separate offline path with `verify`. Never copy a live open SQLite file as a backup.
+6. Confirm a documented, restorable volume-backup procedure. Before the first Production draft is saved or any schema migration, take a consistent backup and verify restoration to a separate offline path. Never copy a live open SQLite file as a backup.
 
 The relevant Railway behavior is documented in [Volumes](https://docs.railway.com/volumes/reference) and [Deployment teardown](https://docs.railway.com/deployments/deployment-teardown).
 
-## One-time initialization
+## Remote maintenance command boundary
+
+Production administration must not use an arbitrary remote shell. `railway ssh ... sh -lc` is forbidden, as are other `sh`/`bash` command wrappers, login or interactive shells, profile-loading shells, and any remote shell or process-environment introspection. Do not run environment-printing commands, inspect process-environment files, enable tracing/debug output, or use a diagnostic wrapper that serializes environment or process state.
+
+Use only a fixed, single-purpose process invocation or a version-controlled audited maintenance script pinned to the reviewed release revision. It must be allowlisted for exactly one operation, must not spawn a general-purpose shell, and must emit zero environment output on stdout and stderr. Review its output schema and prove the zero-environment-output behavior in an isolated non-Production run before using it in Production. If a documented inner command cannot be invoked without a remote shell, stop; the command is not yet safe to run.
+
+Never pass a secret through command arguments, inline assignments, shell fragments, temporary scripts, pasted input, logs, screenshots, or transcripts. Use only the approved secret-management surface for configuration. Maintenance evidence may record fixed redacted result fields and class-level rotation status, but never values, masked suffixes, user tokens, personal data, or raw command output.
+
+## One-time initialization for a new store
 
 Initialization is an explicit administrative action after the reviewed build is deployed. Runtime startup never creates, migrates, repairs, or replaces the store.
 
@@ -67,13 +79,39 @@ LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \
   node dist/listing-control-admin/index.js verify
 ```
 
-`init` requires an absent target and creates a fresh canonical version-2 store for the fixed Used Camera Gear scope. It must report only redacted `initialized`, schema version 2, local-draft-only mode, and zero external writes. `verify` requires an existing canonical version-2 store and must report the corresponding redacted verified result.
+`init` requires an absent target and creates a fresh canonical version-3 store for the fixed Used Camera Gear scope. It must report only redacted `initialized`, schema version 3, local-draft-only mode, and zero external writes. `verify` requires an existing canonical version-3 store and must report the corresponding redacted verified result.
 
-After verification, configure the two environment variables above only on the exact service. Restart/deploy deliberately, then verify health and the signed-in embedded draft surface separately. A successful build, admin command, or health response does not prove embedded UI behavior.
+Never use `init` for the existing Production file. Upgrade that verified version-2 file only through the maintenance procedure below.
+
+## Explicit version-2 to version-3 upgrade
+
+The web runtime accepts only the current canonical schema and never upgrades it. Use a maintenance window for the existing Production store:
+
+This procedure is suspended while `RMI-2026-08-14-001` remains open or any rotation/resume gate in `docs/RELEASE_MAINTENANCE_INCIDENTS.md` is incomplete. The command block below describes inner admin operations only; it is not approval to wrap them in Railway SSH or a general-purpose shell.
+
+1. Verify the exact service and one-writer topology, then stop every process that can open the store writable.
+2. Verify version-2 integrity with the previously deployed admin build and create a consistent, restorable backup while writers remain stopped.
+3. Run the reviewed version-3 admin build against the exact path:
+
+   ```sh
+   LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \
+     node dist/listing-control-admin/index.js upgrade-v2-v3
+   LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \
+     node dist/listing-control-admin/index.js verify
+   ```
+
+4. Require redacted upgrade output with `fromSchemaVersion: 2`, `schemaVersion: 3`, `mode: local_draft_only`, and `externalWritesPerformed: 0`, followed by a successful version-3 verification.
+5. Restart exactly one application replica and verify health, signed-in draft save, proposal preparation, local approval, stale-base refusal, and zero commerce writes as separate checks.
+
+The migration is failure-atomic and accepts only the canonical fixed-scope version-2 store. If it fails, keep writers stopped, preserve the file and backup, and investigate. Do not rerun blindly, initialize over it, repair it manually, or restore over the live path.
+
+After verification, configure the two listing-control environment variables above only on the exact service. Configure the dedicated proposal key separately as described in `docs/AI_LISTING_PROPOSALS.md`. Restart/deploy deliberately, then verify health and the signed-in embedded draft/proposal surface separately. A successful build, admin command, or health response does not prove embedded UI behavior.
 
 ## Routine verification and fail-closed handling
 
 Run the following before and after a deployment that changes listing-control code and after any volume restore:
+
+In Production, invoke this inner operation only through the fixed single-purpose command or audited-script boundary above. Never wrap it in `railway ssh ... sh -lc` or inspect the remote environment to prepare it.
 
 ```sh
 LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \
@@ -85,7 +123,7 @@ Stop local-draft saving and investigate if verification fails, the service topol
 | Operator symptom | Safe handling |
 |---|---|
 | **Listing facts changed; reopen the draft** | Reopen the item, review the new Shopify/eBay/current-draft facts, then prepare a new real change. Never force or replay the stale request. |
-| **Local listing drafts are unavailable** | Keep provider writes stopped. Verify the exact version-2 store, fixed scope, absolute path, private parent, regular single-link `0600` file, no sidecars, and the real single-writer topology before restoring the acknowledgement. Never auto-initialize or repair an expected Production file. |
+| **Local listing drafts or proposals are unavailable** | Keep commerce-provider writes stopped. Verify the exact version-3 store, fixed scope, absolute path, private parent, regular single-link `0600` file, no sidecars, and the real single-writer topology before restoring the acknowledgement. For proposals, separately verify the dedicated AI configuration without printing it. Never auto-initialize or repair an expected Production file. |
 | **Listing is Unknown or Needs attention** | Wait for a successful complete refresh or resolve the exact mapping/identity exception before drafting; do not infer a match or current value. |
 | **Request is invalid** | Save only a supported, substantive override that passes field/image limits. A no-op or inheritance-only first revision is intentionally refused. |
 | **Access is not allowed** | Reload the exact embedded app in Shopify Admin and obtain a fresh verified session. API keys, test principals, copied URLs, or another store cannot authorize the append. |
@@ -101,4 +139,4 @@ Stop local-draft saving and investigate if verification fails, the service topol
 
 ## Schema changes
 
-Runtime accepts canonical schema version 2 only and never migrates it. Any future schema version needs a reviewed, explicit, failure-atomic administrative migration plus tamper, rollback, backup/restore, and no-provider-write tests. Do not expose a general upgrade command or silently reinterpret an old file.
+The AI-proposal source accepts canonical schema version 3 only and never migrates it at runtime. Version 3 adds append-only proposal jobs, results, field decisions, review events, and audit links; it does not add a commerce writer. Any future schema version needs a reviewed, explicit, failure-atomic administrative migration plus tamper, rollback, backup/restore, and no-commerce-write tests. Do not expose a general upgrade command or silently reinterpret an old file.

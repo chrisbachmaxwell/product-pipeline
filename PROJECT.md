@@ -6,9 +6,9 @@
 
 ## 1. Project Overview
 
-**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. AI/product-enrichment scope is slated for staged removal.
+**ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. Free-form AI/product-enrichment scope is slated for staged removal; the new bounded listing-proposal selector is a separate local review aid that can only choose verified values and cannot write commerce providers.
 
-**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only` for external commerce. Exact `POST /api/listing-draft` is the sole non-read exception and can append only a bounded local revision after exact-store Shopify-session authentication and stale-base checks. Every other non-read `/api` request is denied; provider writers, background writers, and webhook dispatch remain quarantined. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
+**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only` for external commerce. Exact `POST /api/listing-draft` and exact `POST /api/listing-proposal` are the only non-read exceptions. They can append only bounded local draft/proposal/review state after exact-store Shopify-session authentication and stale-base checks; proposal generation may call OpenAI with bounded candidate evidence. Every other non-read `/api` request is denied, and every commerce-provider writer, background writer, and webhook dispatch remains quarantined. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
 
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
@@ -33,7 +33,7 @@
 | **Server** | Express 5 + TypeScript (ESM) |
 | **Frontend** | React 19 + Vite 7, Shopify Polaris, TailwindCSS 4, Zustand, React Query |
 | **Database** | SQLite via better-sqlite3 + Drizzle ORM |
-| **AI** | OpenAI API (GPT for descriptions, category suggestions) |
+| **AI** | Legacy GPT enrichment plus an isolated strict-schema listing proposal selector |
 | **Image Processing** | Self-hosted Python service (FastAPI) OR PhotoRoom API (factory pattern) |
 | **CLI** | Commander.js (`ebaysync` binary) |
 | **Deployment** | Railway |
@@ -117,6 +117,8 @@ Located at `~/projects/product-pipeline/image-service/` — a separate Python Fa
 
 DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (production)
 
+The separate listing-control database is not this legacy ledger. Canonical version 3 adds append-only listing proposal jobs, results, field decisions, review events, and audit links. Runtime never initializes or migrates it.
+
 ## 3. Current State
 
 ### Feature Status
@@ -145,6 +147,7 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 | **Feature Requests** | ✅ Working | User-facing feature request/voting system |
 | **eBay Notifications** | ✅ Implemented | Webhook endpoint for eBay platform notifications |
 | **Analytics** | ✅ Basic | Recharts-based analytics page |
+| **AI Listing Proposal** | Source candidate | Automatically selects among verified Shopify/eBay/saved-draft values for local human approval; no Apply, Publish, price, quantity, order, or commerce-provider write |
 
 ### Recent Work (git log)
 
@@ -201,9 +204,10 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 - **Auto-tagging:** Applies condition tags to Shopify products
 
 ### OpenAI
-- **Purpose:** Generate product descriptions, suggest eBay categories
-- **Model:** GPT (via `openai` npm package)
-- **Context:** Includes product title, vendor, TIM condition data, product notes
+- **Legacy purpose:** Generate product descriptions and suggest eBay categories; this enrichment flow is slated for staged removal.
+- **Bounded proposal purpose:** Select among verified Shopify, eBay, and saved-draft candidates for ten listing fields. It cannot generate a new value or authorize a commerce write.
+- **Proposal model:** Allowlisted `gpt-5.6-terra` through the Responses API with a strict JSON schema, no tools, no retries, and provider storage disabled.
+- **Proposal data boundary:** Bounded listing-field previews and digests only; no Shopify/eBay credentials, tokens, customer/order data, or raw provider-write access.
 
 ## 5. Configuration & Environment
 
@@ -223,6 +227,8 @@ All stored in `~/.clawdbot/credentials/`:
 |----------|---------|---------|
 | `PORT` | Server port | `3000` |
 | `OPENAI_API_KEY` | OpenAI API for AI descriptions | Required |
+| `AI_PROPOSAL_OPENAI_API_KEY` | Dedicated key for bounded local listing proposals; no fallback to legacy key | No default; a Production replacement may be staged while proposals remain unavailable behind the store/write/readiness gates |
+| `LISTING_PROPOSAL_MODEL` | Allowlisted proposal model | `gpt-5.6-terra` |
 | `PHOTOROOM_API_KEY` | PhotoRoom API key (fallback image processor) | Optional |
 | `IMAGE_PROCESSOR` / `IMAGE_SERVICE` | Image provider: `self-hosted`, `photoroom`, `auto` | `auto` |
 | `IMAGE_SERVICE_URL` | Self-hosted image service URL | `http://localhost:8100` |
@@ -233,8 +239,8 @@ All stored in `~/.clawdbot/credentials/`:
 | `SHOPIFY_CLIENT_ID` | Shopify Client ID | From file |
 | `SHOPIFY_CLIENT_SECRET` | Shopify Client Secret | From file |
 | `SAFETY_MODE` | Order sync safety: `safe` (rate-limited) or `off` | `safe` |
-| `LISTING_CONTROL_DATABASE_PATH` | Absolute path to the explicitly initialized local-draft store | Unset; draft unavailable |
-| `LISTING_CONTROL_SINGLE_WRITER_ACK` | Exact local-draft single-writer assertion `product-pipeline-local-draft-v1` | Unset; save denied |
+| `LISTING_CONTROL_DATABASE_PATH` | Absolute path to the explicitly administered schema-version-3 local draft/proposal store | Unset; local actions unavailable |
+| `LISTING_CONTROL_SINGLE_WRITER_ACK` | Exact local-state single-writer assertion `product-pipeline-local-draft-v1` | Unset; local writes denied |
 
 ### Deployment (Railway)
 
@@ -321,6 +327,7 @@ Test files: `src/services/__tests__/`
 | **Replace Marketplace Connect through staged cutover (2026-08-11)** | ProductPipeline is the intended eBay-integration replacement, but Marketplace Connect stays incumbent until each responsibility has parity, single-writer proof, canary, reconciliation, rollback, and operator approval; AI/enrichment is legacy scope |
 | **Hard-coded incumbent writer quarantine (2026-08-11)** | Marketplace Connect remains production owner for order import, price, and inventory; ProductPipeline external writes fail closed with no runtime override, no historical backfill, and no cutover watermark until a separately authorized transfer |
 | **Dedicated authoritative-read boundary (2026-08-11)** | Live source evidence must use a separate clean-build, exact-account, no-refresh collector with bounded recent order windows and signed private artifacts; it is never a path through the mounted app or legacy integration clients |
+| **Bounded AI proposals with human local approval (2026-08-14)** | The agent may select only verified Shopify/eBay/saved-draft values through a strict schema. Price/quantity remain locked, changed facts stale the result, and approval creates only a reviewed local revision; Apply/Publish and commerce writes remain separate future gates |
 
 ## 8. Next Steps
 
@@ -340,6 +347,31 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-14: Release-Maintenance Credential Disclosure Containment
+
+- Recorded open incident `RMI-2026-08-14-001` without credential values, masked suffixes, user tokens, personal data, or raw command output. During Railway release maintenance, a wrapper invoked through `sh -lc` unexpectedly emitted the container environment; a separate broad eBay credential-page inspection rendered a short-lived user token.
+- No commerce write occurred. The output is not accepted as verification evidence, local draft/proposal writes remain frozen, and the version-2-to-version-3 migration must not resume until every credential class present at exposure time is rotated and its prior generation revoked.
+- Updated the listing-control, proposal, and writer-quarantine runbooks to forbid `railway ssh ... sh -lc`, all substitute remote shell wrappers, and every remote shell/environment-introspection path. Production maintenance now requires a reviewed fixed single-purpose command or audited revision-pinned script with zero environment output.
+- Added fail-closed rotation and resume gates: private class inventory through the approved secret-management surface, issuer-side rotation/revocation, safe-command proof, store-baseline re-verification, consistent backup, and explicit human approval to lift the freeze.
+- The repository patch is documentation-only. Separate containment through the Railway and OpenAI control planes revoked the exposed OpenAI generations, retained one new staged purpose-specific proposal key, removed unused exposed variables, and kept the local-writer acknowledgement absent. No source code, compiled output, package, commerce-provider data, listing-control store, or migration state changed.
+
+### 2026-08-14: Railway Deployment Health Gate (Source Candidate)
+
+- Updated `railway.json` to Railway's current official schema URL and declared the existing credential-free `/health` route as the deployment healthcheck with a 300-second startup window. This lets Railway require HTTP `200` before activating a new release.
+- Added a focused regression that reads the checked-in Railway configuration, requests its configured path from the real Express health router, and verifies HTTP `200` plus the shadow-read-only/no-external-writes/no-historical-backfill policy projection.
+- This source-only hardening changed no application route or commerce behavior, secret, listing-control store, migration, Shopify/eBay/Marketplace Connect state, or deployment. Railway release configuration and live health behavior remain separate post-merge evidence.
+
+### 2026-08-14: Bounded AI Listing Proposals and Local Approval (Source Candidate)
+
+- Added an isolated listing proposal agent that automatically prepares one proposal for an eligible listing and selects only among verified Shopify, eBay, and saved local-draft values. Its strict structured response covers title, category, condition, condition description, description, images, fulfillment/payment/return policy IDs, and merchant location; it cannot invent a new value.
+- Added a minimal review surface showing changed fields, source comparisons, confidence, warnings, **Adjust**, and one **Approve draft** action. Human approval atomically creates a reviewed local revision and approval event. It does not Apply or Publish to Shopify/eBay.
+- Kept price and quantity locked under Marketplace Connect and item specifics/identifiers observation-only. Marketplace Connect remains the accepted price, inventory, and order owner; no ownership or order watermark changed.
+- Added append-only proposal jobs, results, decisions, events, and audit links in listing-control schema version 3. Runtime never migrates the store; the existing verified Production version-2 file requires the explicit stopped-writer `upgrade-v2-v3`, backup, and verification procedure.
+- Added a five-minute generation lease: an interrupted queued/generating job is shown as failed, a human retry first records the abandoned job as failed, and only then may a new deduplicated proposal start. Recovery polling is bounded to 30 seconds and never retries the model automatically.
+- Added a dedicated `AI_PROPOSAL_OPENAI_API_KEY`, an allowlisted proposal model, strict bounded evidence, no tools, no credential/customer/order input, and stale-on-source/eBay/revision checks. OpenAI requests and external commerce writes remain separately reported.
+- Updated the project brain, listing-control/quarantine runbooks, and Help source. The Production schema migration, dedicated AI configuration, deployment, signed-in workflow, and live commerce state were not verified by this source task; external commerce writes performed: zero.
+- Final source verification passed 54 test files / 574 tests, `npm run build`, `git diff --check`, compiled-artifact parity, and independent review with no remaining source P0/P1. Production remains on hold because its verified store is schema version 2 and the dedicated proposal key is absent.
 
 ### 2026-08-14: Local Draft Production Initialization and Description-Cap Incident Closure
 

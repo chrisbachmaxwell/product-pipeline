@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { LISTING_DRAFT_STATES, LISTING_FIELD_NAMES, LISTING_MANAGEMENT_MODELS, } from './types.js';
-export const LISTING_CONTROL_SCHEMA_VERSION = 2;
+import { LISTING_DRAFT_STATES, LISTING_AI_PROPOSABLE_FIELDS, LISTING_FIELD_NAMES, LISTING_MANAGEMENT_MODELS, LISTING_PROPOSAL_CONFIDENCE_LEVELS, LISTING_PROPOSAL_EVENT_TYPES, LISTING_PROPOSAL_FAILURE_CODES, LISTING_PROPOSAL_FIELD_REASON_CODES, LISTING_PROPOSAL_OUTCOMES, LISTING_PROPOSAL_REVIEW_REASON_CODES, LISTING_PROPOSAL_WARNING_CODES, } from './types.js';
+export const LISTING_CONTROL_SCHEMA_VERSION = 3;
 export const LISTING_CONTROL_APPLICATION_ID = 0x50504c43;
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ');
 const digestCheck = (column) => `(length(${column}) = 71 AND substr(${column}, 1, 7) = 'sha256:' `
@@ -380,6 +380,415 @@ BEGIN
   SELECT RAISE(ABORT, 'listing_revision_fields is append-only');
 END;
 `;
+/**
+ * V3 adds a local-only AI proposal and content-review ledger. Proposal state is
+ * append-only and is deliberately separate from ordinary listing revisions.
+ */
+const migrationThreeSql = `
+CREATE TABLE listing_proposal_jobs (
+  job_id TEXT PRIMARY KEY,
+  job_digest TEXT NOT NULL UNIQUE CHECK (${digestCheck('job_digest')}),
+  scope_key TEXT NOT NULL REFERENCES control_scope(scope_key),
+  subject_key TEXT NOT NULL REFERENCES listing_subjects(subject_key),
+  shopify_product_gid TEXT NOT NULL,
+  shopify_variant_gid TEXT NOT NULL,
+  raw_sku TEXT NOT NULL,
+  ebay_seller_id TEXT NOT NULL,
+  ebay_marketplace_id TEXT NOT NULL CHECK (ebay_marketplace_id = 'EBAY_US'),
+  management_model TEXT NOT NULL CHECK (management_model IN (${sqlList(LISTING_MANAGEMENT_MODELS)})),
+  ebay_inventory_sku TEXT,
+  ebay_offer_id TEXT,
+  ebay_listing_id TEXT,
+  base_revision_digest TEXT REFERENCES listing_revisions(revision_digest) CHECK (${nullableDigestCheck('base_revision_digest')}),
+  base_source_digest TEXT NOT NULL CHECK (${digestCheck('base_source_digest')}),
+  base_ebay_observation_digest TEXT NOT NULL CHECK (${digestCheck('base_ebay_observation_digest')}),
+  trigger_digest TEXT NOT NULL CHECK (${digestCheck('trigger_digest')}),
+  catalog_id TEXT NOT NULL,
+  evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
+  evidence_digest TEXT NOT NULL CHECK (${digestCheck('evidence_digest')}),
+  policy_version TEXT NOT NULL,
+  policy_digest TEXT NOT NULL CHECK (${digestCheck('policy_digest')}),
+  prompt_version TEXT NOT NULL,
+  prompt_digest TEXT NOT NULL CHECK (${digestCheck('prompt_digest')}),
+  proposal_schema_version TEXT NOT NULL,
+  proposal_schema_digest TEXT NOT NULL CHECK (${digestCheck('proposal_schema_digest')}),
+  agent_version TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('openai', 'fixture')),
+  requested_model TEXT NOT NULL,
+  model_digest TEXT NOT NULL CHECK (${digestCheck('model_digest')}),
+  requested_by TEXT NOT NULL,
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL,
+  UNIQUE (scope_key, subject_key, trigger_digest),
+  CHECK (ebay_inventory_sku IS NULL OR ebay_inventory_sku = raw_sku),
+  CHECK ((management_model = 'inventory_api' AND ebay_inventory_sku IS NOT NULL)
+    OR management_model <> 'inventory_api'),
+  CHECK (created_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', created_epoch_ms / 1000.0, 'unixepoch'))
+);
+
+CREATE TABLE listing_proposal_results (
+  result_id TEXT PRIMARY KEY,
+  result_digest TEXT NOT NULL UNIQUE CHECK (${digestCheck('result_digest')}),
+  job_id TEXT NOT NULL UNIQUE REFERENCES listing_proposal_jobs(job_id),
+  scope_key TEXT NOT NULL REFERENCES control_scope(scope_key),
+  subject_key TEXT NOT NULL REFERENCES listing_subjects(subject_key),
+  outcome TEXT NOT NULL CHECK (outcome IN (${sqlList(LISTING_PROPOSAL_OUTCOMES)})),
+  parsed_output_digest TEXT CHECK (${nullableDigestCheck('parsed_output_digest')}),
+  failure_code TEXT CHECK (failure_code IS NULL OR failure_code IN (${sqlList(LISTING_PROPOSAL_FAILURE_CODES)})),
+  input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  total_tokens INTEGER CHECK (total_tokens IS NULL OR total_tokens >= 0),
+  actor TEXT NOT NULL,
+  completed_at_utc TEXT NOT NULL,
+  completed_epoch_ms INTEGER NOT NULL,
+  CHECK (completed_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', completed_epoch_ms / 1000.0, 'unixepoch')),
+  CHECK (
+    (input_tokens IS NULL AND output_tokens IS NULL AND total_tokens IS NULL)
+    OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+      AND total_tokens = input_tokens + output_tokens)
+  ),
+  CHECK (
+    (outcome = 'failed' AND failure_code IS NOT NULL)
+    OR (outcome <> 'failed' AND failure_code IS NULL AND parsed_output_digest IS NOT NULL)
+  )
+);
+
+CREATE TABLE listing_proposal_field_decisions (
+  result_id TEXT NOT NULL REFERENCES listing_proposal_results(result_id),
+  scope_key TEXT NOT NULL REFERENCES control_scope(scope_key),
+  subject_key TEXT NOT NULL REFERENCES listing_subjects(subject_key),
+  field_name TEXT NOT NULL CHECK (field_name IN (${sqlList(LISTING_AI_PROPOSABLE_FIELDS)})),
+  proposed_value TEXT,
+  proposed_digest TEXT NOT NULL CHECK (${digestCheck('proposed_digest')}),
+  proposed_source TEXT NOT NULL CHECK (proposed_source IN ('source', 'observed', 'override', 'omit')),
+  confidence TEXT NOT NULL CHECK (confidence IN (${sqlList(LISTING_PROPOSAL_CONFIDENCE_LEVELS)})),
+  reason_code TEXT NOT NULL CHECK (reason_code IN (${sqlList(LISTING_PROPOSAL_FIELD_REASON_CODES)})),
+  warning_code TEXT CHECK (warning_code IS NULL OR warning_code IN (${sqlList(LISTING_PROPOSAL_WARNING_CODES)})),
+  evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
+  evidence_digest TEXT NOT NULL CHECK (${digestCheck('evidence_digest')}),
+  PRIMARY KEY (result_id, field_name),
+  CHECK (
+    (proposed_source = 'omit' AND proposed_value IS NULL)
+    OR (proposed_source <> 'omit' AND proposed_value IS NOT NULL)
+  )
+) WITHOUT ROWID;
+
+CREATE TABLE listing_proposal_events (
+  event_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES listing_proposal_jobs(job_id),
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  scope_key TEXT NOT NULL REFERENCES control_scope(scope_key),
+  subject_key TEXT NOT NULL REFERENCES listing_subjects(subject_key),
+  event_type TEXT NOT NULL CHECK (event_type IN (${sqlList(LISTING_PROPOSAL_EVENT_TYPES)})),
+  event_digest TEXT NOT NULL UNIQUE CHECK (${digestCheck('event_digest')}),
+  previous_event_digest TEXT CHECK (${nullableDigestCheck('previous_event_digest')}),
+  actor TEXT NOT NULL,
+  occurred_at_utc TEXT NOT NULL,
+  occurred_epoch_ms INTEGER NOT NULL,
+  result_digest TEXT REFERENCES listing_proposal_results(result_digest) CHECK (${nullableDigestCheck('result_digest')}),
+  reviewed_revision_digest TEXT REFERENCES listing_revisions(revision_digest) CHECK (${nullableDigestCheck('reviewed_revision_digest')}),
+  review_reason_code TEXT CHECK (review_reason_code IS NULL OR review_reason_code IN (${sqlList(LISTING_PROPOSAL_REVIEW_REASON_CODES)})),
+  payload_digest TEXT NOT NULL CHECK (${digestCheck('payload_digest')}),
+  UNIQUE (job_id, sequence),
+  CHECK (occurred_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', occurred_epoch_ms / 1000.0, 'unixepoch')),
+  CHECK (
+    (sequence = 1 AND previous_event_digest IS NULL)
+    OR (sequence > 1 AND previous_event_digest IS NOT NULL)
+  ),
+  CHECK (
+    (event_type IN ('queued', 'generating') AND result_digest IS NULL
+      AND reviewed_revision_digest IS NULL AND review_reason_code IS NULL)
+    OR (event_type IN ('ready', 'no_change', 'needs_human', 'failed')
+      AND result_digest IS NOT NULL AND reviewed_revision_digest IS NULL
+      AND review_reason_code IS NULL)
+    OR (event_type = 'approved' AND result_digest IS NOT NULL
+      AND reviewed_revision_digest IS NOT NULL AND review_reason_code = 'accepted')
+    OR (event_type IN ('rejected', 'stale') AND result_digest IS NOT NULL
+      AND reviewed_revision_digest IS NULL AND review_reason_code IS NOT NULL)
+  )
+);
+
+CREATE TRIGGER listing_proposal_jobs_require_base
+BEFORE INSERT ON listing_proposal_jobs
+WHEN NOT EXISTS (
+  SELECT 1 FROM listing_revisions revision
+  WHERE revision.revision_digest = NEW.base_revision_digest
+    AND revision.scope_key = NEW.scope_key
+    AND revision.subject_key = NEW.subject_key
+)
+AND NEW.base_revision_digest IS NOT NULL
+OR NEW.base_revision_digest IS NULL AND EXISTS (
+  SELECT 1 FROM listing_revisions revision WHERE revision.subject_key = NEW.subject_key
+)
+OR NOT EXISTS (
+  SELECT 1 FROM listing_subjects subject
+  JOIN control_scope scope ON scope.scope_key = subject.scope_key
+  WHERE subject.subject_key = NEW.subject_key AND subject.scope_key = NEW.scope_key
+    AND subject.shopify_product_gid = NEW.shopify_product_gid
+    AND subject.shopify_variant_gid = NEW.shopify_variant_gid
+    AND scope.ebay_seller_id = NEW.ebay_seller_id
+    AND scope.ebay_marketplace_id = NEW.ebay_marketplace_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal base mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_events_require_chain
+BEFORE INSERT ON listing_proposal_events
+WHEN NEW.sequence <> COALESCE(
+  (SELECT MAX(sequence) + 1 FROM listing_proposal_events WHERE job_id = NEW.job_id), 1
+)
+OR NEW.previous_event_digest IS NOT (
+  SELECT event_digest FROM listing_proposal_events
+  WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1
+)
+OR NOT EXISTS (
+  SELECT 1 FROM listing_proposal_jobs job
+  WHERE job.job_id = NEW.job_id AND job.scope_key = NEW.scope_key
+    AND job.subject_key = NEW.subject_key
+)
+OR (
+  NEW.sequence = 1 AND NEW.event_type <> 'queued'
+)
+OR (
+  NEW.sequence = 2 AND (
+    NEW.event_type <> 'generating'
+    OR (SELECT event_type FROM listing_proposal_events
+        WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1) <> 'queued'
+  )
+)
+OR (
+  NEW.sequence = 3 AND (
+    NEW.event_type NOT IN (${sqlList(LISTING_PROPOSAL_OUTCOMES)})
+    OR (SELECT event_type FROM listing_proposal_events
+        WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1) <> 'generating'
+  )
+)
+OR (
+  NEW.sequence = 4 AND (
+    NEW.event_type NOT IN ('approved', 'rejected', 'stale')
+    OR (SELECT event_type FROM listing_proposal_events
+        WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1)
+       NOT IN ('ready', 'no_change', 'needs_human')
+    OR (NEW.event_type = 'approved' AND (
+      SELECT event_type FROM listing_proposal_events
+      WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1
+    ) <> 'ready')
+  )
+)
+OR NEW.sequence > 4
+BEGIN
+  SELECT RAISE(ABORT, 'proposal event chain mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_results_require_scope
+BEFORE INSERT ON listing_proposal_results
+WHEN NOT EXISTS (
+  SELECT 1 FROM listing_proposal_jobs job
+  WHERE job.job_id = NEW.job_id AND job.scope_key = NEW.scope_key
+    AND job.subject_key = NEW.subject_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal result scope mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_field_decisions_require_scope
+BEFORE INSERT ON listing_proposal_field_decisions
+WHEN NOT EXISTS (
+  SELECT 1 FROM listing_proposal_results result
+  JOIN listing_proposal_jobs job ON job.job_id = result.job_id
+  WHERE result.result_id = NEW.result_id AND result.scope_key = NEW.scope_key
+    AND result.subject_key = NEW.subject_key AND job.scope_key = NEW.scope_key
+    AND job.subject_key = NEW.subject_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal field scope mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_events_require_result
+BEFORE INSERT ON listing_proposal_events
+WHEN NEW.result_digest IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM listing_proposal_results result
+  WHERE result.result_digest = NEW.result_digest AND result.job_id = NEW.job_id
+    AND (
+      NEW.event_type IN ('approved', 'rejected', 'stale')
+      OR result.outcome = NEW.event_type
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal result mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_events_require_confidence_coherence
+BEFORE INSERT ON listing_proposal_events
+WHEN (
+  NEW.event_type = 'needs_human' AND NOT EXISTS (
+    SELECT 1 FROM listing_proposal_results result
+    JOIN listing_proposal_field_decisions decision ON decision.result_id = result.result_id
+    WHERE result.result_digest = NEW.result_digest AND result.job_id = NEW.job_id
+      AND decision.confidence = 'low'
+  )
+)
+OR (
+  NEW.event_type IN ('ready', 'no_change') AND EXISTS (
+    SELECT 1 FROM listing_proposal_results result
+    JOIN listing_proposal_field_decisions decision ON decision.result_id = result.result_id
+    WHERE result.result_digest = NEW.result_digest AND result.job_id = NEW.job_id
+      AND decision.confidence = 'low'
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal confidence outcome mismatch');
+END;
+
+CREATE TRIGGER listing_proposal_events_approved_revision
+BEFORE INSERT ON listing_proposal_events
+WHEN NEW.event_type = 'approved' AND NOT EXISTS (
+  SELECT 1 FROM listing_revisions revision
+  JOIN listing_proposal_jobs job ON job.job_id = NEW.job_id
+  WHERE revision.revision_digest = NEW.reviewed_revision_digest
+    AND revision.scope_key = NEW.scope_key
+    AND revision.subject_key = NEW.subject_key
+    AND revision.previous_revision_digest IS job.base_revision_digest
+    AND revision.state = 'reviewed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'approved revision mismatch');
+END;
+
+${['listing_proposal_jobs', 'listing_proposal_results', 'listing_proposal_field_decisions', 'listing_proposal_events']
+    .map((table) => `
+CREATE TRIGGER ${table}_deny_update
+BEFORE UPDATE ON ${table}
+BEGIN
+  SELECT RAISE(ABORT, '${table} is append-only');
+END;
+CREATE TRIGGER ${table}_deny_delete
+BEFORE DELETE ON ${table}
+BEGIN
+  SELECT RAISE(ABORT, '${table} is append-only');
+END;`).join('\n')}
+
+CREATE TRIGGER listing_proposal_jobs_deny_conflicting_insert
+BEFORE INSERT ON listing_proposal_jobs
+WHEN EXISTS (
+  SELECT 1 FROM listing_proposal_jobs job
+  WHERE job.job_id = NEW.job_id OR job.job_digest = NEW.job_digest
+    OR (job.scope_key = NEW.scope_key AND job.subject_key = NEW.subject_key
+      AND job.trigger_digest = NEW.trigger_digest)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal job replay or replacement denied');
+END;
+
+CREATE TRIGGER listing_proposal_results_deny_conflicting_insert
+BEFORE INSERT ON listing_proposal_results
+WHEN EXISTS (
+  SELECT 1 FROM listing_proposal_results result
+  WHERE result.result_id = NEW.result_id OR result.result_digest = NEW.result_digest
+    OR result.job_id = NEW.job_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal result replay or replacement denied');
+END;
+
+CREATE TRIGGER listing_proposal_field_decisions_deny_conflicting_insert
+BEFORE INSERT ON listing_proposal_field_decisions
+WHEN EXISTS (
+  SELECT 1 FROM listing_proposal_field_decisions decision
+  WHERE decision.result_id = NEW.result_id AND decision.field_name = NEW.field_name
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal field replay or replacement denied');
+END;
+
+CREATE TRIGGER listing_proposal_events_deny_conflicting_insert
+BEFORE INSERT ON listing_proposal_events
+WHEN EXISTS (
+  SELECT 1 FROM listing_proposal_events event
+  WHERE event.event_id = NEW.event_id OR event.event_digest = NEW.event_digest
+    OR (event.job_id = NEW.job_id AND event.sequence = NEW.sequence)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal event replay or replacement denied');
+END;
+
+CREATE TABLE audit_events_v3 (
+  sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+  scope_key TEXT NOT NULL REFERENCES control_scope(scope_key),
+  event_id TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL CHECK (event_type IN ('scope.initialized', 'revision.created', 'proposal.event')),
+  occurred_at_utc TEXT NOT NULL,
+  occurred_epoch_ms INTEGER NOT NULL,
+  subject_key TEXT CHECK (${nullableDigestCheck('subject_key')}),
+  revision_digest TEXT UNIQUE REFERENCES listing_revisions(revision_digest) CHECK (${nullableDigestCheck('revision_digest')}),
+  proposal_event_digest TEXT UNIQUE REFERENCES listing_proposal_events(event_digest) CHECK (${nullableDigestCheck('proposal_event_digest')}),
+  payload_digest TEXT NOT NULL CHECK (${digestCheck('payload_digest')}),
+  previous_hash TEXT NOT NULL,
+  event_hash TEXT NOT NULL UNIQUE CHECK (${digestCheck('event_hash')}),
+  CHECK (occurred_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', occurred_epoch_ms / 1000.0, 'unixepoch')),
+  CHECK (
+    (event_type = 'scope.initialized' AND subject_key IS NULL
+      AND revision_digest IS NULL AND proposal_event_digest IS NULL)
+    OR (event_type = 'revision.created' AND subject_key IS NOT NULL
+      AND revision_digest IS NOT NULL AND proposal_event_digest IS NULL)
+    OR (event_type = 'proposal.event' AND subject_key IS NOT NULL
+      AND revision_digest IS NULL AND proposal_event_digest IS NOT NULL)
+  )
+);
+
+INSERT INTO audit_events_v3 (
+  sequence, scope_key, event_id, event_type, occurred_at_utc, occurred_epoch_ms,
+  subject_key, revision_digest, proposal_event_digest, payload_digest, previous_hash, event_hash
+)
+SELECT sequence, scope_key, event_id, event_type, occurred_at_utc, occurred_epoch_ms,
+  subject_key, revision_digest, NULL, payload_digest, previous_hash, event_hash
+FROM audit_events;
+
+DROP TRIGGER audit_events_deny_conflicting_insert;
+DROP TRIGGER audit_events_enforce_chain_position;
+DROP TRIGGER audit_events_deny_update;
+DROP TRIGGER audit_events_deny_delete;
+DROP TABLE audit_events;
+ALTER TABLE audit_events_v3 RENAME TO audit_events;
+
+CREATE TRIGGER audit_events_deny_conflicting_insert
+BEFORE INSERT ON audit_events
+WHEN EXISTS (
+  SELECT 1 FROM audit_events event
+  WHERE event.sequence = NEW.sequence OR event.event_id = NEW.event_id
+    OR event.event_hash = NEW.event_hash
+    OR (NEW.proposal_event_digest IS NOT NULL
+      AND event.proposal_event_digest = NEW.proposal_event_digest)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'audit event replay or replacement denied');
+END;
+
+CREATE TRIGGER audit_events_enforce_chain_position
+BEFORE INSERT ON audit_events
+WHEN NOT (
+  NEW.sequence = COALESCE((SELECT MAX(sequence) FROM audit_events), 0) + 1
+  AND NEW.previous_hash = COALESCE(
+    (SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1), 'GENESIS'
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid audit chain position');
+END;
+
+CREATE TRIGGER audit_events_deny_update
+BEFORE UPDATE ON audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+
+CREATE TRIGGER audit_events_deny_delete
+BEFORE DELETE ON audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only');
+END;
+`;
 const checksum = (value) => `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 export const LISTING_CONTROL_MIGRATIONS = Object.freeze([
     Object.freeze({
@@ -393,6 +802,12 @@ export const LISTING_CONTROL_MIGRATIONS = Object.freeze([
         name: 'listing-control-observed-provenance-v2',
         sql: migrationTwoSql,
         checksum: checksum(migrationTwoSql),
+    }),
+    Object.freeze({
+        version: 3,
+        name: 'listing-control-ai-proposal-review-v3',
+        sql: migrationThreeSql,
+        checksum: checksum(migrationThreeSql),
     }),
 ]);
 function installMigrations(database, appliedAtUtc, migrations) {
@@ -436,6 +851,7 @@ function expectedCatalogDigest(migrations = LISTING_CONTROL_MIGRATIONS) {
 }
 export const LISTING_CONTROL_EXPECTED_CATALOG_DIGEST = expectedCatalogDigest();
 const LISTING_CONTROL_V1_EXPECTED_CATALOG_DIGEST = expectedCatalogDigest(LISTING_CONTROL_MIGRATIONS.slice(0, 1));
+const LISTING_CONTROL_V2_EXPECTED_CATALOG_DIGEST = expectedCatalogDigest(LISTING_CONTROL_MIGRATIONS.slice(0, 2));
 export function initializeListingControlSchema(database, appliedAtUtc) {
     const existing = database.prepare("SELECT COUNT(*) AS count FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get();
     if (database.pragma('application_id', { simple: true }) !== 0
@@ -481,10 +897,37 @@ export function verifyListingControlSchemaV1(database) {
         throw new Error('Listing control V1 schema is not canonical');
     }
 }
+export function verifyListingControlSchemaV2(database) {
+    if (database.pragma('application_id', { simple: true }) !== LISTING_CONTROL_APPLICATION_ID
+        || database.pragma('user_version', { simple: true }) !== 2) {
+        throw new Error('Listing control V2 schema identity mismatch');
+    }
+    const history = database.prepare('SELECT version, name, checksum FROM schema_migrations ORDER BY version').all();
+    const expected = LISTING_CONTROL_MIGRATIONS.slice(0, 2);
+    if (history.length !== expected.length
+        || expected.some((migration, index) => history[index]?.version !== migration.version
+            || history[index]?.name !== migration.name
+            || history[index]?.checksum !== migration.checksum)
+        || catalogDigest(database) !== LISTING_CONTROL_V2_EXPECTED_CATALOG_DIGEST) {
+        throw new Error('Listing control V2 schema is not canonical');
+    }
+}
 /** Explicit admin-only upgrade. Runtime open paths never invoke this function. */
 export function upgradeListingControlSchemaV1ToV2(database, appliedAtUtc) {
     verifyListingControlSchemaV1(database);
     const migration = LISTING_CONTROL_MIGRATIONS[1];
+    const apply = database.transaction(() => {
+        database.exec(migration.sql);
+        database.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)').run(migration.version, migration.name, migration.checksum, appliedAtUtc);
+        database.pragma(`user_version = ${migration.version}`);
+    });
+    apply.immediate();
+    verifyListingControlSchemaV2(database);
+}
+/** Explicit admin-only upgrade. Runtime open paths never invoke this function. */
+export function upgradeListingControlSchemaV2ToV3(database, appliedAtUtc) {
+    verifyListingControlSchemaV2(database);
+    const migration = LISTING_CONTROL_MIGRATIONS[2];
     const apply = database.transaction(() => {
         database.exec(migration.sql);
         database.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)').run(migration.version, migration.name, migration.checksum, appliedAtUtc);

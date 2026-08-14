@@ -95,8 +95,10 @@ export declare class WriterQuarantinedError extends Error {
 export declare function denyExternalWrite(responsibility: QuarantinedResponsibility, operation: string): void;
 export declare function responsibilityForApiPath(pathname: string): QuarantinedResponsibility;
 export declare function isReadOnlyHttpMethod(method: string): boolean;
-/** One local-only append exception. It grants no provider or publish authority. */
+/** Exact local draft append. It grants no provider or publish authority. */
 export declare function isExactLocalDraftAppend(method: string, originalUrl: string): boolean;
+/** Exact local AI proposal/review append. It grants no provider or publish authority. */
+export declare function isExactLocalProposalAppend(method: string, originalUrl: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {

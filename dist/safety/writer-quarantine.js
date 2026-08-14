@@ -131,9 +131,13 @@ export function responsibilityForApiPath(pathname) {
 export function isReadOnlyHttpMethod(method) {
     return ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
 }
-/** One local-only append exception. It grants no provider or publish authority. */
+/** Exact local draft append. It grants no provider or publish authority. */
 export function isExactLocalDraftAppend(method, originalUrl) {
     return method === 'POST' && originalUrl === '/api/listing-draft';
+}
+/** Exact local AI proposal/review append. It grants no provider or publish authority. */
+export function isExactLocalProposalAppend(method, originalUrl) {
+    return method === 'POST' && originalUrl === '/api/listing-proposal';
 }
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(req, res, next) {
@@ -141,7 +145,8 @@ export function writerQuarantineMiddleware(req, res, next) {
         next();
         return;
     }
-    if (isExactLocalDraftAppend(req.method, req.originalUrl || '')) {
+    if (isExactLocalDraftAppend(req.method, req.originalUrl || '')
+        || isExactLocalProposalAppend(req.method, req.originalUrl || '')) {
         next();
         return;
     }

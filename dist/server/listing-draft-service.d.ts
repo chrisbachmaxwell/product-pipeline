@@ -22,7 +22,7 @@ export type ListingDraftDto = Readonly<{
         revisionId: string;
         revisionNumber: number;
         revisionDigest: Digest;
-        state: 'draft';
+        state: 'draft' | 'reviewed';
         createdAtUtc: string;
     }>;
     sections: Readonly<{

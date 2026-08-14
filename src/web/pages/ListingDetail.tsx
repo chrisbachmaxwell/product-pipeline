@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Banner,
@@ -14,12 +14,24 @@ import {
 } from '@shopify/polaris';
 import { useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
+import ListingProposalReview from '../components/ListingProposalReview';
 import {
   isListingDraftBoundToWorkspace,
   isListingDraftResponse,
   useListingDraft,
   useSaveListingDraft,
 } from '../hooks/useListingDraft';
+import {
+  buildApproveListingProposalInput,
+  buildGenerateListingProposalInput,
+  isListingProposalBoundToDraft,
+  isListingProposalResponse,
+  listingProposalGenerationAttemptKey,
+  shouldAutomaticallyGenerateListingProposal,
+  useApproveListingProposal,
+  useGenerateListingProposal,
+  useListingProposal,
+} from '../hooks/useListingProposal';
 import {
   isListingWorkspaceResponse,
   useListingWorkspace,
@@ -66,8 +78,12 @@ const ListingDetail: React.FC = () => {
   const workspace = useListingWorkspace(id);
   const localDraft = useListingDraft(id);
   const saveDraft = useSaveListingDraft(id);
+  const listingProposal = useListingProposal(id);
+  const generateProposal = useGenerateListingProposal(id);
+  const approveProposal = useApproveListingProposal(id);
   const [editing, setEditing] = useState(false);
   const [openingEditor, setOpeningEditor] = useState(false);
+  const automaticGenerationAttempts = useRef(new Set<string>());
   const currentWorkspace = isListingWorkspaceResponse(workspace.data, id)
     ? workspace.data
     : null;
@@ -78,6 +94,11 @@ const ListingDetail: React.FC = () => {
     : null;
   const currentCatalog = currentWorkspace?.catalog ?? null;
   const currentMapping = currentWorkspace?.mapping ?? null;
+  const currentProposal = currentDraft
+    && isListingProposalResponse(listingProposal.data, id)
+    && isListingProposalBoundToDraft(listingProposal.data, currentDraft)
+    ? listingProposal.data
+    : null;
   const currentEditEligible = Boolean(
     !workspace.error
     && !localDraft.error
@@ -95,6 +116,20 @@ const ListingDetail: React.FC = () => {
   useEffect(() => {
     if (!currentEditEligible) setEditing(false);
   }, [currentEditEligible]);
+
+  useEffect(() => {
+    if (!currentProposal || !currentDraft
+      || !shouldAutomaticallyGenerateListingProposal(
+        currentProposal,
+        currentDraft,
+        currentEditEligible,
+      )
+      || generateProposal.isPending) return;
+    const attemptKey = listingProposalGenerationAttemptKey(currentProposal, currentDraft);
+    if (automaticGenerationAttempts.current.has(attemptKey)) return;
+    automaticGenerationAttempts.current.add(attemptKey);
+    generateProposal.mutate(buildGenerateListingProposalInput(currentProposal, currentDraft));
+  }, [currentDraft, currentEditEligible, currentProposal, generateProposal]);
 
   if (workspace.isLoading) {
     return (
@@ -177,7 +212,6 @@ const ListingDetail: React.FC = () => {
               : null;
   const canEdit = currentEditEligible && editableStatus
     && draftReadOnlyReason === null && draftValid;
-  const existingDraft = validDraft?.revision ?? null;
   const openFreshEditor = async () => {
     if (!canEdit || openingEditor) return;
     const trustedWorkspace = workspace.data;
@@ -217,7 +251,6 @@ const ListingDetail: React.FC = () => {
         external: true,
       } : undefined}
       secondaryActions={[
-        ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
         ...(shopifyUrl ? [{ content: 'View in Shopify', url: shopifyUrl, external: true }] : []),
       ]}
       fullWidth
@@ -237,32 +270,47 @@ const ListingDetail: React.FC = () => {
             onSave={async (input) => {
               await saveDraft.mutateAsync(input);
               setEditing(false);
+              void listingProposal.refetch();
             }}
+          />
+        ) : listingProposal.isLoading ? (
+          <Card><SkeletonBodyText lines={3} /></Card>
+        ) : currentProposal ? (
+          <ListingProposalReview
+            response={currentProposal}
+            canAdjust={canEdit}
+            generating={generateProposal.isPending}
+            approving={approveProposal.isPending}
+            generationFailed={generateProposal.isError}
+            approvalFailed={approveProposal.isError}
+            onGenerate={() => {
+              if (!validDraft) return;
+              generateProposal.mutate(
+                buildGenerateListingProposalInput(currentProposal, validDraft),
+              );
+            }}
+            onApprove={() => {
+              const input = buildApproveListingProposalInput(currentProposal);
+              if (input) approveProposal.mutate(input);
+            }}
+            onAdjust={() => { void openFreshEditor(); }}
           />
         ) : (
           <Card>
             <InlineStack align="space-between" blockAlign="center" gap="300">
               <BlockStack gap="100">
-                <InlineStack gap="200" blockAlign="center">
-                  <Text as="h2" variant="headingMd">Local draft</Text>
-                  {existingDraft && <Badge tone="info">{`Draft ${existingDraft.revisionNumber}`}</Badge>}
-                </InlineStack>
-                <Text as="p" tone="subdued">
-                  {existingDraft ? `Saved ${formatVerifiedAt(existingDraft.createdAtUtc).replace('Updated ', '')}`
-                    : 'Prepare changes without sending them to Shopify or eBay.'}
-                </Text>
+                <Text as="h2" variant="headingMd">Agent proposal</Text>
+                <Text as="p" tone="subdued">Proposal unavailable · eBay unchanged</Text>
               </BlockStack>
-              {localDraft.isLoading ? (
-                <Text as="span" tone="subdued">Loading</Text>
-              ) : canEdit ? (
-                <Button onClick={() => { void openFreshEditor(); }} loading={openingEditor}>Edit</Button>
-              ) : (
-                <Badge tone="attention">Read only</Badge>
-              )}
+              {canEdit
+                ? <Button onClick={() => { void openFreshEditor(); }} loading={openingEditor}>Adjust</Button>
+                : <Badge tone="attention">Read only</Badge>}
             </InlineStack>
-            {draftReadOnlyReason && !localDraft.isLoading && (
+            {(draftReadOnlyReason || listingProposal.error) && !localDraft.isLoading && (
               <div style={{ marginTop: '1rem' }}>
-                <Banner tone="info"><Text as="p">{draftReadOnlyReason}</Text></Banner>
+                <Banner tone="info">
+                  <Text as="p">{draftReadOnlyReason ?? 'Reload this listing to try again.'}</Text>
+                </Banner>
               </div>
             )}
           </Card>

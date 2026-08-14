@@ -54,6 +54,22 @@ describe('writer quarantine policy', () => {
         writerQuarantineMiddleware({ method, originalUrl: '/api/migration/status', path: '/migration/status' }, {}, next);
         expect(next).toHaveBeenCalledOnce();
     });
+    it.each(['/api/listing-draft', '/api/listing-proposal'])('permits only exact local control append %s without provider authority', (originalUrl) => {
+        const next = vi.fn();
+        writerQuarantineMiddleware({ method: 'POST', originalUrl, path: originalUrl.slice(4) }, {}, next);
+        expect(next).toHaveBeenCalledOnce();
+    });
+    it.each([
+        '/api/listing-proposal/', '/api/Listing-proposal',
+        '/api/listing-proposal?publish=true', '/api/listing-proposals',
+    ])('keeps proposal sibling %s quarantined', (originalUrl) => {
+        const next = vi.fn();
+        const json = vi.fn();
+        const status = vi.fn(() => ({ json }));
+        writerQuarantineMiddleware({ method: 'POST', originalUrl, path: originalUrl.slice(4) }, { status }, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(status).toHaveBeenCalledWith(423);
+    });
     it('removes every mutation command from the legacy CLI', () => {
         const commands = buildLegacyCli().commands.map((command) => command.name());
         expect(commands).toEqual(['status']);

@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import {
   initializeListingControlStore,
   openListingControlStoreReadOnly,
+  upgradeListingControlStoreV2ToV3,
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 
@@ -22,7 +23,7 @@ export function buildListingControlAdminProgram(
   const program = new Command();
   program.name('listing-control-admin').description('Local listing draft store administration');
   program.command('init')
-    .description('Initialize a fresh V2 store; the target must not exist')
+    .description('Initialize a fresh V3 store; the target must not exist')
     .action(() => {
       const target = databasePath();
       if (typeof target !== 'string' || target.length === 0) throw new Error('Unavailable');
@@ -34,14 +35,14 @@ export function buildListingControlAdminProgram(
         store.verifyIntegrity();
         output(JSON.stringify({
           status: 'initialized',
-          schemaVersion: 2,
+          schemaVersion: 3,
           mode: 'local_draft_only',
           externalWritesPerformed: 0,
         }));
       } finally { store.close(); }
     });
   program.command('verify')
-    .description('Verify an existing canonical V2 store without changing it')
+    .description('Verify an existing canonical V3 store without changing it')
     .action(() => {
       const target = databasePath();
       if (typeof target !== 'string' || target.length === 0 || !fs.existsSync(target)) {
@@ -53,8 +54,28 @@ export function buildListingControlAdminProgram(
       try {
         store.verifyIntegrity();
         output(JSON.stringify({
-          status: 'verified', schemaVersion: 2, mode: 'local_draft_only',
+          status: 'verified', schemaVersion: 3, mode: 'local_draft_only',
           externalWritesPerformed: 0,
+        }));
+      } finally { store.close(); }
+    });
+  program.command('upgrade-v2-v3')
+    .description('Explicitly upgrade one canonical V2 store to V3')
+    .action(() => {
+      const target = databasePath();
+      if (typeof target !== 'string' || target.length === 0 || !fs.existsSync(target)) {
+        throw new Error('Unavailable');
+      }
+      const store = upgradeListingControlStoreV2ToV3({
+        databasePath: target,
+        expectedScope: LISTING_DRAFT_SCOPE,
+        appliedAtUtc: now().toISOString(),
+      });
+      try {
+        store.verifyIntegrity();
+        output(JSON.stringify({
+          status: 'upgraded', fromSchemaVersion: 2, schemaVersion: 3,
+          mode: 'local_draft_only', externalWritesPerformed: 0,
         }));
       } finally { store.close(); }
     });

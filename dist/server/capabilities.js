@@ -42,6 +42,15 @@ registerCapability({
     addedAt: '2026-08-13',
 });
 registerCapability({
+    id: 'local-ai-listing-proposals',
+    name: 'AI Listing Proposals',
+    description: 'Prepare and approve local evidence-bound listing proposals without changing Shopify or eBay.',
+    category: 'ebay',
+    examplePrompts: ['review the AI listing proposal', 'approve this local proposal'],
+    apiEndpoints: ['GET /api/listing-proposal', 'POST /api/listing-proposal'],
+    addedAt: '2026-08-14',
+});
+registerCapability({
     id: 'product-sync',
     name: 'Product Sync',
     description: 'Sync products from Shopify to eBay — push titles, prices, inventory and images.',

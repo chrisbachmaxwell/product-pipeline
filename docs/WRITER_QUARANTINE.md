@@ -14,7 +14,11 @@ ProductPipeline listing-lifecycle and fulfillment writes are quarantined too. Th
 
 ProductPipeline is in hard-coded `shadow-read-only` mode for every external commerce effect. External commerce writes are denied, historical backfill is denied, and no order cutover watermark exists. There is no environment variable, database setting, request flag, `TEST_MODE` exception, or confirmation parameter that can enable a Shopify, eBay, Marketplace Connect, or Lightspeed writer in this phase.
 
-The sole state-changing API exception is exact `POST /api/listing-draft`. It appends a bounded local draft revision only after exact-store Shopify-session authentication, optimistic base/revision checks, and store-integrity verification. It has no Apply, Approve, Publish, provider client, credential write, ownership transfer, price/inventory/order action, or external side effect. Sibling, trailing-slash, query-string, encoded, case-variant, and all other non-read API requests remain quarantined.
+The only state-changing API exceptions are exact `POST /api/listing-draft` and exact `POST /api/listing-proposal`. The first appends a bounded local draft revision. The second may request one evidence-bound OpenAI proposal and append local proposal/review state, including a human-approved local revision. Both require exact-store Shopify-session authentication, optimistic base/revision checks, and store-integrity verification. Neither has Apply, Publish, commerce-provider write capability, credential write, ownership transfer, price/inventory/order action, or commerce side effect. Sibling, trailing-slash, query-string, encoded, case-variant, and all other non-read API requests remain quarantined.
+
+The source exceptions above do not override the current operational freeze. Release-maintenance incident `RMI-2026-08-14-001` requires local draft/proposal writes and the version-3 migration to remain stopped until every exposed credential class is rotated and revoked, a fixed single-purpose zero-environment-output maintenance command is proven, the store baseline is safely re-verified, and an authorized human lifts the freeze. `railway ssh ... sh -lc`, other remote shell wrappers, and every remote shell/environment-introspection path are forbidden. See `docs/RELEASE_MAINTENANCE_INCIDENTS.md` and `docs/LISTING_CONTROL_ADMIN.md`.
+
+The OpenAI request is not a commerce write: the model receives bounded listing candidate previews and digests, no Shopify/eBay credentials or customer/order data, no tools, and no route to Shopify, eBay, Marketplace Connect, or Lightspeed. Human proposal approval means local content approval only.
 
 The ownership transfer contract remains unchanged: one responsibility at a time, separately authorized, after accepted parity, idempotency, reconciliation, canary, audit, observation, and rollback evidence. Marketplace Connect must not be disabled by ProductPipeline or by this quarantine slice.
 
@@ -23,7 +27,7 @@ The ownership transfer contract remains unchanged: one responsibility at a time,
 | Layer | Enforced behavior |
 |---|---|
 | Runtime policy | `src/safety/writer-quarantine.ts` contains the immutable incumbent baseline and throws `WRITER_QUARANTINED` for every attempted external write. Denials identify the responsibility, operation, incumbent owner, and required cutover decision. |
-| HTTP API | Every non-read request beneath `/api`, except exact `POST /api/listing-draft`, is stopped before a legacy handler can load credentials, initialize work, or contact a commerce platform. The exception parses at most 64 KiB only after authentication/quarantine and can append only to the dedicated local draft store. Legacy GET routes remain unmounted and return `404`. |
+| HTTP API | Every non-read request beneath `/api`, except exact `POST /api/listing-draft` and exact `POST /api/listing-proposal`, is stopped before a legacy handler can load commerce credentials, initialize commerce work, or contact a commerce platform. The exceptions parse bounded strict contracts only after authentication/quarantine and can change only the dedicated listing-control store; proposal generation may make the separately configured bounded OpenAI inference request. Legacy GET routes remain unmounted and return `404`. |
 | Startup | The server does not mount the legacy mutation scheduler or cloud watcher. Startup logs that shadow read-only mode is active. |
 | Authentication | Shopify and eBay authentication routes are not mounted in the shadow application. Production API reads require a cryptographically verified Shopify App Bridge session JWT for the exact app and Used Camera Gear store. Origin, Referer, query keys, and production API keys never authorize. Existing credential records are never reported as proof of remote connectivity. |
 | Webhooks | Shopify and eBay webhook endpoints acknowledge receipts and dispatch no order, listing, price, inventory, fulfillment, pipeline, or watcher work. HMAC-valid Shopify receipts produce only a sanitized process log. Unauthenticated eBay receipts are not parsed and receive a static no-op acknowledgement. Neither route persists payload or receipt evidence. |
@@ -32,7 +36,7 @@ The ownership transfer contract remains unchanged: one responsibility at a time,
 | Shopify adapters | Shopify order creation and inventory-setting functions deny before credential loading or network access. |
 | Service functions | Legacy order, price, inventory, listing, fulfillment, draft-listing, image-upload, and related mutation services deny before their former external work. This prevents direct imports from bypassing HTTP or CLI controls. |
 
-The API middleware intentionally denies every other benign application POST/PUT/DELETE operation too. This broad posture prevents a forgotten route, chat-generated request, test endpoint, or legacy helper from becoming an alternate commerce-write path. Mounted authenticated reads cover migration status, listing catalog/workspace projections, local listing drafts, and capability metadata; customer/order/log/settings/test readers and remote token-refresh readers are not reachable. A future wider API or any provider mutation must be introduced only with an explicit responsibility-specific design and authorization.
+The API middleware intentionally denies every other benign application POST/PUT/DELETE operation too. This broad posture prevents a forgotten route, chat-generated request, test endpoint, or legacy helper from becoming an alternate commerce-write path. Mounted authenticated reads cover migration status, listing catalog/workspace projections, local listing drafts/proposals, and capability metadata; customer/order/log/settings/test readers and remote token-refresh readers are not reachable. A future wider API or any commerce-provider mutation must be introduced only with an explicit responsibility-specific design and authorization.
 
 ### Local state that can still change
 
@@ -41,20 +45,22 @@ The mounted web runtime may change only the dedicated listing-control store:
 - startup does not initialize, migrate, or seed the application database;
 - local-ledger views open only an existing SQLite file with `readonly`, `fileMustExist`, and `query_only` enforced, then close it;
 - `GET /api/listing-draft` reads one exact current workspace and latest local revision; exact-store `POST /api/listing-draft` may append one immutable local revision after semantic stale-base and expected-revision checks;
-- the listing-control store must already exist as canonical schema version 2 under an exact account scope; runtime never creates, migrates, repairs, or replaces it;
+- `GET /api/listing-proposal` reads the current local proposal state; exact-store `POST /api/listing-proposal` may prepare one bounded proposal or approve it locally after exact proposal/event/base checks;
+- the listing-control store must already exist as canonical schema version 3 under an exact account scope; runtime never creates, migrates, repairs, or replaces it;
 - draft save is unavailable unless `LISTING_CONTROL_DATABASE_PATH` names that verified store and `LISTING_CONTROL_SINGLE_WRITER_ACK=product-pipeline-local-draft-v1` asserts the reviewed single-writer topology; the acknowledgement is not topology proof;
 - operator `preflight`, `ownership`, and `reconcile` commands may append redacted hash-chained audit records beneath `.local/`; and
 - an operator may place an explicitly prepared reconciliation snapshot beneath `.local/operator-reconciliation/`.
 
-The dedicated local draft store and operator-owned `.local/` files are outside the legacy application ledger. None creates or changes a Shopify order, eBay order, listing, price, inventory level, fulfillment, Marketplace Connect setting, application-ledger row, or cutover watermark. See `docs/LISTING_CONTROL_ADMIN.md` for explicit initialization, verification, topology, volume, and recovery gates.
+The dedicated local draft/proposal store and operator-owned `.local/` files are outside the legacy application ledger. None creates or changes a Shopify order, eBay order, listing, price, inventory level, fulfillment, Marketplace Connect setting, application-ledger row, or cutover watermark. See `docs/LISTING_CONTROL_ADMIN.md` and `docs/AI_LISTING_PROPOSALS.md` for explicit migration, configuration, verification, topology, volume, and recovery gates.
 
 ## Operator-visible status
 
 The following surfaces report the effective policy:
 
 - `GET /health` includes the migration phase, effective mode, responsibility ownership, quarantine channels, and build commit when Railway supplies it.
+- `railway.json` uses Railway's [current config schema](https://railway.com/railway.schema.json) and declares `/health` as the [deployment healthcheck](https://docs.railway.com/deployments/healthchecks) with a 300-second startup window. Railway must receive HTTP `200` before activating a new deployment. This is an activation gate, not continuous monitoring, and the checked-in setting is not deployment proof until Railway reports the resulting release configuration.
 - `GET /api/migration/status` combines the immutable policy with local-only ledger counts and flags stale legacy settings as exceptions. A stale database toggle is reported as `effectiveBehavior: quarantined`; it does not override the policy.
-- The Overview, Listings, Orders, Reconciliation, and Settings pages show the Marketplace Connect owner, shadow status, missing watermark, and absence of remote parity proof. Listings may additionally preview and save a local draft; it cannot apply, approve, publish, or otherwise send that draft to a provider.
+- The Overview, Listings, Orders, Reconciliation, and Settings pages show the Marketplace Connect owner, shadow status, missing watermark, and absence of remote parity proof. Listings may additionally prepare, adjust, and approve a local proposal; it cannot apply, publish, or otherwise send that reviewed content to a commerce provider.
 - The Reconciliation page reports local-ledger evidence only. Zero local exceptions is not cross-platform parity.
 
 If the status endpoint is unavailable, the UI fails closed and continues to describe ProductPipeline as observation-only. Conflicting old settings or historical rows are evidence to investigate, not permission to write.
@@ -113,7 +119,7 @@ This slice does not prove:
 - sandbox or live-canary success; or
 - readiness to disable Marketplace Connect.
 
-The cutover watermark remains `null`, all historical eBay orders remain permanently ineligible for ProductPipeline creation, and no live or historical order may be imported by this phase. Any future live read adapter, test action, writer reintroduction, responsibility transfer, or Marketplace Connect change requires a separately reviewed and authorized slice.
+The cutover watermark remains `null`, all historical eBay orders remain permanently ineligible for ProductPipeline creation, and no live or historical order may be imported by this phase. The version-3 store migration, dedicated AI configuration, deployment, and signed-in Production proposal flow remain unproved. Any future live read adapter, test action, writer reintroduction, responsibility transfer, or Marketplace Connect change requires a separately reviewed and authorized slice.
 
 ## Verification checklist
 
@@ -126,4 +132,4 @@ npm test
 npm run build
 ```
 
-Also verify that the built legacy CLI lists only `status`, exact local-draft append is the sole non-read `/api` exception, every other non-read API request returns `423`, the health/migration surfaces expose the incumbent policy, webhook tests dispatch zero writers, and no test contacts an external system.
+Also verify that the built legacy CLI lists only `status`, exact local-draft append and exact local-proposal/review are the only non-read `/api` exceptions, every other non-read API request returns `423`, the health/migration surfaces expose the incumbent policy, webhook tests dispatch zero writers, and no test contacts a commerce system. Proposal-agent tests must use a fake transport rather than the OpenAI network.
