@@ -219,6 +219,23 @@ describe('read-only listing workspace reader', () => {
         }));
         expect(JSON.stringify(result)).not.toMatch(/secret-transient-token|accessToken|authorization/i);
     });
+    it('preserves a large accepted eBay description through the workspace projection', async () => {
+        const description = 'X'.repeat(150 * 1024);
+        const harness = dependencies();
+        harness.readEbayDetail.mockImplementationOnce(async (input) => {
+            const current = detail(input);
+            return {
+                ...current,
+                actual: {
+                    ...current.actual,
+                    content: { ...current.actual.content, descriptionHtml: description },
+                },
+            };
+        });
+        const result = await createListingWorkspaceReader(harness.dependencies)(rowId);
+        expect(result.ebayDetail?.actual.content.descriptionHtml).toBe(description);
+        expect(result.ebayDetail?.actual.content.descriptionHtml).toHaveLength(150 * 1024);
+    });
     it('returns Shopify-only state without requesting eBay authority', async () => {
         const shopifyOnly = row({
             ebay: {
@@ -326,16 +343,26 @@ describe('read-only listing workspace reader', () => {
         expect(harness.readEbayDetail).not.toHaveBeenCalled();
     });
     it('fails generically when token acquisition, detail read, or returned identity is wrong', async () => {
-        const tokenFailure = dependencies();
-        tokenFailure.getEbayAccessToken.mockRejectedValueOnce(new Error('Bearer secret upstream'));
-        await expect(createListingWorkspaceReader(tokenFailure.dependencies)(rowId))
-            .rejects.toEqual(new ListingWorkspaceReaderError('unavailable'));
-        const mismatch = dependencies();
-        mismatch.readEbayDetail.mockImplementationOnce(async (input) => ({
-            ...detail(input),
-            identity: { ...detail(input).identity, listingId: '999' },
-        }));
-        await expect(createListingWorkspaceReader(mismatch.dependencies)(rowId))
-            .rejects.toMatchObject({ kind: 'unavailable', message: 'Listing workspace is unavailable' });
+        const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        try {
+            const tokenFailure = dependencies();
+            tokenFailure.getEbayAccessToken.mockRejectedValueOnce(new Error('Bearer secret upstream'));
+            await expect(createListingWorkspaceReader(tokenFailure.dependencies)(rowId))
+                .rejects.toEqual(new ListingWorkspaceReaderError('unavailable'));
+            const mismatch = dependencies();
+            mismatch.readEbayDetail.mockImplementationOnce(async (input) => ({
+                ...detail(input),
+                identity: { ...detail(input).identity, listingId: '999' },
+            }));
+            await expect(createListingWorkspaceReader(mismatch.dependencies)(rowId))
+                .rejects.toMatchObject({ kind: 'unavailable', message: 'Listing workspace is unavailable' });
+            const output = log.mock.calls.flat().join(' ');
+            expect(output).toContain('LISTING_CATALOG_DETAIL_CAPTURE_FAILED');
+            expect(output).toContain('LISTING_CATALOG_DETAIL_BINDING_FAILED');
+            expect(output).not.toMatch(/secret|Bearer|999|CAN3570|147502/i);
+        }
+        finally {
+            log.mockRestore();
+        }
     });
 });

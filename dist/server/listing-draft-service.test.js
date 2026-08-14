@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { initializeListingControlStore } from '../listing-control-store/index.js';
+import { initializeListingControlStore, openListingControlStoreReadOnly, } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE, LISTING_DRAFT_SERVICE_TESTING, ListingDraftServiceError, createListingDraftService, parseSaveListingDraftRequest, } from './listing-draft-service.js';
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0))
@@ -205,6 +205,41 @@ describe('local listing draft service', () => {
         expect(created.sections.listing.title.draft).toBe('Operator Title');
         await expect(service.save(parseSaveListingDraftRequest(body(semanticBase)), 'shopify-user:1'))
             .rejects.toMatchObject({ code: 'LISTING_DRAFT_STALE' });
+    });
+    it('saves an active divergent draft while preserving a long inherited eBay description', async () => {
+        const description = 'X'.repeat(300_000);
+        const current = workspace({ description, title: 'Shopify New', ebayTitle: 'eBay Old' });
+        const db = databasePath();
+        const service = createListingDraftService({
+            readWorkspace: async () => current,
+            databasePath: () => db,
+            writerInstanceReady: () => true,
+            now: () => new Date('2026-08-13T22:02:00.000Z'),
+            uuid: () => 'long-description-revision',
+        });
+        const opened = await service.get(current.catalog.id, true);
+        const created = await service.save(parseSaveListingDraftRequest(body({
+            sourceDigest: opened.base.sourceDigest,
+            ebayDigest: opened.base.ebayDigest,
+        })), 'shopify-user:1');
+        expect(created.revision).toMatchObject({ revisionNumber: 1, state: 'draft' });
+        expect(created.sections.content.description).toMatchObject({
+            ebay: description,
+            draft: null,
+        });
+        const persisted = openListingControlStoreReadOnly({
+            databasePath: db,
+            expectedScope: LISTING_DRAFT_SCOPE,
+        });
+        const descriptionField = persisted.getLatestRevision('gid://shopify/ProductVariant/55396000563491')?.fields.find((field) => field.field === 'description');
+        expect(descriptionField).toMatchObject({
+            observedValue: description,
+            proposedValue: description,
+            proposedSource: 'observed',
+        });
+        expect(persisted.verifyAudit()).toMatchObject({ valid: true, recordCount: 2 });
+        persisted.verifyIntegrity();
+        persisted.close();
     });
     it('keeps admin/config and the local route free of commerce writers and provider credentials', () => {
         const sourceRoot = path.dirname(fileURLToPath(import.meta.url));

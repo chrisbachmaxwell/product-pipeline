@@ -4,7 +4,7 @@ This runbook governs the local-draft SQLite store only. It does not authorize an
 
 ## Release state
 
-The source contains an explicit schema-version-2 `listing-control-admin` initializer/verifier and a runtime local-draft route. This document does not claim that release is deployed or configured. The current read-only Railway preflight observed one replica with its volume mounted at `/data`, but found both the intended database and parent directory absent; the environment variables below were not set.
+PR #10 merge `e0d59cd904209c30e815f6cf6a2e4e784208efc5` is deployed and the dedicated Production store is initialized/configured. Public health served that exact build at `2026-08-14T15:55:08.152Z` with provider writes disabled. This proves deployment identity and local-store readiness only: signed-in verification found the separate open listing-workspace incident documented in `docs/LISTING_WORKSPACE_INCIDENTS.md`.
 
 ## Fixed Production scope and path
 
@@ -13,13 +13,23 @@ The source contains an explicit schema-version-2 `listing-control-admin` initial
 - Railway project: `f8c050c9-11c3-4611-8805-092289941aa4`
 - Railway environment: `544d8896-b900-48ad-b42e-95272e1ad397`
 - Railway service: `32ef14cc-2c85-447d-a890-53c422d81de1`
-- Intended Railway volume mount: `/data`
-- Intended private parent: `/data/product-pipeline` with mode `0700`
-- Intended database: `/data/product-pipeline/listing-control.sqlite` with mode `0600`
+- Railway volume mount: `/data`
+- Private parent: `/data/product-pipeline` with mode `0700`
+- Database: `/data/product-pipeline/listing-control.sqlite` with mode `0600`
 - Required configuration: `LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite`
 - Save-enable acknowledgement: `LISTING_CONTROL_SINGLE_WRITER_ACK=product-pipeline-local-draft-v1`
 
 The acknowledgement is an operator assertion, not a lock or proof. Do not set it until the topology gate below passes.
+
+## Verified Production initialization — 2026-08-14
+
+- Topology: one ProductPipeline replica on the exact service above, using the `/data` persistent volume.
+- Store: `/data/product-pipeline/listing-control.sqlite`, regular mode-`0600` file, canonical schema version 2, fixed Used Camera Gear scope, `local_draft_only`, admin `verify` successful, `externalWritesPerformed: 0`.
+- Baseline backup: `/data/product-pipeline/backups/listing-control-initial-e0d59cd.sqlite`, regular mode-`0600` file, 114,688 bytes, admin `verify` successful.
+- Backup SHA-256: `40c89f9e9beeac1ac36c33822ca59b3cc9057b99d062811b79cb00c6e88b4fc7`.
+- Remote/provider effects: zero. Initialization and backup changed only the dedicated Railway volume.
+
+Do not overwrite or reinitialize this Production path. All future administration follows the verification/backup gates below.
 
 ## Preconditions
 
@@ -70,6 +80,7 @@ Stop local-draft saving and investigate if verification fails, the service topol
 | **Listing is Unknown or Needs attention** | Wait for a successful complete refresh or resolve the exact mapping/identity exception before drafting; do not infer a match or current value. |
 | **Request is invalid** | Save only a supported, substantive override that passes field/image limits. A no-op or inheritance-only first revision is intentionally refused. |
 | **Access is not allowed** | Reload the exact embedded app in Shopify Admin and obtain a fresh verified session. API keys, test principals, copied URLs, or another store cannot authorize the append. |
+| **Verified listing workspace is unavailable** | First distinguish store failure from listing-read parsing. For the deployed `e0d59cd` long-description incident, the store verifies successfully; do not reinitialize it or rotate credentials. Keep the item unavailable and follow `docs/LISTING_WORKSPACE_INCIDENTS.md`. |
 
 ## Backup and restore gates
 

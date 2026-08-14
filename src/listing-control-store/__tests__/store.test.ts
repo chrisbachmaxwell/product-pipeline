@@ -477,6 +477,72 @@ describe('listing control store', () => {
     store.close();
   });
 
+  it('persists the exact 500,000-codepoint and 2,000,000-byte description boundary', () => {
+    const { databasePath, store } = initialized();
+    const description = '📷'.repeat(500_000);
+    expect(Buffer.byteLength(description, 'utf8')).toBe(2_000_000);
+    const descriptionFields = fields({
+      description: {
+        observedValue: description,
+        observedDigest: sha256Digest({ state: 'value', value: description }),
+        proposedValue: description,
+        proposedDigest: sha256Digest({ state: 'value', value: description }),
+        proposedSource: 'observed',
+      },
+    });
+    const created = store.createRevision(revision({ fields: descriptionFields }));
+    expect(created.fields.find((field) => field.field === 'description')).toMatchObject({
+      observedValue: description,
+      proposedValue: description,
+      proposedSource: 'observed',
+    });
+    expect(store.verifyAudit()).toMatchObject({ valid: true, recordCount: 2 });
+    store.verifyIntegrity();
+    store.close();
+
+    const reopened = openListingControlStoreReadOnly({ databasePath, expectedScope: scope });
+    expect(reopened.getRevision('revision-1')?.revisionDigest).toBe(created.revisionDigest);
+    expect(reopened.verifyAudit()).toMatchObject({ valid: true, recordCount: 2 });
+    reopened.close();
+  });
+
+  it('rejects over-limit and control-bearing descriptions without widening other large fields', () => {
+    const { store } = initialized();
+    const descriptionField = (value: string): ListingFieldInput[] => fields({
+      description: {
+        observedValue: value,
+        observedDigest: sha256Digest({ state: 'value', value }),
+        proposedValue: value,
+        proposedDigest: sha256Digest({ state: 'value', value }),
+        proposedSource: 'observed',
+      },
+    });
+    expectCode(() => store.createRevision(revision({
+      fields: descriptionField('X'.repeat(500_001)),
+    })), 'INVALID_INPUT');
+    const multibyteOverflow = '€'.repeat(Math.floor(2_000_000 / 3) + 1);
+    expect(Buffer.byteLength(multibyteOverflow, 'utf8')).toBeGreaterThan(2_000_000);
+    expectCode(() => store.createRevision(revision({
+      fields: descriptionField(multibyteOverflow),
+    })), 'INVALID_INPUT');
+    expectCode(() => store.createRevision(revision({
+      fields: descriptionField('safe\u0001unsafe'),
+    })), 'INVALID_INPUT');
+
+    const oversizedImages = 'X'.repeat((256 * 1024) + 1);
+    expectCode(() => store.createRevision(revision({ fields: fields({
+      images: {
+        sourceValue: oversizedImages,
+        sourceDigest: sha256Digest({ state: 'value', value: oversizedImages }),
+        proposedValue: oversizedImages,
+        proposedDigest: sha256Digest({ state: 'value', value: oversizedImages }),
+        proposedSource: 'source',
+      },
+    }) })), 'INVALID_INPUT');
+    expect(store.verifyAudit()).toMatchObject({ valid: true, recordCount: 1 });
+    store.close();
+  });
+
   it('does not allow createRevision to assert review or stale truth', () => {
     const { store } = initialized();
     expectCode(() => store.createRevision(revision({ state: 'reviewed' })), 'INVALID_INPUT');

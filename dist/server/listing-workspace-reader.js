@@ -1,3 +1,4 @@
+import { warn } from '../utils/logger.js';
 import { MAX_LIVE_LISTING_SNAPSHOT_AGE_MS, } from './live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, getRuntimeEbayReadToken, hasUnresolvedLiveListingRefreshFailure, } from './live-listing-catalog-source.js';
 import { createEnrichedListingDetailReader, EBAY_LISTING_DETAIL_MARKETPLACE_ID, EBAY_LISTING_DETAIL_SELLER_ID, } from './enriched-listing-detail.js';
@@ -155,14 +156,17 @@ export function createListingWorkspaceReader(dependencies) {
                 ebayDetail = await dependencies.readEbayDetail(detailRequest(row, rawSku, accessToken));
             }
             catch {
+                warn('LISTING_CATALOG_DETAIL_CAPTURE_FAILED');
                 return unavailable();
             }
             if (ebayDetail.identity.listingId !== row.ebay.listingId
                 || ebayDetail.identity.sku !== mapping.inventorySku
                 || ebayDetail.identity.offerId !== row.ebay.offerId
                 || ebayDetail.identity.shopifyProductId !== mapping.shopifyProductId
-                || ebayDetail.identity.shopifyVariantId !== mapping.shopifyVariantId)
+                || ebayDetail.identity.shopifyVariantId !== mapping.shopifyVariantId) {
+                warn('LISTING_CATALOG_DETAIL_BINDING_FAILED');
                 return unavailable();
+            }
         }
         return Object.freeze({
             schemaVersion: 1,

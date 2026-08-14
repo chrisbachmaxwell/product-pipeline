@@ -202,7 +202,8 @@ export declare function createEnrichedListingDetailReader(dependencies?: Readonl
 }>): (input: EnrichedListingDetailRequest) => Promise<EnrichedListingDetail>;
 export declare const ENRICHED_LISTING_DETAIL_TESTING: Readonly<{
     MAX_RESPONSE_BYTES: number;
-    MAX_DESCRIPTION_BYTES: 100000;
+    MAX_DESCRIPTION_CHARACTERS: 500000;
+    MAX_DESCRIPTION_UTF8_BYTES: 2000000;
     REQUEST_TIMEOUT_MS: 20000;
 }>;
 export {};
