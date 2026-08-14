@@ -6,7 +6,9 @@ const EBAY_INVENTORY_ORIGIN = 'https://api.ebay.com';
 const EBAY_TRADING_COMPATIBILITY_LEVEL = '1349';
 const MAX_RESPONSE_BYTES = 3 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
-const MAX_DESCRIPTION_BYTES = 100_000;
+// Preserve eBay's accepted description range while keeping a separate decoded-body safety bound.
+const MAX_DESCRIPTION_CHARACTERS = 500_000;
+const MAX_DESCRIPTION_UTF8_BYTES = 2_000_000;
 const EBAY_IMAGE_HOSTS = new Set([
     'i.ebayimg.com',
     'thumbs.ebaystatic.com',
@@ -59,11 +61,20 @@ function optionalString(value, maximum) {
         : presentString(value, maximum);
 }
 function optionalDescription(value) {
-    const description = optionalString(value, MAX_DESCRIPTION_BYTES);
-    if (description !== null && Buffer.byteLength(description, 'utf8') > MAX_DESCRIPTION_BYTES) {
+    if (value === undefined || value === null || value === '')
+        return null;
+    if (typeof value !== 'string'
+        || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value)
+        || Buffer.byteLength(value, 'utf8') > MAX_DESCRIPTION_UTF8_BYTES) {
         return fail('INVALID_RESPONSE');
     }
-    return description;
+    let characters = 0;
+    for (const _character of value) {
+        characters += 1;
+        if (characters > MAX_DESCRIPTION_CHARACTERS)
+            return fail('INVALID_RESPONSE');
+    }
+    return value;
 }
 function identifierString(value, maximum = 128) {
     if (value === undefined || value === null || value === '')
@@ -821,6 +832,7 @@ export function createEnrichedListingDetailReader(dependencies = {}) {
 }
 export const ENRICHED_LISTING_DETAIL_TESTING = Object.freeze({
     MAX_RESPONSE_BYTES,
-    MAX_DESCRIPTION_BYTES,
+    MAX_DESCRIPTION_CHARACTERS,
+    MAX_DESCRIPTION_UTF8_BYTES,
     REQUEST_TIMEOUT_MS,
 });

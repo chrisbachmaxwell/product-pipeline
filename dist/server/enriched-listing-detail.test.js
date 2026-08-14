@@ -256,7 +256,7 @@ describe('enriched eBay listing detail reader', () => {
             name: 'EnrichedListingDetailError', code,
         });
     });
-    it('enforces declared and streamed response caps and rejects unsafe render URLs/content', async () => {
+    it('enforces declared and streamed response caps and rejects unsafe render URLs', async () => {
         const oversized = vi.fn(async () => xmlResponse('', {
             headers: { 'Content-Length': String(ENRICHED_LISTING_DETAIL_TESTING.MAX_RESPONSE_BYTES + 1) },
         }));
@@ -269,14 +269,53 @@ describe('enriched eBay listing detail reader', () => {
         });
         await expect(createEnrichedListingDetailReader({ fetchImpl: unsafeImageFetch })(legacyRequest()))
             .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-        const hugeDescription = 'X'.repeat(ENRICHED_LISTING_DETAIL_TESTING.MAX_DESCRIPTION_BYTES + 1);
-        const hugeDescriptionFetch = (async (_url, init) => {
+    });
+    it('preserves a 150 KiB eBay description without truncation', async () => {
+        const description = 'X'.repeat(150 * 1024);
+        const fetchImpl = (async (_url, init) => {
             return new Headers(init?.headers).get('X-EBAY-API-CALL-NAME') === 'GetUser'
                 ? xmlResponse(getUserXml())
-                : xmlResponse(getItemXml({ description: hugeDescription }));
+                : xmlResponse(getItemXml({ description }));
         });
-        await expect(createEnrichedListingDetailReader({ fetchImpl: hugeDescriptionFetch })(legacyRequest()))
+        const result = await createEnrichedListingDetailReader({ fetchImpl })(legacyRequest());
+        expect(result.actual.content.descriptionHtml).toBe(description);
+        expect(result.actual.content.descriptionHtml).toHaveLength(150 * 1024);
+    });
+    it('accepts the eBay maximum of 500,000 description characters', async () => {
+        const description = 'X'.repeat(ENRICHED_LISTING_DETAIL_TESTING.MAX_DESCRIPTION_CHARACTERS);
+        const fetchImpl = (async (_url, init) => {
+            return new Headers(init?.headers).get('X-EBAY-API-CALL-NAME') === 'GetUser'
+                ? xmlResponse(getUserXml())
+                : xmlResponse(getItemXml({ description }));
+        });
+        const result = await createEnrichedListingDetailReader({ fetchImpl })(legacyRequest());
+        expect(result.actual.content.descriptionHtml).toBe(description);
+    });
+    it('rejects 500,001 description characters', async () => {
+        const description = 'X'.repeat(ENRICHED_LISTING_DETAIL_TESTING.MAX_DESCRIPTION_CHARACTERS + 1);
+        const fetchImpl = (async (_url, init) => {
+            return new Headers(init?.headers).get('X-EBAY-API-CALL-NAME') === 'GetUser'
+                ? xmlResponse(getUserXml())
+                : xmlResponse(getItemXml({ description }));
+        });
+        await expect(createEnrichedListingDetailReader({ fetchImpl })(legacyRequest()))
             .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    });
+    it('rejects a multibyte description above the separate UTF-8 safety cap', async () => {
+        const bytesPerCharacter = Buffer.byteLength('€', 'utf8');
+        const description = '€'.repeat(Math.floor(ENRICHED_LISTING_DETAIL_TESTING.MAX_DESCRIPTION_UTF8_BYTES / bytesPerCharacter) + 1);
+        expect(Buffer.byteLength(description, 'utf8'))
+            .toBeGreaterThan(ENRICHED_LISTING_DETAIL_TESTING.MAX_DESCRIPTION_UTF8_BYTES);
+        const fetchImpl = (async (_url, init) => {
+            return new Headers(init?.headers).get('X-EBAY-API-CALL-NAME') === 'GetUser'
+                ? xmlResponse(getUserXml())
+                : xmlResponse(getItemXml({ description }));
+        });
+        await expect(createEnrichedListingDetailReader({ fetchImpl })(legacyRequest()))
+            .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    });
+    it('rejects prohibited control characters in a decoded eBay description', () => {
+        expect(() => parseInventoryOfferControl(offer({ listingDescription: 'safe\u0001unsafe' }), { offerId, sku, listingId, marketplaceId: 'EBAY_US' })).toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
     });
     it('uses a fixed generic error surface that never reflects a token or upstream body', () => {
         const error = new EnrichedListingDetailError('REMOTE_READ_FAILED');

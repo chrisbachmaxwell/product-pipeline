@@ -27,7 +27,11 @@ const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const GENESIS_HASH = 'GENESIS';
 const MAX_SCALAR_VALUE_BYTES = 4 * 1024;
 const MAX_LARGE_VALUE_BYTES = 256 * 1024;
-const MAX_REVISION_VALUE_BYTES = 512 * 1024;
+const MAX_DESCRIPTION_CHARACTERS = 500_000;
+const MAX_DESCRIPTION_UTF8_BYTES = 2_000_000;
+const MAX_NON_DESCRIPTION_REVISION_VALUE_BYTES = 512 * 1024;
+// Covers JSON encoding across source/override/proposed/observed without widening other fields.
+const MAX_DESCRIPTION_REVISION_VALUE_BYTES = 16 * 1024 * 1024;
 const PROHIBITED_VALUE_PATTERNS = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}={0,2}\b/i,
@@ -290,10 +294,26 @@ function checkValue(value: string | null, field: string, lane: string): string |
     throw new ListingControlStoreError('INVALID_INPUT', `${field} ${lane} value is invalid`);
   }
   const bytes = Buffer.byteLength(value, 'utf8');
-  const maximum = ['description', 'images', 'item_specifics'].includes(field)
-    ? MAX_LARGE_VALUE_BYTES
-    : MAX_SCALAR_VALUE_BYTES;
-  if (bytes > maximum || /[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
+  let invalidSize = false;
+  if (field === 'description') {
+    invalidSize = bytes > MAX_DESCRIPTION_UTF8_BYTES;
+    if (!invalidSize) {
+      let characters = 0;
+      for (const _character of value) {
+        characters += 1;
+        if (characters > MAX_DESCRIPTION_CHARACTERS) {
+          invalidSize = true;
+          break;
+        }
+      }
+    }
+  } else {
+    const maximum = ['images', 'item_specifics'].includes(field)
+      ? MAX_LARGE_VALUE_BYTES
+      : MAX_SCALAR_VALUE_BYTES;
+    invalidSize = bytes > maximum;
+  }
+  if (invalidSize || /[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
     throw new ListingControlStoreError('INVALID_INPUT', `${field} ${lane} value is invalid`);
   }
   if (PROHIBITED_VALUE_PATTERNS.some((pattern) => pattern.test(value))) {
@@ -446,7 +466,12 @@ function canonicalFields(inputs: readonly ListingFieldInput[]): readonly Listing
     throw new ListingControlStoreError('INVALID_INPUT', 'Every listing field must be supplied exactly once');
   }
   const fields = LISTING_FIELD_NAMES.map((field) => byName.get(field)!);
-  if (Buffer.byteLength(stableJson(fields), 'utf8') > MAX_REVISION_VALUE_BYTES) {
+  const descriptionFields = fields.filter((field) => field.field === 'description');
+  const nonDescriptionFields = fields.filter((field) => field.field !== 'description');
+  const descriptionBytes = Buffer.byteLength(stableJson(descriptionFields), 'utf8');
+  const nonDescriptionBytes = Buffer.byteLength(stableJson(nonDescriptionFields), 'utf8');
+  if (descriptionBytes > MAX_DESCRIPTION_REVISION_VALUE_BYTES
+    || nonDescriptionBytes > MAX_NON_DESCRIPTION_REVISION_VALUE_BYTES) {
     throw new ListingControlStoreError('INVALID_INPUT', 'Listing revision is too large');
   }
   return Object.freeze(fields.map((field) => Object.freeze({ ...field })));

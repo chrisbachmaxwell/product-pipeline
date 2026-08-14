@@ -1,3 +1,4 @@
+import { warn } from '../utils/logger.js';
 import {
   MAX_LIVE_LISTING_SNAPSHOT_AGE_MS,
   type LiveListingCatalogRow,
@@ -231,13 +232,17 @@ export function createListingWorkspaceReader(
           detailRequest(row, rawSku!, accessToken),
         );
       } catch {
+        warn('LISTING_CATALOG_DETAIL_CAPTURE_FAILED');
         return unavailable();
       }
       if (ebayDetail.identity.listingId !== row.ebay.listingId
         || ebayDetail.identity.sku !== mapping.inventorySku
         || ebayDetail.identity.offerId !== row.ebay.offerId
         || ebayDetail.identity.shopifyProductId !== mapping.shopifyProductId
-        || ebayDetail.identity.shopifyVariantId !== mapping.shopifyVariantId) return unavailable();
+        || ebayDetail.identity.shopifyVariantId !== mapping.shopifyVariantId) {
+        warn('LISTING_CATALOG_DETAIL_BINDING_FAILED');
+        return unavailable();
+      }
     }
 
     return Object.freeze({
