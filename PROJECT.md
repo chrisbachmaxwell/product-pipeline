@@ -348,6 +348,12 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-14: Railway Deployment Health Gate (Source Candidate)
+
+- Updated `railway.json` to Railway's current official schema URL and declared the existing credential-free `/health` route as the deployment healthcheck with a 300-second startup window. This lets Railway require HTTP `200` before activating a new release.
+- Added a focused regression that reads the checked-in Railway configuration, requests its configured path from the real Express health router, and verifies HTTP `200` plus the shadow-read-only/no-external-writes/no-historical-backfill policy projection.
+- This source-only hardening changed no application route or commerce behavior, secret, listing-control store, migration, Shopify/eBay/Marketplace Connect state, or deployment. Railway release configuration and live health behavior remain separate post-merge evidence.
+
 ### 2026-08-14: Bounded AI Listing Proposals and Local Approval (Source Candidate)
 
 - Added an isolated listing proposal agent that automatically prepares one proposal for an eligible listing and selects only among verified Shopify, eBay, and saved local-draft values. Its strict structured response covers title, category, condition, condition description, description, images, fulfillment/payment/return policy IDs, and merchant location; it cannot invent a new value.

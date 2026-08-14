@@ -56,6 +56,7 @@ The dedicated local draft/proposal store and operator-owned `.local/` files are 
 The following surfaces report the effective policy:
 
 - `GET /health` includes the migration phase, effective mode, responsibility ownership, quarantine channels, and build commit when Railway supplies it.
+- `railway.json` uses Railway's [current config schema](https://railway.com/railway.schema.json) and declares `/health` as the [deployment healthcheck](https://docs.railway.com/deployments/healthchecks) with a 300-second startup window. Railway must receive HTTP `200` before activating a new deployment. This is an activation gate, not continuous monitoring, and the checked-in setting is not deployment proof until Railway reports the resulting release configuration.
 - `GET /api/migration/status` combines the immutable policy with local-only ledger counts and flags stale legacy settings as exceptions. A stale database toggle is reported as `effectiveBehavior: quarantined`; it does not override the policy.
 - The Overview, Listings, Orders, Reconciliation, and Settings pages show the Marketplace Connect owner, shadow status, missing watermark, and absence of remote parity proof. Listings may additionally prepare, adjust, and approve a local proposal; it cannot apply, publish, or otherwise send that reviewed content to a commerce provider.
 - The Reconciliation page reports local-ledger evidence only. Zero local exceptions is not cross-platform parity.
