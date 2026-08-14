@@ -22,6 +22,11 @@ import {
   type ShopifyDatabaseDiagnosticDependencies,
   type ShopifyDatabaseDiagnosticReport,
 } from './database-diagnostic.js';
+import {
+  repairFixedProductionShopifyDatabasePermissions,
+  type ShopifyDatabasePermissionRepairDependencies,
+  type ShopifyDatabasePermissionRepairReport,
+} from './database-permission-repair.js';
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -32,6 +37,7 @@ export type ShopifyCredentialAdminDependencies = Readonly<{
   openStore?: (databasePath: string) => LegacyShopifyTokenStore;
   readStoredRow?: (databasePath: string) => ShopifyAuthTokenRow;
   databaseDiagnostic?: ShopifyDatabaseDiagnosticDependencies;
+  databasePermissionRepair?: ShopifyDatabasePermissionRepairDependencies;
   output?: (value: string) => void;
   setExitCode?: (code: number) => void;
 }>;
@@ -157,6 +163,13 @@ export function executeShopifyCredentialDatabaseDiagnostic(
   return diagnoseFixedProductionShopifyDatabase(environment, dependencies);
 }
 
+export function executeShopifyCredentialDatabasePermissionRepair(
+  environment: Environment = process.env,
+  dependencies: ShopifyDatabasePermissionRepairDependencies = {},
+): ShopifyDatabasePermissionRepairReport {
+  return repairFixedProductionShopifyDatabasePermissions(environment, dependencies);
+}
+
 export function buildShopifyCredentialAdminProgram(
   dependencies: ShopifyCredentialAdminDependencies = {},
 ): Command {
@@ -184,6 +197,16 @@ export function buildShopifyCredentialAdminProgram(
       );
       output(JSON.stringify(result));
       if (result.status !== 'database_diagnostic_verified') setExitCode(1);
+    });
+  program.command('repair-shopify-credential-database-permissions')
+    .description('Repair only the exact Production legacy database mode to 0600')
+    .action(() => {
+      const result = executeShopifyCredentialDatabasePermissionRepair(
+        dependencies.environment,
+        dependencies.databasePermissionRepair,
+      );
+      output(JSON.stringify(result));
+      if (result.status !== 'permission_repair_verified') setExitCode(1);
     });
   program.command('rotate-shopify-access-token')
     .description('Rotate the one exact Production Shopify access-token row')
