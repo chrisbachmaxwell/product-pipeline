@@ -341,14 +341,15 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
-### 2026-08-14: Local Draft Production Initialization and Open Description-Cap Incident
+### 2026-08-14: Local Draft Production Initialization and Description-Cap Incident Closure
 
 - PR #10 merged the local listing-draft workspace to `main` as `e0d59cd904209c30e815f6cf6a2e4e784208efc5`. Railway deployed that exact revision, and public `/health` served it at `2026-08-14T15:55:08.152Z` with `shadow-read-only`, external writes disabled, historical backfill disabled, and a null order watermark.
 - On the existing one-replica Railway service, the `/data/product-pipeline` parent was created mode `0700`; `/data/product-pipeline/listing-control.sqlite` was explicitly initialized and verified as schema version 2, `local_draft_only`, mode `0600`, with `externalWritesPerformed: 0`. Runtime did not initialize, migrate, or repair it.
 - Created and verified the pre-draft baseline backup `/data/product-pipeline/backups/listing-control-initial-e0d59cd.sqlite` (mode `0600`, 114,688 bytes, SHA-256 `40c89f9e9beeac1ac36c33822ca59b3cc9057b99d062811b79cb00c6e88b4fc7`). This proves a verified local-store baseline only, not Shopify/eBay state.
 - Live signed-in verification then found an open read-path incident: the exact listing workspace returned `503` after successful eBay reads because a local artificial 100,000-byte description validator rejected valid Production descriptions of 147,595 and 144,209 bytes. The failure occurred during local response parsing; it performed zero provider writes and did not change the initialized draft store.
 - Local repair candidate is complete and independently reviewed: description parsing and store validation now share an exact 500,000-Unicode-code-point / 2,000,000-UTF-8-byte limit while the separate total-response bound remains fail-closed. Regressions preserve a 150 KiB description, accept the exact 500,000-code-point boundary, reject overflow/control input, preserve a 300 KB inherited description through save/reopen/audit/integrity checks, and retain the smaller non-description caps. The full 48-file / 504-test suite, `npm run build`, and `git diff --check` pass.
-- Production repair remains **pending**. No repair commit, merge, deployment, exact health revision, signed-in affected-item proof, or post-deploy store re-verification exists yet. The durable incident checklist and handoff are in `docs/LISTING_WORKSPACE_INCIDENTS.md`; do not call the incident fixed from local evidence alone.
+- PR #11 committed the repair as `bab71a5` and merged it to `main` as `789dc7782cea5da33a5fddd8617d1c364cbb783e` at `2026-08-14T16:11:47Z`. Railway deployment `623f7eca-74ae-4ff8-8bec-99a761767793` succeeded with one replica and the `/data` volume; public `/health` served the exact merge at `2026-08-14T16:13:06.046Z` with shadow read-only mode, external writes false, and historical backfill false.
+- Post-deploy admin verification returned schema version 2, `local_draft_only`, and `externalWritesPerformed: 0`. In the signed-in app, Aputure variant `gid://shopify/ProductVariant/54881767358755` / SKU `APD0170A3B-OB` / eBay listing `147232036779` opened a complete Mapping, Listing, Content, and Delivery workspace with a description summary and Edit control. No Save was clicked and no provider write occurred. LWI-2026-08-14-001 is closed; the closure evidence and bounded next-task handoff are in `docs/LISTING_WORKSPACE_INCIDENTS.md`.
 
 ### 2026-08-13: Authenticated Local Listing Draft Workspace (Source Candidate)
 

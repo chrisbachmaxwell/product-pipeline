@@ -4,7 +4,7 @@ This runbook governs the local-draft SQLite store only. It does not authorize an
 
 ## Release state
 
-PR #10 merge `e0d59cd904209c30e815f6cf6a2e4e784208efc5` is deployed and the dedicated Production store is initialized/configured. Public health served that exact build at `2026-08-14T15:55:08.152Z` with provider writes disabled. This proves deployment identity and local-store readiness only: signed-in verification found the separate open listing-workspace incident documented in `docs/LISTING_WORKSPACE_INCIDENTS.md`.
+PR #11 repair `bab71a5` merged to `main` as `789dc7782cea5da33a5fddd8617d1c364cbb783e`. Railway serves that repair on the existing one-replica `/data` deployment, the dedicated Production store remains verified, and the long-description listing-workspace incident is closed. This proves the observed read/mapping flow with the Edit control visible; no Save or provider write was exercised.
 
 ## Fixed Production scope and path
 
@@ -30,6 +30,15 @@ The acknowledgement is an operator assertion, not a lock or proof. Do not set it
 - Remote/provider effects: zero. Initialization and backup changed only the dedicated Railway volume.
 
 Do not overwrite or reinitialize this Production path. All future administration follows the verification/backup gates below.
+
+## Verified post-repair state — 2026-08-14
+
+- Merge: PR #11 repair commit `bab71a5`, merged as `789dc7782cea5da33a5fddd8617d1c364cbb783e` at `2026-08-14T16:11:47Z`.
+- Railway: deployment `623f7eca-74ae-4ff8-8bec-99a761767793` succeeded with one replica and the `/data` volume.
+- Health: public `/health` served the exact merge at `2026-08-14T16:13:06.046Z` with shadow read-only mode, external writes false, and historical backfill false.
+- Store: admin `verify` returned schema version 2, `local_draft_only`, and `externalWritesPerformed: 0`.
+- Signed-in proof: Shopify variant `gid://shopify/ProductVariant/54881767358755`, SKU `APD0170A3B-OB`, and eBay listing `147232036779` opened complete Mapping, Listing, Content, and Delivery sections with a description summary and Edit control.
+- Mutation boundary: no Save was clicked and no provider write occurred.
 
 ## Preconditions
 
@@ -80,7 +89,7 @@ Stop local-draft saving and investigate if verification fails, the service topol
 | **Listing is Unknown or Needs attention** | Wait for a successful complete refresh or resolve the exact mapping/identity exception before drafting; do not infer a match or current value. |
 | **Request is invalid** | Save only a supported, substantive override that passes field/image limits. A no-op or inheritance-only first revision is intentionally refused. |
 | **Access is not allowed** | Reload the exact embedded app in Shopify Admin and obtain a fresh verified session. API keys, test principals, copied URLs, or another store cannot authorize the append. |
-| **Verified listing workspace is unavailable** | First distinguish store failure from listing-read parsing. For the deployed `e0d59cd` long-description incident, the store verifies successfully; do not reinitialize it or rotate credentials. Keep the item unavailable and follow `docs/LISTING_WORKSPACE_INCIDENTS.md`. |
+| **Verified listing workspace is unavailable** | First distinguish store failure from listing-read parsing. Do not reinitialize the store or rotate credentials merely because a workspace read fails. Follow the handling and regression pattern in `docs/LISTING_WORKSPACE_INCIDENTS.md`; the `e0d59cd` long-description incident is a closed example. |
 
 ## Backup and restore gates
 

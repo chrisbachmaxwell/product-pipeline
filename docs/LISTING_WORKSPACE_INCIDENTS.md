@@ -4,7 +4,7 @@ Every Production listing-workspace failure gets a credential-free record, a safe
 
 ## LWI-2026-08-14-001 — Valid long eBay descriptions rejected
 
-**Status:** Open with a green local repair candidate. Source, regressions, full tests/build/diff check, and independent review are complete; commit, merge, deployment, exact health revision, signed-in affected-item proof, and Production store re-verification are pending.
+**Status:** Closed on 2026-08-14. Source, regressions, review, merge, deployment, exact health revision, signed-in affected-item proof, and Production store re-verification are complete.
 
 ### Impact
 
@@ -19,7 +19,7 @@ Every Production listing-workspace failure gets a credential-free record, a safe
 - `src/server/enriched-listing-detail.ts` imposed `MAX_DESCRIPTION_BYTES = 100_000` and classified any longer description as `INVALID_RESPONSE`.
 - The route translated that local validation failure to the credential-safe generic `503`. The artificial content limit—not provider availability, authentication, seller identity, mapping, or the schema-version-2 local store—caused the outage.
 
-### Immediate handling
+### Handling used while open
 
 1. Keep every provider writer quarantined. Do not publish, revise, retry a mutation, refresh credentials, replace the store, or change Marketplace Connect.
 2. Treat the provider read as successful but the local workspace result as unavailable; do not show or infer partial listing state.
@@ -34,23 +34,24 @@ Every Production listing-workspace failure gets a credential-free record, a safe
 - [x] A 300 KB inherited description saves without becoming an override or being truncated, then survives revision reopen, audit, and store-integrity verification.
 - [x] Full local verification passed: 48 test files / 504 tests, `npm run build`, and `git diff --check`.
 - [x] Independent code review reported no remaining repair-candidate finding.
-- [ ] Create and record the exact repair commit; no commit is claimed yet.
-- [ ] Merge and deploy that exact commit; verify Railway serves it on `/health`.
-- [ ] A signed-in operator opens an affected listing and observes a complete mapping/detail/draft workspace with the expected current description summary.
-- [ ] The post-deploy check records zero external/provider writes and confirms the Production local draft store still verifies as schema version 2.
+- [x] Repair commit `bab71a5` merged through PR #11 as `789dc7782cea5da33a5fddd8617d1c364cbb783e` at `2026-08-14T16:11:47Z`.
+- [x] Railway deployment `623f7eca-74ae-4ff8-8bec-99a761767793` succeeded with one replica and `/data`; public `/health` served the exact merge at `2026-08-14T16:13:06.046Z` with shadow read-only mode, external writes false, and historical backfill false.
+- [x] A signed-in operator opened Aputure variant `gid://shopify/ProductVariant/54881767358755`, SKU `APD0170A3B-OB`, eBay listing `147232036779`, and observed complete Mapping, Listing, Content, and Delivery sections with a description summary and Edit control.
+- [x] No Save was clicked and no provider write occurred. Post-deploy admin `verify` returned schema version 2, `local_draft_only`, and `externalWritesPerformed: 0`.
 
-Until every checked item has evidence, the incident remains open. Source changes or green local tests alone are not a Production repair.
+All closure gates have evidence. The incident is closed; its prevention limits and regressions remain required for future listing-workspace changes.
 
-### Handoff for a new Codex task
+### Handoff for the next Codex task
 
 ```text
-Objective: Repair LWI-2026-08-14-001 without weakening response safety.
-Authorized scope: Listing detail/workspace read parsing, focused regressions, required docs, reviewed merge/deploy/live read verification. No provider mutation.
-Production baseline: PR #10 merge e0d59cd904209c30e815f6cf6a2e4e784208efc5; public health served that build at 2026-08-14T15:55:08.152Z.
-Store baseline: one replica; /data/product-pipeline/listing-control.sqlite; schema 2; local_draft_only; mode 0600; verified; zero external writes.
+Objective: Continue bounded provider-control work from the deployed read/mapping/local-draft foundation.
+Verified deployment: PR #11 repair bab71a5 merged as 789dc7782cea5da33a5fddd8617d1c364cbb783e; Railway deployment 623f7eca-74ae-4ff8-8bec-99a761767793 SUCCESS; public health served the exact merge at 2026-08-14T16:13:06.046Z.
+Verified workspace: Aputure variant gid://shopify/ProductVariant/54881767358755; SKU APD0170A3B-OB; eBay listing 147232036779; complete Mapping, Listing, Content, and Delivery with description summary. Edit control visible but not opened; no Save clicked.
+Store baseline: one replica; /data volume; /data/product-pipeline/listing-control.sqlite; schema 2; local_draft_only; mode 0600; admin verified; externalWritesPerformed 0.
 Backup: /data/product-pipeline/backups/listing-control-initial-e0d59cd.sqlite; mode 0600; 114688 bytes; SHA-256 40c89f9e9beeac1ac36c33822ca59b3cc9057b99d062811b79cb00c6e88b4fc7.
-Failure: valid 147595-byte and 144209-byte eBay descriptions pass remote reads but fail the local 100000-byte description cap, producing listing-workspace 503.
-Current repair status: local source candidate independently reviewed and green at 48 files/504 tests, npm run build, and diff-check; exact repair commit, merge, deploy, health revision, signed-in affected-item proof, and Production store re-verification pending.
-External systems touched by diagnosis: bounded read-only eBay/Shopify and Railway health/administration evidence only; zero provider writes.
-Safest next action: freeze and commit the reviewed candidate, merge/deploy that exact commit, verify health, re-open the same affected workspace, then re-verify schema 2 and zero provider writes before closing this incident.
+Ownership boundary: Marketplace Connect remains the sole order, price, and inventory owner. Listing and mapping ownership remain unverified.
+Authorized next scope: one exact provider-control responsibility and target at a time, beginning with read/compare/propose/preview and the required ownership, approval, audit, idempotency, reconciliation, observation, and rollback design. No provider write is authorized by this handoff.
+Forbidden shortcuts: no generic two-way sync, Apply/Publish action, ownership transfer, Marketplace Connect change, historical order import, or broad retry/backfill without a separate reviewed and explicitly approved slice.
+External effects in the closed incident: bounded reads and local store administration only; zero provider writes.
+Safest next action: select one listing responsibility and exact target, prove the current owner and both eBay management paths, then prepare a proposal-only control slice and its approval/reconciliation/rollback packet before requesting any mutation authority.
 ```
