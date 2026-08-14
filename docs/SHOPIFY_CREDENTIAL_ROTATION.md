@@ -34,6 +34,29 @@ Use this exact transition order before the fixed commands:
 3. In one reviewed configuration change, set primary to the new secret, previous to the old secret, and a canonical cutoff no more than one hour ahead; redeploy and prove that current- and previous-secret App Bridge/webhook verification both succeed without logging a signature or secret.
 4. Only after dual inbound verification succeeds, generate/store the one-hour dashboard refresh token, set the dedicated expiring single-writer acknowledgement, and run preflight, rotate, and verify below.
 
+### Already-staged recovery exception — SCR-2026-08-14-001
+
+This exception applies only to `SCR-2026-08-14-001`. It does not change the default sequence for future rotations.
+
+A clean secondary Shopify secret was generated and the Railway control plane was committed with the new secret as primary and the old secret as previous before the dual-verifier release was deployed. The active Production deployment still uses its prior old-primary variable snapshot. No access-token rotation, old-secret revocation, or database mutation has occurred.
+
+The reviewed dual-verifier release may therefore deploy directly with the new primary and old previous secret only when all of these gates pass:
+
+- Production deployment `259f4262-0943-4c26-a47b-6b722f73fc75`, revision `234e0cb4de8aeafe494492f7039317915969b9aa`, remains the verified rollback target and its rollback action is available.
+- The old secret remains Shopify's oldest unrevoked secret and the new secondary remains unrevoked.
+- `SHOPIFY_CLIENT_SECRET` is the new secret, `SHOPIFY_PREVIOUS_CLIENT_SECRET` is the old secret, and `SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC` is canonical UTC, no more than one hour ahead, with enough time for deployment verification and at least 15 minutes remaining at any later rotation dispatch.
+- `SHOPIFY_ROTATION_REFRESH_TOKEN` and the credential-rotation acknowledgement are not set until the candidate deployment passes its release and inbound verification gates.
+- `LISTING_CONTROL_SINGLE_WRITER_ACK` remains absent.
+- Marketplace Connect ownership and every commerce-writer quarantine remain unchanged.
+
+After deployment, prove the exact release revision, one settled active replica with the `/data` volume, the public shadow-read-only health contract, a signed-in authenticated App Bridge read, and a real old-secret-signed webhook recorded only through the fixed verified-shadow log. An HTTP `200` webhook response alone is not proof because the endpoint acknowledges before verification.
+
+Before the single provider token-rotation request, any failed release, authentication, webhook, or configuration proof requires rollback to deployment `259f4262-0943-4c26-a47b-6b722f73fc75`, restoring its old image and custom-variable snapshot, and a stop. Railway rollback is forbidden at or after the provider token-rotation request or after old-secret revocation; those states require the documented forward reconciliation procedure.
+
+Because Shopify signs with its oldest unrevoked secret, pre-revocation live traffic directly proves the old/previous path. The reviewed current/previous regressions prove the current path, and successful fresh-token verification proves that the configured new secret is valid with Shopify. Immediately after old-secret revocation and the new-only deployment, prove signed-in App Bridge and new-secret webhook verification live. Do not claim both live paths were observed before revocation.
+
+Once this incident closes, this exception expires and future rotations must use the default sequence above.
+
 During the Shopify overlap window:
 
 - `SHOPIFY_CLIENT_SECRET` is the current/new secret and is the only client secret used for token acquisition.

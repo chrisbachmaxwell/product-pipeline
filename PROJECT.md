@@ -343,13 +343,20 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-14: Shopify Already-Staged Credential-Recovery Decision
+
+- Recorded the incident-only recovery exception for `SCR-2026-08-14-001`: a clean Shopify secondary secret and protected Railway new-primary/old-previous values were already committed while active deployment `259f4262-0943-4c26-a47b-6b722f73fc75` still runs revision `234e0cb4de8aeafe494492f7039317915969b9aa` with its old-primary snapshot.
+- This documentation authorizes no execution. A direct candidate deployment is permitted only after draft PR #15's incident-state documentation is independently reviewed and a fresh canonical cutoff no more than one hour ahead satisfies the exact release, authentication, webhook, topology, quarantine, and dispatch-window gates.
+- Rollback to deployment `259f4262-0943-4c26-a47b-6b722f73fc75` is allowed only before the provider token-rotation request. At or after that request, or after old-secret revocation, the runbook requires forward reconciliation rather than rollback, restore, or blind retry.
+- Runtime source, compiled output, and package metadata remain unchanged from `3309dfd`; this documentation amendment performed no provider, Railway, database, or commerce mutation.
+
 ### 2026-08-14: Shopify Credential-Rotation Safety Candidate
 
 - Added exact-store inbound Shopify request verification with canonical HS256 App Bridge JWT validation and webhook HMAC validation across the primary secret plus one distinct optional previous secret. The previous-secret window is canonical, hard-capped at one hour, and ignored at cutoff without disrupting primary verification. Production and ambiguous environments now use environment credentials only; token acquisition remains primary-only and uses fixed redacted bounded transport.
 - Added the standalone compiled `credential-admin` with option-free preflight, rotate, and verify commands pinned to the exact Production Railway project/environment/service, Used Camera Gear store/app, `/data/ebaysync.db`, and the canonical four read-only scopes. It is never imported or mounted by the server and has no provider commerce-write adapter.
 - Rotation requires an active dual-verifier overlap and dedicated single-writer acknowledgement with at least 15 minutes remaining at the one no-retry provider dispatch. It verifies the current authority, creates a complete private mode-`0600` SQLite backup with bounded logical whole-database content proof, verifies the fresh authority, compare-and-swaps only the exact Shopify row in an `IMMEDIATE` transaction, reopens read-only, and verifies the committed token. The temporary dashboard refresh token is never persisted to the database or token row; its protected Railway variable remains operator-managed until explicit cleanup.
 - Added fixed value-free failure codes, explicit output truth for one provider credential mutation versus zero external commerce writes, adversarial source/compiled tests, the operator runbook, release-maintenance incident `SCR-2026-08-14-001`, and concise Settings help that keeps credential controls out of the app.
-- Local verification passed the focused 8-file / 88-test security suite, full 54-file / 582-test suite, TypeScript no-emit check, Production build, compiled command help and malformed-argument redaction checks, and whitespace checks. This is an uncommitted source/build candidate only: no provider, Railway, Production database, Marketplace Connect, or Lightspeed call or mutation was performed; nothing was deployed or live-verified.
+- Local verification passed the focused 8-file / 88-test security suite, full 54-file / 582-test suite, TypeScript no-emit check, Production build, compiled command help and malformed-argument redaction checks, and whitespace checks. The source/build candidate was committed and pushed as `3309dfd` on draft PR #15 and independently source-reviewed GO; it is not merged, deployed, or live-verified. The source work performed no provider, Railway, Production database, Marketplace Connect, or Lightspeed mutation.
 
 ### 2026-08-14: Local Draft Production Initialization and Description-Cap Incident Closure
 
