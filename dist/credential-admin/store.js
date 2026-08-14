@@ -5,16 +5,7 @@ import Database from 'better-sqlite3';
 import { assertLegacyDatabaseIdentity, assertLegacyDatabasePath, PRODUCT_PIPELINE_PRODUCTION_RUNTIME, } from './config.js';
 import { rotationDenied, translateRotationError } from './errors.js';
 import { CANONICAL_SHOPIFY_SCOPE_TEXT, } from './network.js';
-const EXPECTED_COLUMNS = Object.freeze([
-    Object.freeze({ name: 'id', type: 'INTEGER', notnull: 0, pk: 1 }),
-    Object.freeze({ name: 'platform', type: 'TEXT', notnull: 1, pk: 0 }),
-    Object.freeze({ name: 'access_token', type: 'TEXT', notnull: 1, pk: 0 }),
-    Object.freeze({ name: 'refresh_token', type: 'TEXT', notnull: 0, pk: 0 }),
-    Object.freeze({ name: 'scope', type: 'TEXT', notnull: 0, pk: 0 }),
-    Object.freeze({ name: 'expires_at', type: 'INTEGER', notnull: 0, pk: 0 }),
-    Object.freeze({ name: 'created_at', type: 'INTEGER', notnull: 1, pk: 0 }),
-    Object.freeze({ name: 'updated_at', type: 'INTEGER', notnull: 1, pk: 0 }),
-]);
+import { inspectCanonicalAuthTokensSchema, SHOPIFY_ACCESS_TOKEN_COMPARE_AND_SWAP_SQL, } from './database-contract.js';
 const SAFE_TOKEN = /^[^\s\u0000-\u001f\u007f]+$/u;
 const CONTENT_PROOF_MAX_TABLES = 256;
 const CONTENT_PROOF_MAX_COLUMNS_PER_TABLE = 256;
@@ -87,30 +78,7 @@ function equalRows(left, right) {
         && left.updatedAt === right.updatedAt;
 }
 function verifySchema(database) {
-    const table = database.prepare(`SELECT type FROM sqlite_schema WHERE name = 'auth_tokens'`).all();
-    if (table.length !== 1 || table[0]?.type !== 'table')
-        return rotationDenied('database-denied');
-    const columns = database.pragma('table_info(auth_tokens)');
-    if (columns.length !== EXPECTED_COLUMNS.length || columns.some((column, index) => {
-        const expected = EXPECTED_COLUMNS[index];
-        return column.name !== expected.name
-            || column.type.toUpperCase() !== expected.type
-            || column.notnull !== expected.notnull
-            || column.pk !== expected.pk;
-    }))
-        return rotationDenied('database-denied');
-    const indexes = database.pragma('index_list(auth_tokens)');
-    if (indexes.length !== 1 || indexes[0]?.unique !== 1
-        || indexes[0].origin !== 'u' || indexes[0].partial !== 0) {
-        return rotationDenied('database-denied');
-    }
-    const indexedColumns = database.pragma(`index_info('${indexes[0].name.replaceAll("'", "''")}')`);
-    if (indexedColumns.length !== 1 || indexedColumns[0]?.name !== 'platform') {
-        return rotationDenied('database-denied');
-    }
-    const triggers = database.prepare(`SELECT name FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = 'auth_tokens'`).all();
-    const foreignKeys = database.pragma('foreign_key_list(auth_tokens)');
-    if (triggers.length !== 0 || foreignKeys.length !== 0) {
+    if (!inspectCanonicalAuthTokensSchema(database).canonical) {
         return rotationDenied('database-denied');
     }
     if (database.pragma('integrity_check', { simple: true }) !== 'ok') {
@@ -379,11 +347,7 @@ export class LegacyShopifyTokenStore {
                 }
                 if (!equalCatalog(catalogProof(this.#database, this.#initialRow.id, 'concurrency-denied'), this.#initialProtectedCatalog))
                     return rotationDenied('concurrency-denied');
-                const result = this.#database.prepare(`UPDATE auth_tokens
-           SET access_token = ?, refresh_token = NULL, scope = ?, expires_at = NULL, updated_at = ?
-           WHERE id = ? AND platform = 'shopify' AND access_token = ?
-             AND refresh_token IS NULL AND scope IS ? AND expires_at IS NULL
-             AND created_at = ? AND updated_at = ?`).run(fresh.accessToken, fresh.scope, updatedAt, this.#initialRow.id, this.#initialRow.accessToken, this.#initialRow.rawScope, this.#initialRow.createdAt, this.#initialRow.updatedAt);
+                const result = this.#database.prepare(SHOPIFY_ACCESS_TOKEN_COMPARE_AND_SWAP_SQL).run(fresh.accessToken, fresh.scope, updatedAt, this.#initialRow.id, this.#initialRow.accessToken, this.#initialRow.rawScope, this.#initialRow.createdAt, this.#initialRow.updatedAt);
                 if (result.changes !== 1)
                     return rotationDenied('concurrency-denied');
                 const after = row(this.#database);

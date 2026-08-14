@@ -17,6 +17,11 @@ import {
   type ShopifyAuthTokenRow,
 } from './store.js';
 import { rotationDenied } from './errors.js';
+import {
+  diagnoseFixedProductionShopifyDatabase,
+  type ShopifyDatabaseDiagnosticDependencies,
+  type ShopifyDatabaseDiagnosticReport,
+} from './database-diagnostic.js';
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -26,7 +31,9 @@ export type ShopifyCredentialAdminDependencies = Readonly<{
   network?: ShopifyCredentialRotationNetworkDependencies;
   openStore?: (databasePath: string) => LegacyShopifyTokenStore;
   readStoredRow?: (databasePath: string) => ShopifyAuthTokenRow;
+  databaseDiagnostic?: ShopifyDatabaseDiagnosticDependencies;
   output?: (value: string) => void;
+  setExitCode?: (code: number) => void;
 }>;
 
 const AUTHORITY_PROOF = Object.freeze({
@@ -143,10 +150,18 @@ export async function executeShopifyCredentialRotationVerify(
   return SHOPIFY_ROTATION_VERIFY_OUTPUT;
 }
 
+export function executeShopifyCredentialDatabaseDiagnostic(
+  environment: Environment = process.env,
+  dependencies: ShopifyDatabaseDiagnosticDependencies = {},
+): ShopifyDatabaseDiagnosticReport {
+  return diagnoseFixedProductionShopifyDatabase(environment, dependencies);
+}
+
 export function buildShopifyCredentialAdminProgram(
   dependencies: ShopifyCredentialAdminDependencies = {},
 ): Command {
   const output = dependencies.output ?? ((value: string) => process.stdout.write(`${value}\n`));
+  const setExitCode = dependencies.setExitCode ?? ((code: number) => { process.exitCode = code; });
   const now = dependencies.now ?? (() => new Date());
   const config = (requireRefreshToken: boolean) => loadShopifyCredentialRotationConfig({
     environment: dependencies.environment,
@@ -159,6 +174,16 @@ export function buildShopifyCredentialAdminProgram(
     .description('Read-only verification of the exact stored Production Shopify authority')
     .action(async () => {
       output(JSON.stringify(await executeShopifyCredentialRotationPreflight(config(false), dependencies)));
+    });
+  program.command('diagnose-shopify-credential-database')
+    .description('Read-only fixed-stage diagnosis of the exact Production legacy database')
+    .action(() => {
+      const result = executeShopifyCredentialDatabaseDiagnostic(
+        dependencies.environment,
+        dependencies.databaseDiagnostic,
+      );
+      output(JSON.stringify(result));
+      if (result.status !== 'database_diagnostic_verified') setExitCode(1);
     });
   program.command('rotate-shopify-access-token')
     .description('Rotate the one exact Production Shopify access-token row')

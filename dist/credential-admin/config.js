@@ -30,6 +30,21 @@ export const SHOPIFY_ROTATION_ENVIRONMENT = Object.freeze({
     singleWriterAckExpiresAtUtc: 'SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC',
     listingWriterAck: 'LISTING_CONTROL_SINGLE_WRITER_ACK',
 });
+export function assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(environment = process.env) {
+    if (environment.NODE_ENV !== 'production'
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.projectId]
+            !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.projectId
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.environmentId]
+            !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.environmentId
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.serviceId]
+            !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.serviceId
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePath]
+            !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.clientId]
+            !== PRODUCT_PIPELINE_SHOPIFY_IDENTITY.clientId
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined)
+        return rotationDenied('configuration-denied');
+}
 function credential(value, minimumLength) {
     if (typeof value !== 'string'
         || value.length < minimumLength

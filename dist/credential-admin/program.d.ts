@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { type ShopifyCredentialRotationConfig } from './config.js';
 import { type ShopifyCredentialRotationNetworkDependencies } from './network.js';
 import { LegacyShopifyTokenStore, type ShopifyAuthTokenRow } from './store.js';
+import { type ShopifyDatabaseDiagnosticDependencies, type ShopifyDatabaseDiagnosticReport } from './database-diagnostic.js';
 type Environment = Readonly<Record<string, string | undefined>>;
 export type ShopifyCredentialAdminDependencies = Readonly<{
     environment?: Environment;
@@ -9,7 +10,9 @@ export type ShopifyCredentialAdminDependencies = Readonly<{
     network?: ShopifyCredentialRotationNetworkDependencies;
     openStore?: (databasePath: string) => LegacyShopifyTokenStore;
     readStoredRow?: (databasePath: string) => ShopifyAuthTokenRow;
+    databaseDiagnostic?: ShopifyDatabaseDiagnosticDependencies;
     output?: (value: string) => void;
+    setExitCode?: (code: number) => void;
 }>;
 export declare const SHOPIFY_ROTATION_PREFLIGHT_OUTPUT: Readonly<{
     databaseIntegrityVerified: true;
@@ -59,5 +62,6 @@ export declare const SHOPIFY_ROTATION_VERIFY_OUTPUT: Readonly<{
 export declare function executeShopifyCredentialRotationPreflight(config: ShopifyCredentialRotationConfig, dependencies?: ShopifyCredentialAdminDependencies): Promise<typeof SHOPIFY_ROTATION_PREFLIGHT_OUTPUT>;
 export declare function executeShopifyCredentialRotation(config: ShopifyCredentialRotationConfig, dependencies?: ShopifyCredentialAdminDependencies): Promise<typeof SHOPIFY_ROTATION_SUCCESS_OUTPUT>;
 export declare function executeShopifyCredentialRotationVerify(config: ShopifyCredentialRotationConfig, dependencies?: ShopifyCredentialAdminDependencies): Promise<typeof SHOPIFY_ROTATION_VERIFY_OUTPUT>;
+export declare function executeShopifyCredentialDatabaseDiagnostic(environment?: Environment, dependencies?: ShopifyDatabaseDiagnosticDependencies): ShopifyDatabaseDiagnosticReport;
 export declare function buildShopifyCredentialAdminProgram(dependencies?: ShopifyCredentialAdminDependencies): Command;
 export {};
