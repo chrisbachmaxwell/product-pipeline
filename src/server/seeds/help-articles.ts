@@ -369,6 +369,14 @@ The value is append-only local draft state. It does not update eBay, and this re
     sort_order: 4,
     answer: `No. Credential rotation is intentionally absent from the app. An authorized operator must use the separate reviewed maintenance procedure; it cannot publish or change commerce data. Do not retry a failed rotation or paste credentials into ProductPipeline.`,
   },
+  {
+    question: 'Can ProductPipeline repair Shopify database permissions?',
+    category: 'Settings',
+    sort_order: 6,
+    answer: `No repair control is exposed in the app. An authorized operator may use the separate reviewed, fixed-purpose maintenance procedure only after the read-only diagnostic identifies the exact permission gate.
+
+That procedure can invoke exactly one descriptor-bound file-mode change to \`0600\`. It has no automatic rollback, restore, or second permission-write path and cannot edit database content, read or rotate a token, contact Shopify, or change any product, listing, order, price, or inventory state. If its outcome is interrupted or uncertain, stop: run the documented option-free read-only diagnostic, health check, and expected DB-backed app read, and never retry the repair blindly. Never use a generic \`chmod\` command or paste credentials into ProductPipeline.`,
+  },
 ];
 
 /**

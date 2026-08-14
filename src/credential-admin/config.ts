@@ -17,6 +17,7 @@ export const PRODUCT_PIPELINE_PRODUCTION_RUNTIME = Object.freeze({
   databasePath: '/data/ebaysync.db',
   backupDirectory: '/data/product-pipeline/credential-backups/shopify',
   singleWriterAck: 'product-pipeline-shopify-credential-rotation-v1',
+  databasePermissionRepairEffectiveUid: 0,
 });
 
 export const SHOPIFY_ROTATION_ENVIRONMENT = Object.freeze({
@@ -32,6 +33,10 @@ export const SHOPIFY_ROTATION_ENVIRONMENT = Object.freeze({
   singleWriterAck: 'SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK',
   singleWriterAckExpiresAtUtc: 'SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC',
   listingWriterAck: 'LISTING_CONTROL_SINGLE_WRITER_ACK',
+  databasePermissionRepairReplicaCount:
+    'SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT',
+  databasePermissionRepairVolumeMountCount:
+    'SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT',
 } as const);
 
 export type ShopifyCredentialRotationConfig = Readonly<{
@@ -63,6 +68,36 @@ export function assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(
     || environment[SHOPIFY_ROTATION_ENVIRONMENT.clientId]
       !== PRODUCT_PIPELINE_SHOPIFY_IDENTITY.clientId
     || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined
+  ) return rotationDenied('configuration-denied');
+}
+
+/**
+ * Narrower than the read-only diagnostic binding because this maintenance
+ * command changes one inode's permission metadata. The two explicit topology
+ * assertions must be supplied by the operator from the Railway deployment
+ * view; neither a replica id nor a mounted path alone proves exclusivity.
+ */
+export function assertShopifyCredentialDatabasePermissionRepairRuntimeBinding(
+  environment: Environment = process.env,
+): void {
+  if (
+    environment.NODE_ENV !== 'production'
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.projectId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.projectId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.environmentId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.environmentId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.serviceId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.serviceId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePath]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.clientId]
+      !== PRODUCT_PIPELINE_SHOPIFY_IDENTITY.clientId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.singleWriterAck] !== undefined
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.singleWriterAckExpiresAtUtc] !== undefined
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.refreshToken] !== undefined
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePermissionRepairReplicaCount] !== '1'
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePermissionRepairVolumeMountCount] !== '1'
   ) return rotationDenied('configuration-denied');
 }
 

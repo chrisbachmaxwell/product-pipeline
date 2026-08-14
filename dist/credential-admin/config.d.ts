@@ -6,6 +6,7 @@ export declare const PRODUCT_PIPELINE_PRODUCTION_RUNTIME: Readonly<{
     databasePath: "/data/ebaysync.db";
     backupDirectory: "/data/product-pipeline/credential-backups/shopify";
     singleWriterAck: "product-pipeline-shopify-credential-rotation-v1";
+    databasePermissionRepairEffectiveUid: 0;
 }>;
 export declare const SHOPIFY_ROTATION_ENVIRONMENT: Readonly<{
     readonly clientId: "SHOPIFY_CLIENT_ID";
@@ -20,6 +21,8 @@ export declare const SHOPIFY_ROTATION_ENVIRONMENT: Readonly<{
     readonly singleWriterAck: "SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK";
     readonly singleWriterAckExpiresAtUtc: "SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC";
     readonly listingWriterAck: "LISTING_CONTROL_SINGLE_WRITER_ACK";
+    readonly databasePermissionRepairReplicaCount: "SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT";
+    readonly databasePermissionRepairVolumeMountCount: "SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT";
 }>;
 export type ShopifyCredentialRotationConfig = Readonly<{
     databasePath: typeof PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath;
@@ -33,6 +36,13 @@ export type ShopifyCredentialRotationConfig = Readonly<{
 }>;
 type Environment = Readonly<Record<string, string | undefined>>;
 export declare function assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(environment?: Environment): void;
+/**
+ * Narrower than the read-only diagnostic binding because this maintenance
+ * command changes one inode's permission metadata. The two explicit topology
+ * assertions must be supplied by the operator from the Railway deployment
+ * view; neither a replica id nor a mounted path alone proves exclusivity.
+ */
+export declare function assertShopifyCredentialDatabasePermissionRepairRuntimeBinding(environment?: Environment): void;
 export type LegacyDatabaseIdentity = Readonly<{
     dev: number;
     ino: number;
