@@ -2,7 +2,7 @@
 
 This runbook is for the fixed Production ProductPipeline app and store only. It rotates one stored Shopify access token after a Shopify client-secret change. It cannot create or update a product, listing, order, price, inventory level, fulfillment, policy, mapping, or Marketplace Connect setting. Marketplace Connect remains the incumbent writer.
 
-The credential administrator is a standalone compiled command. It is not mounted or imported by the web server. Never paste a client secret, access token, dashboard refresh token, webhook signature, or command output containing authority into a terminal argument, log, ticket, chat, repository file, or runbook.
+The credential administrator is a standalone compiled command shared with a separately isolated eBay maintenance family. The three Shopify commands remain option-free at the command root; eBay commands are selected only by the exact literal `ebay` family token. The dispatcher does not share provider configuration, authority, network calls, mutation logic, or recovery state. It is not mounted or imported by the web server. Invoke it only through the direct `node dist/credential-admin/index.js ...` commands below. No npm package-script wrapper is supported because npm can print forwarded arguments before the administrator can reject and redact them. Never paste a client secret, access token, dashboard refresh token, webhook signature, or command output containing authority into a terminal argument, log, ticket, chat, repository file, or runbook.
 
 ## Release and authority gate
 
@@ -21,7 +21,7 @@ The command fails closed unless all of these nonsecret Production pins match:
 
 The mounted live catalog currently consumes `read_products` and `read_inventory`; bounded evidence/order attribution consumes `read_orders`; and `read_fulfillments` is retained because it is part of the existing `shopify.app.toml` and legacy installation contract. Credential maintenance deliberately makes no scope change. Any later narrowing is a separate reviewed authority migration.
 
-Before maintenance, independently confirm one Railway replica, one attached `/data` volume, no other process or operator writing the legacy database, and no in-progress listing-control administration. The database must already be a regular, non-symlink, single-link mode-`0600` file with a private non-writable parent and no `-journal`, `-wal`, or `-shm` sidecar. Runtime never initializes, migrates, repairs, or replaces this database.
+Before maintenance, independently confirm one Railway replica, one attached `/data` volume, no other process or operator writing the legacy database, and no in-progress listing-control or eBay credential administration. `LISTING_CONTROL_SINGLE_WRITER_ACK` and `EBAY_ROTATION_NEW_CERT_ID` must both be absent; any value, including empty, fails closed. The database must already be a regular, non-symlink, single-link mode-`0600` file with a private non-writable parent and no `-journal`, `-wal`, or `-shm` sidecar. Runtime never initializes, migrates, repairs, or replaces this database.
 
 The preflight also requires exactly one Shopify `auth_tokens` row. Its `refresh_token` and `expires_at` must be `NULL`; its `scope` may be `NULL` or the exact four canonical scopes in any order. Any other row count, refresh/expiry metadata, missing/extra/write scope, or malformed value returns fixed `token-row-denied` before backup, provider rotation, or database mutation. Correct the discrepancy through a separately reviewed data-reconciliation plan; do not edit it ad hoc.
 
@@ -72,7 +72,7 @@ Set the following through the protected Production variable control plane, never
 - `SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC`: canonical UTC, no more than one hour ahead and at least 15 minutes beyond dispatch
 - `DATABASE_PATH=/data/ebaysync.db`
 
-`NODE_ENV` must be `production`; the exact Railway project, environment, and service variables must be present; and `LISTING_CONTROL_SINGLE_WRITER_ACK` must be absent. Production and ambiguous environments never fall back to a local credential file.
+`NODE_ENV` must be `production`; the exact Railway project, environment, and service variables must be present; and both `LISTING_CONTROL_SINGLE_WRITER_ACK` and `EBAY_ROTATION_NEW_CERT_ID` must be absent. Production and ambiguous environments never fall back to a local credential file.
 
 ## Fixed command sequence
 

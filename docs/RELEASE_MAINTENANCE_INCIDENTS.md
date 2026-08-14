@@ -1,10 +1,12 @@
 # Release Maintenance Incidents
 
+The compiled credential administrator also contains a separately isolated eBay command family. Shopify commands remain option-free at the root and fail closed whenever `EBAY_ROTATION_NEW_CERT_ID` is present; this incident does not authorize overlapping eBay maintenance or share either provider's authority or recovery state. Only direct `node dist/credential-admin/index.js ...` invocation is supported. The npm argument-forwarding wrapper is absent because npm can print appended raw arguments before parser redaction.
+
 This ledger records credential-free release-maintenance incidents and prevention work. It does not authorize provider commerce writes, credential changes, deployment, or retry.
 
 ## SCR-2026-08-14-001 — Shopify secret rotation was not fail-safe
 
-**Status:** source candidate committed as `3309dfd` on draft PR #15; focused/full source verification and independent source review passed, while incident-state documentation review, deployment, and Production execution remain required.
+**Status:** source commits `3309dfd` and `8187878` merged through PR #15 as `579cc077a6ca4930fbfa88d415b80cc04c12d963`; focused/full source verification and independent source review passed. Merge identity is not deployment proof, and the incident still requires exact deployment, Production verification/execution, variable cleanup, and credential-free closure evidence.
 
 **Trigger:** planned ProductPipeline Shopify credential maintenance exposed that the existing runtime verified inbound Shopify requests with only one client secret and had no fixed, audited way to rotate the one stored Production Shopify access token after a client-secret change.
 

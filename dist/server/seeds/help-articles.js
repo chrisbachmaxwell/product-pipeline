@@ -326,9 +326,21 @@ ProductPipeline verifies the exact store and app with four read-only scopes: pro
         answer: `The eBay read connection is preconfigured. Listings verifies the expected Production seller before every completed catalog check and shows **Unavailable** if authorization fails. There is no token display, paste box, or connection control in this release. Never paste an eBay token into Help or support messages.`,
     },
     {
-        question: 'How do I edit condition descriptions?',
+        question: 'How is the eBay Production credential rotated?',
         category: 'Settings',
         sort_order: 3,
+        answer: `Credential rotation is an administrator-only maintenance procedure; it is not available in the Shopify app and does not enable a commerce writer. The direct compiled Node maintenance utility keeps Shopify commands at its option-free root and selects eBay only through the exact literal \`ebay\` command family; the dispatcher shares no provider authority, network, mutation, or recovery logic. No npm wrapper is supported because npm can print forwarded arguments before rejection.
+
+The standalone administrator accepts only the exact Production seller \`usedcameragear\` and the exact base plus \`sell.inventory\` scopes. It keeps the raw one-use consent state in a private local file, accepts the completed authorization result only through no-echo input, creates a verified private database backup before exchange, validates the new grant with read-only eBay calls, and compare-and-swap updates only the eBay credential row. It file- and directory-syncs both private token digests before that update; verify and revoke refuse a token-swapped row even when its ID, timestamp, and scope are unchanged. An exact commit-pending row can be reconciled after a crash immediately following COMMIT. Its verifier does not mint or persist a token.
+
+An ambiguous failed consent is terminal until an administrator reconciles eBay, gives the exact reset confirmation, and archives the old private evidence without deletion. A SQLite COMMIT error is never assumed to be rollback: after the connection closes, an exact installed row, exact private-backup baseline, or unknown/mismatched ledger is reported as one, zero, or unknown database effect. None is automatically revoked or replayed. A COMMIT-error state can be reset only after provider reconciliation and exact proof that the fixed ledger matches its named private pre-install backup; otherwise exact-bound verify or manual database reconciliation is required. Evidence and lock archive moves sync the destination before the source. Post-commit and stale-lock failures require exit-5 reconciliation. Never retry the install or delete the lock/state manually.
+
+Marketplace Connect remains the order, price, and inventory owner and ProductPipeline's commerce writers remain frozen. Shopify and eBay credential maintenance must never overlap: finish or reconcile Shopify maintenance and remove its temporary acknowledgement and refresh-token variables before an eBay Railway command. Operators must follow \`docs/EBAY_CREDENTIAL_ROTATION.md\`; never paste a Cert, token, authorization result, consent URL, or database value into ProductPipeline, Help, logs, screenshots, or support messages. Source availability is not evidence that the administrator was deployed or that a credential was rotated.`,
+    },
+    {
+        question: 'How do I edit condition descriptions?',
+        category: 'Settings',
+        sort_order: 5,
         answer: `Open an item from **Listings**, select **Edit**, and enter the proposed condition description. Preview the difference, then select **Save draft**.
 
 The value is append-only local draft state. It does not update eBay, and this release has no Apply, Approve, or Publish action.`,
@@ -336,7 +348,7 @@ The value is append-only local draft state. It does not update eBay, and this re
     {
         question: 'How do I vote on feature requests?',
         category: 'Settings',
-        sort_order: 5,
+        sort_order: 6,
         answer: `Feature Requests are a shared wishlist for ProductPipeline improvements. You can upvote requests to help prioritize what gets built next.
 
 **How to vote:**
@@ -353,7 +365,9 @@ The value is append-only local draft state. It does not update eBay, and this re
         question: 'Can I rotate Shopify credentials in ProductPipeline?',
         category: 'Settings',
         sort_order: 4,
-        answer: `No. Credential rotation is intentionally absent from the app. An authorized operator must use the separate reviewed maintenance procedure; it cannot publish or change commerce data. Do not retry a failed rotation or paste credentials into ProductPipeline.`,
+        answer: `No. Credential rotation is intentionally absent from the app. An authorized operator must use the reviewed option-free Shopify commands through the direct compiled Node maintenance utility; no npm wrapper is supported because npm can print forwarded arguments before rejection. The exact literal \`ebay\` family is a separate provider boundary and shares no authority, network, mutation, or recovery logic.
+
+Shopify and eBay credential maintenance must never overlap. The eBay rotation Cert variable must be absent before any Shopify command, including when set to an empty value. The administrator cannot publish or change commerce data. Follow \`docs/SHOPIFY_CREDENTIAL_ROTATION.md\`; do not retry an ambiguous failure or paste credentials into ProductPipeline, Help, logs, screenshots, or support messages.`,
     },
 ];
 /**

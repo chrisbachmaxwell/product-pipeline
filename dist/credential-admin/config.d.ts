@@ -20,6 +20,7 @@ export declare const SHOPIFY_ROTATION_ENVIRONMENT: Readonly<{
     readonly singleWriterAck: "SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK";
     readonly singleWriterAckExpiresAtUtc: "SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC";
     readonly listingWriterAck: "LISTING_CONTROL_SINGLE_WRITER_ACK";
+    readonly ebayRotationCert: "EBAY_ROTATION_NEW_CERT_ID";
 }>;
 export type ShopifyCredentialRotationConfig = Readonly<{
     databasePath: typeof PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath;

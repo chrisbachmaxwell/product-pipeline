@@ -29,6 +29,7 @@ export const SHOPIFY_ROTATION_ENVIRONMENT = Object.freeze({
     singleWriterAck: 'SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK',
     singleWriterAckExpiresAtUtc: 'SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC',
     listingWriterAck: 'LISTING_CONTROL_SINGLE_WRITER_ACK',
+    ebayRotationCert: 'EBAY_ROTATION_NEW_CERT_ID',
 });
 function credential(value, minimumLength) {
     if (typeof value !== 'string'
@@ -51,7 +52,8 @@ function requireRuntimeBinding(environment, now) {
         || environment[SHOPIFY_ROTATION_ENVIRONMENT.serviceId] !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.serviceId
         || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePath] !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath
         || environment[SHOPIFY_ROTATION_ENVIRONMENT.singleWriterAck] !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.singleWriterAck
-        || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined)
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined
+        || environment[SHOPIFY_ROTATION_ENVIRONMENT.ebayRotationCert] !== undefined)
         return rotationDenied('configuration-denied');
     const expiresAtUtc = environment[SHOPIFY_ROTATION_ENVIRONMENT.singleWriterAckExpiresAtUtc];
     if (typeof expiresAtUtc !== 'string')

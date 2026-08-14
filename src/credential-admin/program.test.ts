@@ -371,6 +371,62 @@ describe('fixed-purpose Shopify credential administration', () => {
     expect(help.status).toBe(0);
     expect(help.stderr).toBe('');
     expect(help.stdout).toContain('rotate-shopify-access-token');
+    expect(help.stdout).toContain('credential-admin ebay prepare-consent');
     expect(help.stdout).not.toContain('failed_closed');
+  });
+
+  it('dispatches eBay commands without reflecting rejected arguments', () => {
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const entrypoint = path.resolve(sourceRoot, '../dist/credential-admin/index.js');
+    const sentinel = 'dummy-ebay-secret-never-log';
+    for (const args of [
+      ['ebay', 'install', '--authorization-result', sentinel],
+      ['ebay', `unknown-${sentinel}`],
+      ['ebay', 'verify', '--database', `/tmp/${sentinel}.sqlite`],
+    ]) {
+      const result = spawnSync(process.execPath, [entrypoint, ...args], {
+        encoding: 'utf8',
+        env: {},
+      });
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe('');
+      expect(result.stderr.trim()).toBe(JSON.stringify({
+        ok: false,
+        code: 'EBAY_ROTATION_ARGUMENT_DENIED',
+        environment: 'production',
+        databaseRowsChanged: 0,
+        credentialProviderMutation: false,
+        reconciliationRequired: false,
+        commerceWritesPerformed: 0,
+        historicalOrdersTouched: 0,
+      }));
+      expect(`${result.stdout}${result.stderr}${String(result.error ?? '')}`)
+        .not.toContain(sentinel);
+    }
+  });
+
+  it('exposes no npm argument-forwarding wrapper for credential maintenance', () => {
+    const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const repositoryRoot = path.resolve(sourceRoot, '..');
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const scripts = manifest.scripts ?? {};
+    const wrappers = Object.entries(scripts).filter(([name, command]) =>
+      name.includes('credential-admin') || command.includes('credential-admin'));
+    if (wrappers.length > 0) {
+      throw new Error('credential maintenance npm wrapper must remain absent');
+    }
+
+    const sentinel = 'dummy-package-argv-never-log';
+    const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const result = spawnSync(
+      npmExecutable,
+      ['run', 'credential-admin', '--', `--client-secret=${sentinel}`],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+    );
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}${String(result.error ?? '')}`)
+      .not.toContain(sentinel);
   });
 });

@@ -67,6 +67,8 @@ describe('Shopify credential rotation Production binding', () => {
         { SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK: 'wrong' },
         { LISTING_CONTROL_SINGLE_WRITER_ACK: '' },
         { LISTING_CONTROL_SINGLE_WRITER_ACK: 'product-pipeline-local-draft-v1' },
+        { EBAY_ROTATION_NEW_CERT_ID: '' },
+        { EBAY_ROTATION_NEW_CERT_ID: 'active-ebay-maintenance-cert' },
     ])('rejects a mismatched or ambiguous binding %#', (overrides) => {
         expect(() => load(overrides)).toThrow(expect.objectContaining({
             code: 'configuration-denied',
