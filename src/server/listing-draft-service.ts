@@ -63,7 +63,7 @@ export type ListingDraftDto = Readonly<{
     revisionId: string;
     revisionNumber: number;
     revisionDigest: Digest;
-    state: 'draft';
+    state: 'draft' | 'reviewed';
     createdAtUtc: string;
   }>;
   sections: Readonly<{
@@ -482,6 +482,7 @@ function dto(
   revision: ListingRevision | null,
   saveDraft: boolean,
 ): ListingDraftDto {
+  if (revision?.state === 'stale') unavailable();
   return Object.freeze({
     schemaVersion: 1 as const, mode: 'local_draft_only' as const,
     catalogId: basis.workspace.catalog.id, identity: basis.identity,
@@ -492,7 +493,8 @@ function dto(
     }),
     revision: revision ? Object.freeze({
       revisionId: revision.revisionId, revisionNumber: revision.revisionNumber,
-      revisionDigest: revision.revisionDigest, state: 'draft' as const,
+      revisionDigest: revision.revisionDigest,
+      state: revision.state as 'draft' | 'reviewed',
       createdAtUtc: revision.createdAtUtc,
     }) : null,
     sections: Object.freeze({

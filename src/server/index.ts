@@ -14,6 +14,10 @@ import listingDraftRoutes, {
   listingDraftJsonErrorHandler,
   listingDraftJsonParser,
 } from './routes/listing-drafts.js';
+import listingProposalRoutes, {
+  listingProposalJsonErrorHandler,
+  listingProposalJsonParser,
+} from './routes/listing-proposals.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
 import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
@@ -94,14 +98,17 @@ app.use('/api', apiKeyAuth);
 // legacy handler can load credentials, touch the database, or contact a platform.
 app.use('/api', writerQuarantineMiddleware);
 
-// Parse the sole local mutation only after authentication and the exact
-// quarantine exception. No unauthenticated or quarantined API body is parsed.
+// Parse local control-plane mutations only after authentication and their exact
+// quarantine exceptions. No unauthenticated or quarantined API body is parsed.
 app.post('/api/listing-draft', listingDraftJsonParser);
+app.post('/api/listing-proposal', listingProposalJsonParser);
 app.use(listingDraftJsonErrorHandler);
+app.use(listingProposalJsonErrorHandler);
 
 // --- Routes ---
 app.use(healthRoutes);
 app.use(listingDraftRoutes);
+app.use(listingProposalRoutes);
 app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);
 app.use(shopifyWebhookRoutes);

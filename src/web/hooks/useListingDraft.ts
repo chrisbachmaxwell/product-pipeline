@@ -34,7 +34,7 @@ export interface ListingDraftResponse {
     revisionId: string;
     revisionNumber: number;
     revisionDigest: `sha256:${string}`;
-    state: 'draft';
+    state: 'draft' | 'reviewed';
     createdAtUtc: string;
   };
   sections: {
@@ -194,7 +194,8 @@ export const isListingDraftResponse = (
   const revision = value.revision;
   if (revision !== null && (!record(revision) || typeof revision.revisionId !== 'string'
     || !Number.isSafeInteger(revision.revisionNumber) || Number(revision.revisionNumber) < 1
-    || !digest(revision.revisionDigest) || revision.state !== 'draft'
+    || !digest(revision.revisionDigest)
+    || !['draft', 'reviewed'].includes(String(revision.state))
     || !timestamp(revision.createdAtUtc))) return false;
 
   const price = value.sections.listing.price;

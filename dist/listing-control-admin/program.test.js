@@ -20,7 +20,7 @@ describe('listing control admin', () => {
             now: () => new Date('2026-08-13T20:00:00.000Z'), output: (value) => output.push(value) };
         await buildListingControlAdminProgram(dependencies).parseAsync(['node', 'admin', 'init']);
         expect(fs.statSync(databasePath).mode & 0o777).toBe(0o600);
-        expect(JSON.parse(output[0])).toEqual({ status: 'initialized', schemaVersion: 2,
+        expect(JSON.parse(output[0])).toEqual({ status: 'initialized', schemaVersion: 3,
             mode: 'local_draft_only', externalWritesPerformed: 0 });
         const before = fs.readFileSync(databasePath);
         await expect(buildListingControlAdminProgram(dependencies)

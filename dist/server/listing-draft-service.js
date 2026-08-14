@@ -376,6 +376,8 @@ function leaf(basis, revision, field) {
     });
 }
 function dto(basis, revision, saveDraft) {
+    if (revision?.state === 'stale')
+        unavailable();
     return Object.freeze({
         schemaVersion: 1, mode: 'local_draft_only',
         catalogId: basis.workspace.catalog.id, identity: basis.identity,
@@ -386,7 +388,8 @@ function dto(basis, revision, saveDraft) {
         }),
         revision: revision ? Object.freeze({
             revisionId: revision.revisionId, revisionNumber: revision.revisionNumber,
-            revisionDigest: revision.revisionDigest, state: 'draft',
+            revisionDigest: revision.revisionDigest,
+            state: revision.state,
             createdAtUtc: revision.createdAtUtc,
         }) : null,
         sections: Object.freeze({

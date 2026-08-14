@@ -399,16 +399,25 @@ describe('shadow API allowlist', () => {
     expect(JSON.stringify(response)).not.toContain('secret-value');
   });
 
-  it('separates read capabilities from the configured local-only draft append', async () => {
+  it('separates provider reads from exact configured local control-plane appends', async () => {
     const response = await requestShadowJson('/api/capabilities', liveRouter);
     expect(response.body).toMatchObject({
       remoteReadersMounted: true,
       mutationCapabilities: [],
-      localMutationCapabilities: [expect.objectContaining({
-        id: 'local-listing-draft', mounted: true,
-        availability: 'configuration-required', providerWrite: false,
-        externalWrite: false, approval: false, publishAuthorization: false,
-      })],
+      localMutationCapabilities: [
+        expect.objectContaining({
+          id: 'local-listing-draft', mounted: true,
+          availability: 'configuration-required', providerWrite: false,
+          externalWrite: false, approval: false, publishAuthorization: false,
+        }),
+        expect.objectContaining({
+          id: 'local-ai-listing-proposal', mounted: true,
+          availability: 'configuration-required', automaticPreparation: true,
+          humanLocalApproval: true, aiRequest: true, providerWrite: false,
+          externalWrite: false, applyAuthorization: false,
+          publishAuthorization: false,
+        }),
+      ],
       dataCapabilities: expect.arrayContaining([expect.objectContaining({
         id: 'authoritative-listings', remoteRead: true, externalWrite: false,
         evidenceKind: 'live_read',

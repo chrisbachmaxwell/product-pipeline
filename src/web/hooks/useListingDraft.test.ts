@@ -110,6 +110,14 @@ describe('local listing draft UI contract', () => {
   it('accepts only the exact local-only non-publishing contract', () => {
     expect(isListingDraftResponse(draft(), draft().catalogId)).toBe(true);
     expect(isListingDraftResponse({
+      ...draft(),
+      revision: {
+        revisionId: 'listing-proposal-review:1', revisionNumber: 1,
+        revisionDigest: sha, state: 'reviewed',
+        createdAtUtc: '2026-08-14T18:00:00.000Z',
+      },
+    }, draft().catalogId)).toBe(true);
+    expect(isListingDraftResponse({
       ...draft(), capabilities: { ...draft().capabilities, publish: true },
     }, draft().catalogId)).toBe(false);
     expect(isListingDraftResponse({

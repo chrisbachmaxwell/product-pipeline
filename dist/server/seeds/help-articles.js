@@ -21,7 +21,7 @@ const articles = [
         sort_order: 1,
         answer: `ProductPipeline is being rebuilt as a simple, operator-safe replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration.
 
-**Current phase:** ProductPipeline is a provider-read-only shadow. Marketplace Connect remains the production owner for eBay-to-Shopify order import, price, and inventory. Listings can preview and save a bounded **local draft**, but ProductPipeline cannot publish, sync, import, update, or delete external commerce data in this phase.
+**Current phase:** ProductPipeline is a commerce-provider-read-only shadow. Marketplace Connect remains the production owner for eBay-to-Shopify order import, price, and inventory. Listings can save a local draft and prepare an evidence-bound agent proposal for human local approval, but ProductPipeline cannot Apply, Publish, sync, import, update, or delete external commerce data in this phase.
 
 Use ProductPipeline to review the current ownership policy, local listing/order evidence, exceptions, and offline reconciliation results. AI enrichment, automated image processing, pipeline execution, chat actions, and unsafe bulk-sync controls are legacy scope and are not part of the migration target.
 
@@ -35,7 +35,7 @@ Source, deployment, and live proof are separate: a healthy local screen or consi
 
 **What operators should see:**
 - Overview, Listings, Orders, Reconciliation, and Settings identify the incumbent owner and shadow status.
-- Exact \`POST /api/listing-draft\` may append a local draft after verified Shopify-session authentication. Every other non-read API request is denied with a writer-quarantined response.
+- Exact local draft and local proposal/review requests may append only to the dedicated listing-control store after verified Shopify-session authentication. Every other non-read API request is denied with a writer-quarantined response.
 - The scheduler and cloud watcher are not mounted.
 - Shopify/eBay webhooks dispatch no work and persist no receipt payload. Verified Shopify receipts produce only a sanitized process log; eBay receipts receive a static no-op acknowledgement.
 - Historical eBay orders are never eligible for Shopify creation; the cutover watermark is unset.
@@ -51,7 +51,7 @@ npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 
 The operator CLI accepts strict, redacted, local snapshots and appends digest/count/decision evidence to a local hash-chained audit. It has no remote client or application-database adapter, performs zero external writes, and never proves live parity.
 
-Saving a local draft does not apply, approve, publish, or contact a provider. Do not disable Marketplace Connect, create a cutover watermark, import an order, or try to bypass the quarantine. Those steps require separate review, evidence, and explicit authorization.`,
+Saving or approving local content does not Apply, Publish, or contact a commerce provider. Proposal preparation may call OpenAI with bounded listing evidence; it sends no Shopify/eBay credentials, customer/order data, or tools. Do not disable Marketplace Connect, create a cutover watermark, import an order, or try to bypass the quarantine. Those steps require separate review, evidence, and explicit authorization.`,
     },
     {
         question: 'How do I get started?',
@@ -60,7 +60,7 @@ Saving a local draft does not apply, approve, publish, or contact a provider. Do
         answer: `Start in observation-only mode; do not connect credentials, enable a writer, or use a real order/listing as a test.
 
 1. Open **Overview** and confirm Marketplace Connect remains the price, inventory, and order owner while ProductPipeline's provider writers are quarantined.
-2. Review **Listings** and open an item to compare its Shopify/eBay mapping. You may preview and save a local draft where enabled; nothing is sent to either provider.
+2. Review **Listings** and open an item to compare its Shopify/eBay mapping. For an eligible item, the agent prepares a local proposal automatically. Review the changes, adjust if needed, and approve only when correct. Nothing is sent to Shopify or eBay.
 3. Open **Reconciliation** to review local-ledger exceptions and proof limits. A clean local result is not Shopify/eBay parity.
 4. Open **Settings** to confirm the watermark is missing and external writes/historical backfill are denied. Stale legacy toggles do not override the policy.
 5. For repository-local verification, run \`npm run cli -- status\` and the operator CLI commands in the quarantine help article.
@@ -191,15 +191,27 @@ Check **Pipeline → Images** for a full queue of pending, processing, and compl
 - **Needs attention** means the mapping is missing, ambiguous, or inconsistent.
 - **Unknown** means the latest complete refresh is too old or unavailable.
 
-The catalog refreshes automatically. Open a row to see its mapping, listing fields, management model, and ownership by responsibility. Select **Edit** to prepare and preview a local draft for supported fields, then **Save draft**. The draft stays in ProductPipeline; there is no Apply, Approve, or Publish action. Price and quantity remain read-only under Marketplace Connect, while listing and mapping ownership are still unverified.`,
+The catalog refreshes automatically. Open a row to see its mapping, listing fields, management model, and ownership by responsibility. On an eligible item, the agent prepares a local proposal automatically. Review the changed fields, select **Adjust** when needed, or **Approve draft** when everything is correct. Approval stays in ProductPipeline; there is no Apply or Publish action. Price and quantity remain read-only under Marketplace Connect, while listing and mapping ownership are still unverified.`,
+    },
+    {
+        question: 'How do agent listing proposals work?',
+        category: 'eBay',
+        sort_order: 1,
+        answer: `Open an eligible item in **Listings**. The agent prepares one proposal automatically from the verified Shopify value, current eBay value, and latest saved local draft.
+
+1. Select **Review proposal**.
+2. Check every changed field and warning.
+3. Select **Adjust** to edit locally, or **Approve draft** when it is correct.
+
+The agent cannot invent product facts. Price and quantity are locked. If Shopify, eBay, or the local draft changes, the proposal becomes stale and must be prepared again. **Approved locally** means eBay is unchanged; there is no Apply or Publish action.`,
     },
     {
         question: 'What does Save draft change?',
         category: 'eBay',
-        sort_order: 1,
+        sort_order: 2,
         answer: `**Save draft** appends one local ProductPipeline revision for the item. It can store supported listing, content, image, policy, and location overrides after a preview.
 
-It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot apply, approve, publish, change price or quantity, import an order, or transfer ownership. If the observed listing or latest local revision changed while you were editing, reopen the item before saving again.`,
+It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot Apply, Publish, change price or quantity, import an order, or transfer ownership. A later **Approve draft** action records human approval locally only. If the observed listing or latest local revision changed while you were editing, reopen the item before saving again.`,
     },
     {
         question: 'How do I list a product on eBay?',
@@ -213,7 +225,7 @@ It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot
         sort_order: 2,
         answer: `Open the item from **Listings**, select **Edit**, enter a positive eBay category ID, and preview the difference. Select **Save draft** to append a versioned local draft.
 
-Saving does not change eBay. Apply, approval, and publishing are not available in this release.`,
+Saving does not change eBay. An agent proposal can later be approved locally, but Apply and Publish remain unavailable.`,
     },
     {
         question: 'What are condition descriptions?',
@@ -221,7 +233,7 @@ Saving does not change eBay. Apply, approval, and publishing are not available i
         sort_order: 3,
         answer: `A condition description explains the condition of one item. Open the item from **Listings** to see the current eBay condition and description.
 
-Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
+Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. The saved value remains local. An agent proposal may be approved locally, but eBay is not changed and no Apply or Publish action is available.`,
     },
     {
         question: 'How does eBay order sync work?',
@@ -345,7 +357,7 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
         sort_order: 3,
         answer: `Open an item from **Listings**, select **Edit**, and enter the proposed condition description. Preview the difference, then select **Save draft**.
 
-The value is append-only local draft state. It does not update eBay, and this release has no Apply, Approve, or Publish action.`,
+The value is append-only local draft state. It does not update eBay. Agent proposals may be approved locally, but this release has no Apply or Publish action.`,
     },
     {
         question: 'How do I vote on feature requests?',

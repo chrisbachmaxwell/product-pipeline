@@ -139,9 +139,15 @@ function canonicalV1WithRevision(): { databasePath: string; revisionDigest: stri
     database.pragma('user_version = 1');
     database.exec(`ATTACH DATABASE ${JSON.stringify(sourcePath)} AS source`);
     for (const table of ['control_scope', 'listing_subjects', 'listing_revisions',
-      'ebay_artifact_bindings', 'shopify_sku_bindings', 'listing_revision_fields', 'audit_events']) {
+      'ebay_artifact_bindings', 'shopify_sku_bindings', 'listing_revision_fields']) {
       database.exec(`INSERT INTO ${table} SELECT * FROM source.${table}`);
     }
+    database.exec(`INSERT INTO audit_events (
+      sequence, scope_key, event_id, event_type, occurred_at_utc, occurred_epoch_ms,
+      subject_key, revision_digest, payload_digest, previous_hash, event_hash
+    ) SELECT sequence, scope_key, event_id, event_type, occurred_at_utc, occurred_epoch_ms,
+      subject_key, revision_digest, payload_digest, previous_hash, event_hash
+      FROM source.audit_events`);
     database.exec('DETACH DATABASE source');
   } finally { database.close(); }
   return { databasePath, revisionDigest: created.revisionDigest, auditHead };
@@ -158,7 +164,7 @@ function expectCode(operation: () => unknown, code: ListingControlStoreError['co
 }
 
 describe('listing control store', () => {
-  it('fresh initialization installs the complete immutable V2 migration chain', () => {
+  it('fresh initialization installs the complete immutable V3 migration chain', () => {
     const { databasePath, store } = initialized();
     store.close();
     const database = new Database(databasePath, { readonly: true });
@@ -168,7 +174,7 @@ describe('listing control store', () => {
     database.close();
   });
 
-  it('explicitly upgrades canonical V1 data to V2 while preserving revisions and audit', () => {
+  it('explicitly upgrades canonical V1 data through V3 while preserving revisions and audit', () => {
     const before = canonicalV1WithRevision();
     expect(() => openListingControlStore({ databasePath: before.databasePath,
       expectedScope: scope })).toThrow();
