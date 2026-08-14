@@ -32,6 +32,7 @@ export type ShopifyCredentialRotationConfig = Readonly<{
     authorizationExpiresAtEpochMs: number;
 }>;
 type Environment = Readonly<Record<string, string | undefined>>;
+export declare function assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(environment?: Environment): void;
 export type LegacyDatabaseIdentity = Readonly<{
     dev: number;
     ino: number;

@@ -34,28 +34,19 @@ Use this exact transition order before the fixed commands:
 3. In one reviewed configuration change, set primary to the new secret, previous to the old secret, and a canonical cutoff no more than one hour ahead; redeploy and prove that current- and previous-secret App Bridge/webhook verification both succeed without logging a signature or secret.
 4. Only after dual inbound verification succeeds, generate/store the one-hour dashboard refresh token, set the dedicated expiring single-writer acknowledgement, and run preflight, rotate, and verify below.
 
-### Already-staged recovery exception — SCR-2026-08-14-001
+### Current recovery checkpoint — SCR-2026-08-14-001
 
 This exception applies only to `SCR-2026-08-14-001`. It does not change the default sequence for future rotations.
 
-A clean secondary Shopify secret was generated and the Railway control plane was committed with the new secret as primary and the old secret as previous before the dual-verifier release was deployed. The active Production deployment still uses its prior old-primary variable snapshot. No access-token rotation, old-secret revocation, or database mutation has occurred.
+PR #15 merged and deployed as `579cc077a6ca4930fbfa88d415b80cc04c12d963`. Shopify app version `productpipeline-read-only-8` (`1090140569601`) was released with exactly the four documented read scopes; the merchant approved Update and the signed-in embedded app loaded afterward.
 
-The reviewed dual-verifier release may therefore deploy directly with the new primary and old previous secret only when all of these gates pass:
+During maintenance, a cutoff-only Railway change unexpectedly redeployed the prior single-secret release. The operation immediately rolled back before any provider token request. A broad Shopify credential-settings accessibility capture then exposed the unused staged secondary secret. That secondary was revoked, a fresh clean secondary was generated and installed through value-blind control-plane handling, and the browser clipboard was cleared. Never reproduce the broad credential-page capture; use exact controls only and retain no raw credential evidence.
 
-- Production deployment `259f4262-0943-4c26-a47b-6b722f73fc75`, revision `234e0cb4de8aeafe494492f7039317915969b9aa`, remains the verified rollback target and its rollback action is available.
-- The old secret remains Shopify's oldest unrevoked secret and the new secondary remains unrevoked.
-- `SHOPIFY_CLIENT_SECRET` is the new secret, `SHOPIFY_PREVIOUS_CLIENT_SECRET` is the old secret, and `SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC` is canonical UTC, no more than one hour ahead, with enough time for deployment verification and at least 15 minutes remaining at any later rotation dispatch.
-- `SHOPIFY_ROTATION_REFRESH_TOKEN` and the credential-rotation acknowledgement are not set until the candidate deployment passes its release and inbound verification gates.
-- `LISTING_CONTROL_SINGLE_WRITER_ACK` remains absent.
-- Marketplace Connect ownership and every commerce-writer quarantine remain unchanged.
+Temporary-ack deployment `77c18d72-e757-41be-8692-284d77f2490c` ran only the fixed direct preflight. It returned `{"status":"failed_closed","code":"database-denied"}` before any provider credential request or database write. The rotation acknowledgement variables were then removed. Same-revision deployment `d44e6238-0072-4c8c-bbd3-df6929f6164d` is Active with one replica; public `/health` at `2026-08-14T20:52:35.738Z` reported `ok`, `shadow-read-only`, external writes false, and historical backfill false. The signed-in embedded app loaded after scope approval.
 
-After deployment, prove the exact release revision, one settled active replica with the `/data` volume, the public shadow-read-only health contract, a signed-in authenticated App Bridge read, and a real old-secret-signed webhook recorded only through the fixed verified-shadow log. An HTTP `200` webhook response alone is not proof because the endpoint acknowledges before verification.
+Maintenance is stopped at the local database gate. Do not generate another dashboard refresh token, restore a database, edit the token row, rerun preflight, request token rotation, revoke the old secret, or remove the previous-secret verifier merely because the generic code is understood. The fixed read-only diagnostic source described below passed fresh independent adversarial review with no P0/P1 on frozen 29-path manifest `c0a55f38073ca52c138c83635464f168e9245cd7a8c2fc58821ff0a31bf26e28`; it remains uncommitted, unpushed, unmerged, undeployed, and unrun against Production. First preserve that reviewed source through exact commit/merge/deployment identity, then run the option-free compiled diagnostic once, preserve only its fixed credential-free stage, and prepare the smallest reviewed reconciliation for that exact boundary.
 
-Before the single provider token-rotation request, any failed release, authentication, webhook, or configuration proof requires rollback to deployment `259f4262-0943-4c26-a47b-6b722f73fc75`, restoring its old image and custom-variable snapshot, and a stop. Railway rollback is forbidden at or after the provider token-rotation request or after old-secret revocation; those states require the documented forward reconciliation procedure.
-
-Because Shopify signs with its oldest unrevoked secret, pre-revocation live traffic directly proves the old/previous path. The reviewed current/previous regressions prove the current path, and successful fresh-token verification proves that the configured new secret is valid with Shopify. Immediately after old-secret revocation and the new-only deployment, prove signed-in App Bridge and new-secret webhook verification live. Do not claim both live paths were observed before revocation.
-
-Once this incident closes, this exception expires and future rotations must use the default sequence above.
+No access-token rotation, old-secret revocation, Production database write, proposal activation, listing/order/price/inventory write, Marketplace Connect change, or Lightspeed effect has occurred. Once this incident closes, this exception expires and future rotations must use the default sequence above.
 
 During the Shopify overlap window:
 
@@ -76,7 +67,7 @@ Set the following through the protected Production variable control plane, never
 
 ## Fixed command sequence
 
-Run only these option-free compiled commands, in order, from the reviewed deployed release:
+Run only these option-free compiled commands, in order, from the reviewed deployed release. The `credential-admin` npm script is deliberately absent because npm prints raw arguments before the compiled entrypoint can redact them. Do not use `npm run credential-admin`, `npx`, `tsx`, a source entrypoint, an alias, or any wrapper for this maintenance boundary. Invoke only the exact compiled `node` commands below, and never append an option or value.
 
 ```sh
 node dist/credential-admin/index.js preflight-shopify-access-token-rotation
@@ -84,11 +75,27 @@ node dist/credential-admin/index.js rotate-shopify-access-token
 node dist/credential-admin/index.js verify-shopify-access-token-rotation
 ```
 
+### Fixed database-denied diagnostic
+
+If preflight returns exactly `database-denied`, stop the rotation sequence. Remove any temporary refresh-token and rotation-ack variables, return to a healthy no-ack deployment, and use only a separately reviewed release containing this option-free command:
+
+```sh
+node dist/credential-admin/index.js diagnose-shopify-credential-database
+```
+
+The diagnostic requires `NODE_ENV=production`, the exact Railway project/environment/service IDs, the exact ProductPipeline client ID, `DATABASE_PATH=/data/ebaysync.db`, and an absent `LISTING_CONTROL_SINGLE_WRITER_ACK`. It does not require or read a client secret, previous secret, dashboard refresh token, overlap deadline, or rotation acknowledgement. It accepts no path, identity, repair, schema, SQL, or output option and inspects only the compiled fixed database target.
+
+The command opens the fixed file once with `O_RDONLY` and `O_NOFOLLOW`, keeps that descriptor open through inspection, and reads at most 512 MiB into private memory. SQLite receives only a copied in-memory snapshot and never receives or opens the filesystem path. A clean checkpointed database may retain WAL header mode without sidecars; only the private copy's header is presented to the in-memory reader as rollback-journal mode so SQLite cannot create `-wal` or `-shm` files. The source bytes are never changed. Before success, the command closes SQLite, rereads the held descriptor for an internal content-stability proof, rechecks descriptor and fixed-path identity plus sidecar absence, closes the descriptor, and clears its explicit buffers.
+
+The diagnostic never queries, selects, serializes, logs, or outputs token-row values and never contacts Shopify. Its one frozen JSON result contains only fixed booleans, a first-failing stage from the compiled allowlist, `databaseWritesPerformed: 0`, `providerNetworkRequestsPerformed: 0`, `providerCredentialMutationsPerformed: 0`, and `externalCommerceWritesPerformed: 0`. Checks cover file existence/type/link/bounded-size/mode, parent permissions, sidecar absence before and after the snapshot, precise descriptor open/inspection/identity/close stages, private-memory/read-only/query-only SQLite state, exact canonical `sqlite_schema.sql`, ordinary rowid/non-STRICT storage, exact visible/default column shape, exact ascending `BINARY` unique-platform autoindex, no triggers or foreign keys, compilation of the same compare-and-swap statement used by rotation, SQLite integrity, and exactly one Shopify row. `CHECK` constraints, generated/hidden columns, STRICT or WITHOUT ROWID shape, and different index collation/order all fail closed before provider rotation.
+
+`database_diagnostic_verified` exits zero. `database_diagnostic_failed_closed` exits nonzero with one fixed stage such as `file-missing`, `file-permissions-denied`, `sidecar-present`, `descriptor-inspection-denied`, `snapshot-post-stability-denied`, `path-post-identity-denied`, `schema-table-definition-denied`, `schema-index-denied`, `integrity-check-denied`, or `shopify-row-cardinality-denied`. Output never includes a path, token, secret, row value, row count, permission integer, digest, provider body, driver error, filename, or sidecar suffix. Preserve only the fixed result. The diagnostic neither repairs state nor authorizes preflight, rotation, retry, restore, revocation, or any commerce write.
+
 Expected successful statuses are `preflight_verified`, `rotated_verified`, and `stored_token_verified`. Output is fixed redacted JSON containing only the pinned store/app/scopes, boolean/count integrity proof, zero commerce writes, and the exact provider credential-mutation count (`0`, `1`, `0`). It also proves that the temporary refresh token was not persisted to the database; the protected Railway variable still exists until the operator removes it after verification. Output never returns a token, secret, refresh token, database path, provider response body, or backup filename.
 
 The rotate command performs this fixed sequence:
 
-1. Validate Production identity, topology acknowledgement, path, permissions, sidecars, canonical `auth_tokens` schema/index, and exactly one Shopify row.
+1. Validate Production identity, topology acknowledgement, path, permissions, sidecars, exact mutation-compatible `auth_tokens` schema/index/CAS contract, and exactly one Shopify row.
 2. Verify the currently stored token against the exact Shopify shop GID, domain, app API key, and four exact read-only scopes.
 3. Create and verify a complete SQLite backup before any provider credential effect. The directory is mode `0700`; each backup is a regular single-link mode-`0600` file and must preserve the full catalog, unrelated tables, and unrelated token rows.
 4. Recheck the 15-minute acknowledgement and dual-secret overlap window, then send one bounded, no-retry official Shopify token-rotation request.

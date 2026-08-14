@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../shopify/production-identity.js';
-import { assertShopifyCredentialRotationAuthorizationActive, assertShopifyCredentialRotationDispatchAuthorized, loadShopifyCredentialRotationConfig, PRODUCT_PIPELINE_PRODUCTION_RUNTIME, SHOPIFY_CREDENTIAL_ROTATION_CONFIG_LIMITS, } from './config.js';
+import { assertShopifyCredentialDatabaseDiagnosticRuntimeBinding, assertShopifyCredentialRotationAuthorizationActive, assertShopifyCredentialRotationDispatchAuthorized, loadShopifyCredentialRotationConfig, PRODUCT_PIPELINE_PRODUCTION_RUNTIME, SHOPIFY_CREDENTIAL_ROTATION_CONFIG_LIMITS, } from './config.js';
 const NOW = Date.parse('2026-08-14T18:00:00.000Z');
 function environment(overrides = {}) {
     return {
@@ -28,6 +28,30 @@ function load(overrides = {}, requireRefreshToken = true) {
     });
 }
 describe('Shopify credential rotation Production binding', () => {
+    it('allows the read-only database diagnostic with only exact nonsecret binding', () => {
+        const diagnosticEnvironment = environment({
+            SHOPIFY_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC: undefined,
+            SHOPIFY_ROTATION_REFRESH_TOKEN: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC: undefined,
+        });
+        expect(() => assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(diagnosticEnvironment)).not.toThrow();
+    });
+    it.each([
+        { NODE_ENV: undefined },
+        { NODE_ENV: 'development' },
+        { RAILWAY_PROJECT_ID: 'wrong' },
+        { RAILWAY_ENVIRONMENT_ID: 'wrong' },
+        { RAILWAY_SERVICE_ID: 'wrong' },
+        { DATABASE_PATH: '/data/other.db' },
+        { SHOPIFY_CLIENT_ID: 'wrong-client-id-value' },
+        { LISTING_CONTROL_SINGLE_WRITER_ACK: '' },
+        { LISTING_CONTROL_SINGLE_WRITER_ACK: 'product-pipeline-local-draft-v1' },
+    ])('denies database diagnosis outside the exact Production binding %#', (overrides) => {
+        expect(() => assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(environment(overrides))).toThrow(expect.objectContaining({ code: 'configuration-denied' }));
+    });
     it('pins the exact project, environment, service, database, store, and client', () => {
         expect(load()).toEqual({
             databasePath: '/data/ebaysync.db',

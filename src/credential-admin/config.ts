@@ -47,6 +47,25 @@ export type ShopifyCredentialRotationConfig = Readonly<{
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
+export function assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(
+  environment: Environment = process.env,
+): void {
+  if (
+    environment.NODE_ENV !== 'production'
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.projectId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.projectId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.environmentId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.environmentId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.serviceId]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.serviceId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.databasePath]
+      !== PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.clientId]
+      !== PRODUCT_PIPELINE_SHOPIFY_IDENTITY.clientId
+    || environment[SHOPIFY_ROTATION_ENVIRONMENT.listingWriterAck] !== undefined
+  ) return rotationDenied('configuration-denied');
+}
+
 function credential(value: string | undefined, minimumLength: number): string {
   if (
     typeof value !== 'string'

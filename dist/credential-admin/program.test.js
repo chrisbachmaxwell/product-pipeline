@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../shopify/production-identity.js';
+import { PRODUCT_PIPELINE_PRODUCTION_RUNTIME, } from './config.js';
 import { CANONICAL_SHOPIFY_SCOPE_TEXT } from './network.js';
 import { fixedShopifyCredentialRotationFailure, ShopifyCredentialRotationError, } from './errors.js';
-import { buildShopifyCredentialAdminProgram, executeShopifyCredentialRotation, executeShopifyCredentialRotationPreflight, executeShopifyCredentialRotationVerify, SHOPIFY_ROTATION_PREFLIGHT_OUTPUT, SHOPIFY_ROTATION_SUCCESS_OUTPUT, SHOPIFY_ROTATION_VERIFY_OUTPUT, } from './program.js';
+import { buildShopifyCredentialAdminProgram, executeShopifyCredentialDatabaseDiagnostic, executeShopifyCredentialRotation, executeShopifyCredentialRotationPreflight, executeShopifyCredentialRotationVerify, SHOPIFY_ROTATION_PREFLIGHT_OUTPUT, SHOPIFY_ROTATION_SUCCESS_OUTPUT, SHOPIFY_ROTATION_VERIFY_OUTPUT, } from './program.js';
 import { LegacyShopifyTokenStore, readShopifyAuthTokenRowReadOnly, } from './store.js';
 const roots = [];
 const OLD_TOKEN = 'old-shopify-access-token-value';
@@ -87,6 +88,44 @@ function json(value) {
         headers: { 'Content-Type': 'application/json' },
     });
 }
+function diagnosticDependencies(loaded) {
+    const fixedPath = PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath;
+    const fixedParent = path.dirname(fixedPath);
+    const actualParent = path.dirname(loaded.databasePath);
+    const mapped = (value) => {
+        const text = String(value);
+        if (text === fixedPath)
+            return loaded.databasePath;
+        if (text === fixedParent)
+            return actualParent;
+        if (text.startsWith(fixedPath))
+            return `${loaded.databasePath}${text.slice(fixedPath.length)}`;
+        throw Object.assign(new Error('unexpected path'), { code: 'EPERM' });
+    };
+    return {
+        filesystem: {
+            lstatSync: ((value) => fs.lstatSync(mapped(value))),
+            openSync: ((value, flags) => fs.openSync(mapped(value), flags)),
+            fstatSync: fs.fstatSync,
+            readSync: fs.readSync,
+            closeSync: fs.closeSync,
+        },
+        openPrivateSnapshotReadOnly: (snapshot) => {
+            expect(Buffer.isBuffer(snapshot)).toBe(true);
+            return new Database(snapshot, { readonly: true });
+        },
+    };
+}
+function diagnosticEnvironment() {
+    return {
+        NODE_ENV: 'production',
+        RAILWAY_PROJECT_ID: PRODUCT_PIPELINE_PRODUCTION_RUNTIME.projectId,
+        RAILWAY_ENVIRONMENT_ID: PRODUCT_PIPELINE_PRODUCTION_RUNTIME.environmentId,
+        RAILWAY_SERVICE_ID: PRODUCT_PIPELINE_PRODUCTION_RUNTIME.serviceId,
+        DATABASE_PATH: PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath,
+        SHOPIFY_CLIENT_ID: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.clientId,
+    };
+}
 async function filesBelow(directory) {
     const entries = await fs.promises.readdir(directory, { withFileTypes: true });
     const nested = await Promise.all(entries.map(async (entry) => {
@@ -96,14 +135,67 @@ async function filesBelow(directory) {
     return nested.flat();
 }
 describe('fixed-purpose Shopify credential administration', () => {
-    it('exposes exact preflight, rotate, and verify commands with no path/identity options', () => {
+    it('exposes exact preflight, database diagnostic, rotate, and verify commands with no options', () => {
         const program = buildShopifyCredentialAdminProgram();
         expect(program.commands.map((command) => command.name())).toEqual([
             'preflight-shopify-access-token-rotation',
+            'diagnose-shopify-credential-database',
             'rotate-shopify-access-token',
             'verify-shopify-access-token-rotation',
         ]);
         expect(program.commands.flatMap((command) => command.options)).toEqual([]);
+    });
+    it('denies database inspection before filesystem access when Production binding is wrong', () => {
+        const lstatSync = vi.fn();
+        expect(() => executeShopifyCredentialDatabaseDiagnostic({
+            NODE_ENV: 'production',
+            RAILWAY_PROJECT_ID: 'wrong',
+        }, {
+            filesystem: {
+                lstatSync,
+            },
+        })).toThrow(expect.objectContaining({ code: 'configuration-denied' }));
+        expect(lstatSync).not.toHaveBeenCalled();
+    });
+    it('emits one frozen value-free database diagnosis and sets failure exit only for a denied stage', async () => {
+        const loaded = fixture();
+        const output = [];
+        const exitCodes = [];
+        await buildShopifyCredentialAdminProgram({
+            environment: diagnosticEnvironment(),
+            databaseDiagnostic: diagnosticDependencies(loaded),
+            output: (value) => output.push(value),
+            setExitCode: (code) => exitCodes.push(code),
+        }).parseAsync(['node', 'credential-admin', 'diagnose-shopify-credential-database']);
+        expect(output).toHaveLength(1);
+        expect(JSON.parse(output[0])).toMatchObject({
+            status: 'database_diagnostic_verified',
+            stage: 'verified',
+            databaseWritesPerformed: 0,
+            providerNetworkRequestsPerformed: 0,
+            providerCredentialMutationsPerformed: 0,
+            externalCommerceWritesPerformed: 0,
+        });
+        expect(exitCodes).toEqual([]);
+        expect(output[0]).not.toContain(loaded.databasePath);
+        expect(output[0]).not.toContain(PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath);
+        expect(output[0]).not.toContain(OLD_TOKEN);
+        fs.chmodSync(loaded.databasePath, 0o640);
+        const deniedOutput = [];
+        await buildShopifyCredentialAdminProgram({
+            environment: diagnosticEnvironment(),
+            databaseDiagnostic: diagnosticDependencies(loaded),
+            output: (value) => deniedOutput.push(value),
+            setExitCode: (code) => exitCodes.push(code),
+        }).parseAsync(['node', 'credential-admin', 'diagnose-shopify-credential-database']);
+        expect(JSON.parse(deniedOutput[0])).toMatchObject({
+            status: 'database_diagnostic_failed_closed',
+            stage: 'file-permissions-denied',
+            databaseWritesPerformed: 0,
+            providerNetworkRequestsPerformed: 0,
+            externalCommerceWritesPerformed: 0,
+        });
+        expect(exitCodes).toEqual([1]);
     });
     it('performs preflight, backup, one rotation, fresh verify, CAS, reopen, and stored verify in order', async () => {
         const loaded = fixture(LEGACY_SCOPE_ORDER);
@@ -297,6 +389,8 @@ describe('fixed-purpose Shopify credential administration', () => {
             ['rotate-shopify-access-token', `--client-secret=${sentinel}`],
             [`unknown-${sentinel}`],
             ['preflight-shopify-access-token-rotation', sentinel],
+            ['diagnose-shopify-credential-database', `--database=${sentinel}`],
+            ['diagnose-shopify-credential-database', sentinel],
             ['rotate-shopify-access-token', '--', sentinel],
             ['verify-shopify-access-token-rotation', sentinel],
         ]) {
@@ -315,7 +409,29 @@ describe('fixed-purpose Shopify credential administration', () => {
         });
         expect(help.status).toBe(0);
         expect(help.stderr).toBe('');
+        expect(help.stdout).toContain('diagnose-shopify-credential-database');
         expect(help.stdout).toContain('rotate-shopify-access-token');
         expect(help.stdout).not.toContain('failed_closed');
+    });
+    it('has no npm credential-admin wrapper that can print raw operator arguments', () => {
+        const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+        const repositoryRoot = path.resolve(sourceRoot, '..');
+        const packageJson = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
+        expect(packageJson.scripts).not.toHaveProperty('credential-admin');
+        const npmCache = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'npm-no-admin-wrapper-'));
+        roots.push(npmCache);
+        const sentinel = 'package-argv-sentinel-never-reflect';
+        const result = spawnSync('npm', ['run', 'credential-admin', '--', sentinel], {
+            cwd: repositoryRoot,
+            encoding: 'utf8',
+            env: {
+                ...process.env,
+                npm_config_cache: npmCache,
+                npm_config_logs_max: '0',
+            },
+        });
+        expect(result.status).toBe(1);
+        expect(`${result.stdout}${result.stderr}${String(result.error ?? '')}`).not.toContain(sentinel);
+        expect(`${result.stdout}${result.stderr}`).not.toContain('tsx src/credential-admin/index.ts');
     });
 });

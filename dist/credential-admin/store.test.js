@@ -188,6 +188,107 @@ describe('legacy Shopify token store maintenance boundary', () => {
             expect(fs.readFileSync(loaded.databasePath)).toEqual(before);
         }
     });
+    it.each([
+        {
+            label: 'token-blocking CHECK constraint',
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL CHECK(access_token = 'old-shopify-access-token-value'),
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`,
+        },
+        {
+            label: 'generated hidden column',
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        token_length INTEGER GENERATED ALWAYS AS (length(access_token)) VIRTUAL
+      )`,
+        },
+        {
+            label: 'STRICT table',
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      ) STRICT`,
+        },
+        {
+            label: 'WITHOUT ROWID table',
+            insertId: true,
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY,
+        platform TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      ) WITHOUT ROWID`,
+        },
+        {
+            label: 'NOCASE unique index collation',
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`,
+        },
+        {
+            label: 'descending unique index order',
+            schema: `CREATE TABLE auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        scope TEXT,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(platform DESC)
+      )`,
+        },
+    ])('rejects a mutation-incompatible $label before provider use', ({ schema, insertId }) => {
+        const loaded = fixture();
+        const database = new Database(loaded.databasePath, { fileMustExist: true });
+        database.exec('DROP TABLE auth_tokens');
+        database.exec(schema);
+        database.prepare(insertId === true
+            ? `INSERT INTO auth_tokens
+          (id, platform, access_token, refresh_token, scope, expires_at, created_at, updated_at)
+         VALUES (1, 'shopify', 'old-shopify-access-token-value', NULL, NULL, NULL, 100, 200)`
+            : `INSERT INTO auth_tokens
+          (platform, access_token, refresh_token, scope, expires_at, created_at, updated_at)
+         VALUES ('shopify', 'old-shopify-access-token-value', NULL, NULL, NULL, 100, 200)`).run();
+        database.close();
+        fs.chmodSync(loaded.databasePath, 0o600);
+        const before = fs.readFileSync(loaded.databasePath);
+        expect(() => LegacyShopifyTokenStore.open(loaded.databasePath, loaded.policy))
+            .toThrow(expect.objectContaining({ code: 'database-denied' }));
+        expect(fs.readFileSync(loaded.databasePath)).toEqual(before);
+    });
     it('rejects insecure paths, modes, links, and SQLite sidecars before opening', () => {
         const modeFixture = fixture();
         fs.chmodSync(modeFixture.databasePath, 0o640);

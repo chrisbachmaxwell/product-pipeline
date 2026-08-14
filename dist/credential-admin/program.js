@@ -5,6 +5,7 @@ import { assertShopifyCredentialRotationDispatchAuthorized, loadShopifyCredentia
 import { requestRotatedShopifyAccessToken, verifyShopifyAccessToken, } from './network.js';
 import { LegacyShopifyTokenStore, readShopifyAuthTokenRowReadOnly, } from './store.js';
 import { rotationDenied } from './errors.js';
+import { diagnoseFixedProductionShopifyDatabase, } from './database-diagnostic.js';
 const AUTHORITY_PROOF = Object.freeze({
     storeDomain: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain,
     shopGid: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.shopGid,
@@ -98,8 +99,12 @@ export async function executeShopifyCredentialRotationVerify(config, dependencie
     await verifyShopifyAccessToken(persisted.accessToken, dependencies.network);
     return SHOPIFY_ROTATION_VERIFY_OUTPUT;
 }
+export function executeShopifyCredentialDatabaseDiagnostic(environment = process.env, dependencies = {}) {
+    return diagnoseFixedProductionShopifyDatabase(environment, dependencies);
+}
 export function buildShopifyCredentialAdminProgram(dependencies = {}) {
     const output = dependencies.output ?? ((value) => process.stdout.write(`${value}\n`));
+    const setExitCode = dependencies.setExitCode ?? ((code) => { process.exitCode = code; });
     const now = dependencies.now ?? (() => new Date());
     const config = (requireRefreshToken) => loadShopifyCredentialRotationConfig({
         environment: dependencies.environment,
@@ -112,6 +117,14 @@ export function buildShopifyCredentialAdminProgram(dependencies = {}) {
         .description('Read-only verification of the exact stored Production Shopify authority')
         .action(async () => {
         output(JSON.stringify(await executeShopifyCredentialRotationPreflight(config(false), dependencies)));
+    });
+    program.command('diagnose-shopify-credential-database')
+        .description('Read-only fixed-stage diagnosis of the exact Production legacy database')
+        .action(() => {
+        const result = executeShopifyCredentialDatabaseDiagnostic(dependencies.environment, dependencies.databaseDiagnostic);
+        output(JSON.stringify(result));
+        if (result.status !== 'database_diagnostic_verified')
+            setExitCode(1);
     });
     program.command('rotate-shopify-access-token')
         .description('Rotate the one exact Production Shopify access-token row')
