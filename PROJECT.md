@@ -343,6 +343,12 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-14: Coordinator Goal Board Added to Project Brain
+
+- Added `PROJECT_BRAIN.md` Section 14: a coordinator-facing goal board (G1–G9) synthesizing the 2026-08-11 coordinator/agent session log with the current repository state (updated through `main` = `a50ecfa`).
+- Recorded stale-record corrections: incident `SCR-2026-08-14-001` (goal G1) has advanced — the dual-verifier release is merged and deployed, but rotation preflight stopped at `database-denied` and the merged database diagnostic has not yet run against Production, so the incident remains open; the eBay Sandbox `pptest` Test Lane's final state is unknown in this repository and needs reconciliation or formal retirement (goal G2).
+- Recorded the user's stated priority — using ProductPipeline to push and manage eBay listings. G4 (provider listing-revise slice) is authorized to build with the priority track G3 → G4 plus G5; each actual eBay dispatch still requires a one-action exact-target operator approval, and order-responsibility goals remain gated and last.
+- Each goal carries its own status, prerequisites, and authorization boundary; the board authorizes no execution by itself. Documentation-only change — no application code, runtime behavior, provider system, or deployment was touched.
 ### 2026-08-14: Read-Only Shopify Credential Database Diagnostic Candidate
 
 - Added one option-free `credential-admin diagnose-shopify-credential-database` command for the exact Production Railway project/environment/service, ProductPipeline Shopify app, and fixed legacy database. It requires `NODE_ENV=production`, the exact nonsecret runtime pins, and an absent listing-control writer acknowledgement; it accepts no path, identity, credential, or repair option.
