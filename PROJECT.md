@@ -349,6 +349,7 @@ Test files: `src/services/__tests__/`
 - Recorded stale-record corrections: incident `SCR-2026-08-14-001` (goal G1) has advanced — the dual-verifier release is merged and deployed, but rotation preflight stopped at `database-denied` and the merged database diagnostic has not yet run against Production, so the incident remains open; the eBay Sandbox `pptest` Test Lane's final state is unknown in this repository and needs reconciliation or formal retirement (goal G2).
 - Recorded the user's stated priority — using ProductPipeline to push and manage eBay listings. G4 (provider listing-revise slice) is authorized to build with the priority track G3 → G4 plus G5; each actual eBay dispatch still requires a one-action exact-target operator approval, and order-responsibility goals remain gated and last.
 - Each goal carries its own status, prerequisites, and authorization boundary; the board authorizes no execution by itself. Documentation-only change — no application code, runtime behavior, provider system, or deployment was touched.
+- Same-day update: recorded the user's stated priority — using ProductPipeline to push and manage eBay listings. G4 (provider listing-revise slice) is now authorized to build with the priority track G3 → G4 plus G5; each actual eBay dispatch still requires a one-action exact-target operator approval, and order-responsibility goals remain gated and last.
 
 ### 2026-08-14: Read-Only Shopify Credential Database Diagnostic Candidate
 
