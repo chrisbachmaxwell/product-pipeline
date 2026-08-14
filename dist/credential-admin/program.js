@@ -6,6 +6,7 @@ import { requestRotatedShopifyAccessToken, verifyShopifyAccessToken, } from './n
 import { LegacyShopifyTokenStore, readShopifyAuthTokenRowReadOnly, } from './store.js';
 import { rotationDenied } from './errors.js';
 import { diagnoseFixedProductionShopifyDatabase, } from './database-diagnostic.js';
+import { repairFixedProductionShopifyDatabasePermissions, } from './database-permission-repair.js';
 const AUTHORITY_PROOF = Object.freeze({
     storeDomain: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain,
     shopGid: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.shopGid,
@@ -102,6 +103,9 @@ export async function executeShopifyCredentialRotationVerify(config, dependencie
 export function executeShopifyCredentialDatabaseDiagnostic(environment = process.env, dependencies = {}) {
     return diagnoseFixedProductionShopifyDatabase(environment, dependencies);
 }
+export function executeShopifyCredentialDatabasePermissionRepair(environment = process.env, dependencies = {}) {
+    return repairFixedProductionShopifyDatabasePermissions(environment, dependencies);
+}
 export function buildShopifyCredentialAdminProgram(dependencies = {}) {
     const output = dependencies.output ?? ((value) => process.stdout.write(`${value}\n`));
     const setExitCode = dependencies.setExitCode ?? ((code) => { process.exitCode = code; });
@@ -124,6 +128,14 @@ export function buildShopifyCredentialAdminProgram(dependencies = {}) {
         const result = executeShopifyCredentialDatabaseDiagnostic(dependencies.environment, dependencies.databaseDiagnostic);
         output(JSON.stringify(result));
         if (result.status !== 'database_diagnostic_verified')
+            setExitCode(1);
+    });
+    program.command('repair-shopify-credential-database-permissions')
+        .description('Repair only the exact Production legacy database mode to 0600')
+        .action(() => {
+        const result = executeShopifyCredentialDatabasePermissionRepair(dependencies.environment, dependencies.databasePermissionRepair);
+        output(JSON.stringify(result));
+        if (result.status !== 'permission_repair_verified')
             setExitCode(1);
     });
     program.command('rotate-shopify-access-token')

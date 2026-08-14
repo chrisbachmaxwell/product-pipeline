@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../shopify/production-identity.js';
-import { assertShopifyCredentialDatabaseDiagnosticRuntimeBinding, assertShopifyCredentialRotationAuthorizationActive, assertShopifyCredentialRotationDispatchAuthorized, loadShopifyCredentialRotationConfig, PRODUCT_PIPELINE_PRODUCTION_RUNTIME, SHOPIFY_CREDENTIAL_ROTATION_CONFIG_LIMITS, } from './config.js';
+import { assertShopifyCredentialDatabaseDiagnosticRuntimeBinding, assertShopifyCredentialDatabasePermissionRepairRuntimeBinding, assertShopifyCredentialRotationAuthorizationActive, assertShopifyCredentialRotationDispatchAuthorized, loadShopifyCredentialRotationConfig, PRODUCT_PIPELINE_PRODUCTION_RUNTIME, SHOPIFY_CREDENTIAL_ROTATION_CONFIG_LIMITS, } from './config.js';
 const NOW = Date.parse('2026-08-14T18:00:00.000Z');
 function environment(overrides = {}) {
     return {
@@ -38,6 +38,42 @@ describe('Shopify credential rotation Production binding', () => {
             SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC: undefined,
         });
         expect(() => assertShopifyCredentialDatabaseDiagnosticRuntimeBinding(diagnosticEnvironment)).not.toThrow();
+    });
+    it('allows permission repair only with exact topology proof and no writer or rotation authority', () => {
+        const repairEnvironment = environment({
+            SHOPIFY_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC: undefined,
+            SHOPIFY_ROTATION_REFRESH_TOKEN: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC: undefined,
+            SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT: '1',
+            SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT: '1',
+        });
+        expect(() => assertShopifyCredentialDatabasePermissionRepairRuntimeBinding(repairEnvironment)).not.toThrow();
+    });
+    it.each([
+        { RAILWAY_PROJECT_ID: 'wrong' },
+        { LISTING_CONTROL_SINGLE_WRITER_ACK: '' },
+        { SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK: '' },
+        { SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC: '' },
+        { SHOPIFY_ROTATION_REFRESH_TOKEN: '' },
+        { SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT: undefined },
+        { SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT: '2' },
+        { SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT: undefined },
+        { SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT: '2' },
+    ])('denies permission repair without exact maintenance isolation %#', (overrides) => {
+        expect(() => assertShopifyCredentialDatabasePermissionRepairRuntimeBinding(environment({
+            SHOPIFY_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET: undefined,
+            SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC: undefined,
+            SHOPIFY_ROTATION_REFRESH_TOKEN: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK: undefined,
+            SHOPIFY_CREDENTIAL_ROTATION_SINGLE_WRITER_ACK_EXPIRES_AT_UTC: undefined,
+            SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT: '1',
+            SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT: '1',
+            ...overrides,
+        }))).toThrow(expect.objectContaining({ code: 'configuration-denied' }));
     });
     it.each([
         { NODE_ENV: undefined },

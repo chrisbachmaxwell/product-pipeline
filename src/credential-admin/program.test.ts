@@ -158,6 +158,41 @@ function diagnosticEnvironment(): Record<string, string> {
   };
 }
 
+function permissionRepairEnvironment(): Record<string, string> {
+  return {
+    ...diagnosticEnvironment(),
+    SHOPIFY_DATABASE_PERMISSION_REPAIR_REPLICA_COUNT: '1',
+    SHOPIFY_DATABASE_PERMISSION_REPAIR_VOLUME_MOUNT_COUNT: '1',
+  };
+}
+
+function permissionRepairDependencies(loaded: ReturnType<typeof fixture>) {
+  const fixedPath = PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath;
+  const fixedParent = path.dirname(fixedPath);
+  const actualParent = path.dirname(loaded.databasePath);
+  const mapped = (value: fs.PathLike): string => {
+    const text = String(value);
+    if (text === fixedPath) return loaded.databasePath;
+    if (text === fixedParent) return actualParent;
+    if (text.startsWith(fixedPath)) return `${loaded.databasePath}${text.slice(fixedPath.length)}`;
+    throw Object.assign(new Error('unexpected path'), { code: 'EPERM' });
+  };
+  return {
+    filesystem: {
+      lstatSync: ((value: fs.PathLike) => fs.lstatSync(mapped(value))) as typeof fs.lstatSync,
+      openSync: ((value: fs.PathLike, flags: fs.OpenMode) =>
+        fs.openSync(mapped(value), flags)) as typeof fs.openSync,
+      fstatSync: fs.fstatSync,
+      readSync: fs.readSync,
+      fchmodSync: fs.fchmodSync,
+      fsyncSync: fs.fsyncSync,
+      closeSync: fs.closeSync,
+    },
+    getEffectiveUid: () => PRODUCT_PIPELINE_PRODUCTION_RUNTIME
+      .databasePermissionRepairEffectiveUid,
+  };
+}
+
 async function filesBelow(directory: string): Promise<string[]> {
   const entries = await fs.promises.readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
@@ -168,15 +203,45 @@ async function filesBelow(directory: string): Promise<string[]> {
 }
 
 describe('fixed-purpose Shopify credential administration', () => {
-  it('exposes exact preflight, database diagnostic, rotate, and verify commands with no options', () => {
+  it('exposes exact preflight, database diagnostic, permission repair, rotate, and verify commands with no options', () => {
     const program = buildShopifyCredentialAdminProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
       'preflight-shopify-access-token-rotation',
       'diagnose-shopify-credential-database',
+      'repair-shopify-credential-database-permissions',
       'rotate-shopify-access-token',
       'verify-shopify-access-token-rotation',
     ]);
     expect(program.commands.flatMap((command) => command.options)).toEqual([]);
+  });
+
+  it('emits one frozen value-free permission repair result through the option-free command', async () => {
+    const loaded = fixture();
+    fs.chmodSync(loaded.databasePath, 0o640);
+    const output: string[] = [];
+    const exitCodes: number[] = [];
+    await buildShopifyCredentialAdminProgram({
+      environment: permissionRepairEnvironment(),
+      databasePermissionRepair: permissionRepairDependencies(loaded),
+      output: (value) => output.push(value),
+      setExitCode: (code) => exitCodes.push(code),
+    }).parseAsync(['node', 'credential-admin', 'repair-shopify-credential-database-permissions']);
+    expect(output).toHaveLength(1);
+    expect(JSON.parse(output[0]!)).toMatchObject({
+      status: 'permission_repair_verified',
+      stage: 'verified',
+      permissionMetadataWritesPerformed: 1,
+      databaseContentWritesPerformed: 0,
+      providerNetworkRequestsPerformed: 0,
+      credentialWritesPerformed: 0,
+      providerCredentialMutationsPerformed: 0,
+      externalCommerceWritesPerformed: 0,
+    });
+    expect(exitCodes).toEqual([]);
+    expect(fs.statSync(loaded.databasePath).mode & 0o777).toBe(0o600);
+    for (const forbidden of [loaded.databasePath, PRODUCT_PIPELINE_PRODUCTION_RUNTIME.databasePath, OLD_TOKEN]) {
+      expect(output[0]).not.toContain(forbidden);
+    }
   });
 
   it('denies database inspection before filesystem access when Production binding is wrong', () => {
@@ -450,6 +515,8 @@ describe('fixed-purpose Shopify credential administration', () => {
       ['preflight-shopify-access-token-rotation', sentinel],
       ['diagnose-shopify-credential-database', `--database=${sentinel}`],
       ['diagnose-shopify-credential-database', sentinel],
+      ['repair-shopify-credential-database-permissions', `--database=${sentinel}`],
+      ['repair-shopify-credential-database-permissions', sentinel],
       ['rotate-shopify-access-token', '--', sentinel],
       ['verify-shopify-access-token-rotation', sentinel],
     ]) {
@@ -471,6 +538,7 @@ describe('fixed-purpose Shopify credential administration', () => {
     expect(help.status).toBe(0);
     expect(help.stderr).toBe('');
     expect(help.stdout).toContain('diagnose-shopify-credential-database');
+    expect(help.stdout).toContain('repair-shopify-credential-database-permissions');
     expect(help.stdout).toContain('rotate-shopify-access-token');
     expect(help.stdout).not.toContain('failed_closed');
   });
