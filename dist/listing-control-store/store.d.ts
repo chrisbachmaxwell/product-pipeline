@@ -1,6 +1,7 @@
 import { type Digest, type ListingBaseDigests, type ListingControlAuditVerification, type ListingControlScope, type ListingFieldInput, type ListingIdentity, type ListingRevision, type ListingRevisionInput } from './types.js';
 export declare const LISTING_CONTROL_STORE_CAPABILITIES: Readonly<{
-    readonly runtimeWired: false;
+    readonly localDraftRuntimeWired: true;
+    readonly providerRuntimeWired: false;
     readonly providerReadSupported: false;
     readonly providerWriteSupported: false;
     readonly externalWritesSupported: false;
@@ -50,4 +51,13 @@ export declare function openListingControlStore(input: {
 export declare function openListingControlStoreReadOnly(input: {
     databasePath: string;
     expectedScope: ListingControlScope;
+}): ListingControlStore;
+/**
+ * Explicit operational migration for a pre-existing canonical V1 file. This
+ * is intentionally absent from every runtime open/request path.
+ */
+export declare function upgradeListingControlStoreV1ToV2(input: {
+    databasePath: string;
+    expectedScope: ListingControlScope;
+    appliedAtUtc: string;
 }): ListingControlStore;

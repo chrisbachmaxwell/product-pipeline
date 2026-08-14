@@ -8,6 +8,7 @@ This document holds the detail intentionally kept out of the operator UI. The ap
 - eBay is the source of truth for the actual listing, offer, and public lifecycle.
 - Marketplace Connect remains the production writer for price, inventory, and eBay-to-Shopify orders.
 - ProductPipeline continuously observes and reconciles. Its remote writers remain quarantined.
+- ProductPipeline can append a local listing draft after exact-store Shopify-session authentication. A local draft has no provider effect.
 - A displayed mapping is evidence, not permission to write.
 
 The live catalog refreshes in the server background, the browser polls that projection, and evidence older than five minutes becomes **Unknown**. A known failed refresh retains the last snapshot for diagnosis but downgrades its rows to **Unknown** immediately.
@@ -81,6 +82,8 @@ Keep the detail page to four primary sections.
 - Merchant location
 - Return behavior
 
+The current editor intentionally stays smaller than Marketplace Connect. It can draft title, category, condition, condition description, plain-text description, a bounded image list, fulfillment/payment/return policy IDs, and merchant location. Price and quantity remain visible but read-only under Marketplace Connect. Item specifics and identifiers are comparison evidence only in this slice.
+
 Advanced audit may expose immutable IDs and timestamps. It must never expose access tokens, refresh tokens, raw provider bodies, buyer data, or credential-shaped errors.
 
 ## Field ownership
@@ -98,25 +101,27 @@ Every field has exactly one writer at a time. “Two-way sync” is an outcome o
 
 Price, inventory, and orders are separate cutovers. A listing canary does not authorize any of them.
 
-## Durable edit model
+## Durable local-draft model
 
-An editable control plane needs a dedicated versioned store, separate from the legacy application ledger. The current unwired store covers an initial bounded field set only and contains no provider capability.
+The mounted `GET /api/listing-draft?id=...` and exact `POST /api/listing-draft` use a dedicated schema-version-2 store separate from the legacy application ledger. The store covers the initial bounded field set only and contains no provider, approval, Apply, or Publish capability.
 
-1. Immutable account-scoped listing binding revisions.
-2. Immutable desired-listing specification revisions.
-3. One owner and direction for every controlled field.
-4. Operator overrides bound to an exact binding revision and optimistic version.
-5. Source observations and provider observations with capture time and digest.
-6. Explicit approval bound to the exact desired-state digest.
-7. Append-only audit events.
+1. The server re-reads the exact fresh catalog/workspace and derives the trusted account-scoped Shopify/eBay identity; the browser cannot submit actor or provider identity as authority.
+2. Each response carries semantic source and eBay digests plus the latest immutable local revision digest.
+3. Preview is client-side only. Save requires those base digests and expected latest revision, then fails stale if either the observed facts or local revision advanced.
+4. A null draft field inherits the observed/current value; only explicit differences are retained as operator overrides.
+5. Revisions and their field provenance are append-only and audit-linked. Price and quantity are never accepted in the save contract.
+6. Only a cryptographically verified Shopify App Bridge session for `usedcameragear.myshopify.com` can append. API-key and test-mode principals cannot use the Production save boundary.
+7. Every response reports `apply: false`, `publish: false`, and `externalWritesPerformed: 0`.
 
-An edit first creates a local draft. It does not contact Shopify or eBay. Preview compares:
+An edit creates only a local draft. It does not contact Shopify or eBay. The current Preview compares:
 
 ```text
-accepted baseline vs current remote state vs desired state
+current observed or inherited value vs proposed local value
 ```
 
-If both the remote value and the desired value changed from the baseline, the field is a conflict. No remote write is allowed until a human resolves it.
+Semantic-source and latest-revision checks reject a save if the trusted facts or local draft changed during the edit. Reopen the item to review and rebase the proposal. A future provider-write preview must add an accepted baseline and explicit three-way conflict handling before any remote action is authorized.
+
+The store is never auto-created or migrated by the web runtime. An operator must explicitly initialize and verify the canonical version-2 store before enabling local saves; missing, legacy, tampered, unsafe-permission, wrong-scope, linked, or sidecar-bearing state fails unavailable. See `docs/LISTING_CONTROL_ADMIN.md`.
 
 ## Continuous reconciliation
 
@@ -149,8 +154,8 @@ An unknown outcome is classified before any retry. A rollback or end-listing ope
 ## Cutover order
 
 1. Union catalog, background freshness, and enriched read-only detail.
-2. Durable mapping and desired-state drafts.
-3. Preview and parity reporting across both eBay management models.
+2. Durable local desired-state drafts (current bounded release).
+3. Server-rendered provider-change preview and parity reporting across both eBay management models.
 4. One allowlisted listing-revision canary.
 5. Listing create/end/relist cutovers, each separately proven.
 6. Price cutover.

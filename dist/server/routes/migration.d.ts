@@ -73,7 +73,7 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
         })[];
     };
     responsibilityEvidence: ({
-        responsibility: "orderImport" | "price" | "inventory";
+        responsibility: "price" | "orderImport" | "inventory";
         acceptedOwner: string;
         observedOwner: string;
         evidenceStatus: string;

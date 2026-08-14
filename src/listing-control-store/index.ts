@@ -7,6 +7,7 @@ export {
   openListingControlStore,
   openListingControlStoreReadOnly,
   sha256Digest,
+  upgradeListingControlStoreV1ToV2,
 } from './store.js';
 export type { ListingControlStore } from './store.js';
 export {

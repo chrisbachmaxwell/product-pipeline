@@ -399,11 +399,16 @@ describe('shadow API allowlist', () => {
     expect(JSON.stringify(response)).not.toContain('secret-value');
   });
 
-  it('advertises only a read-only live catalog capability', async () => {
+  it('separates read capabilities from the configured local-only draft append', async () => {
     const response = await requestShadowJson('/api/capabilities', liveRouter);
     expect(response.body).toMatchObject({
       remoteReadersMounted: true,
       mutationCapabilities: [],
+      localMutationCapabilities: [expect.objectContaining({
+        id: 'local-listing-draft', mounted: true,
+        availability: 'configuration-required', providerWrite: false,
+        externalWrite: false, approval: false, publishAuthorization: false,
+      })],
       dataCapabilities: expect.arrayContaining([expect.objectContaining({
         id: 'authoritative-listings', remoteRead: true, externalWrite: false,
         evidenceKind: 'live_read',
@@ -442,7 +447,9 @@ describe('shadow API allowlist', () => {
     expect(server).not.toMatch(
       /getDb|getRawDb|initExtraTables|initPhotoTemplatesTable|seedDefaultSettings|seedHelpArticles/,
     );
-    expect(server).toMatch(/express\.json\(\{ limit: '64kb' \}\)/);
+    expect(server).toMatch(
+      /app\.use\('\/api', apiKeyAuth\)[\s\S]*app\.use\('\/api', writerQuarantineMiddleware\)[\s\S]*app\.post\('\/api\/listing-draft', listingDraftJsonParser\)/,
+    );
     expect(server).not.toMatch(/limit:\s*['"]50mb['"]/i);
     expect(server).toMatch(/if \(isTestMode\(\)\) \{\s*app\.get\('\/api\/test-mode'/s);
     expect(server).toMatch(/express\.static\(webDistPath, \{ index: false \}\)/);

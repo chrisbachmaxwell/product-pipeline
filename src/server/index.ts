@@ -10,6 +10,10 @@ import healthRoutes from './routes/health.js';
 import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
 import shadowApiRoutes from './routes/shadow-api.js';
+import listingDraftRoutes, {
+  listingDraftJsonErrorHandler,
+  listingDraftJsonParser,
+} from './routes/listing-drafts.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
 import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
@@ -76,10 +80,6 @@ app.use('/webhooks/shopify', express.raw({ type: 'application/json' }), (req, _r
 // Raw body for eBay XML notifications
 app.use('/webhooks/ebay', express.text({ type: ['text/xml', 'application/xml', 'application/soap+xml'] }));
 
-// Shadow APIs have no JSON write payload. Keep a small parser ceiling so an
-// unauthenticated request cannot allocate a legacy bulk-upload-sized body.
-app.use(express.json({ limit: '64kb' }));
-
 // --- Test Mode ---
 app.use(testModeMiddleware);
 if (isTestMode()) {
@@ -94,8 +94,14 @@ app.use('/api', apiKeyAuth);
 // legacy handler can load credentials, touch the database, or contact a platform.
 app.use('/api', writerQuarantineMiddleware);
 
+// Parse the sole local mutation only after authentication and the exact
+// quarantine exception. No unauthenticated or quarantined API body is parsed.
+app.post('/api/listing-draft', listingDraftJsonParser);
+app.use(listingDraftJsonErrorHandler);
+
 // --- Routes ---
 app.use(healthRoutes);
+app.use(listingDraftRoutes);
 app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);
 app.use(shopifyWebhookRoutes);

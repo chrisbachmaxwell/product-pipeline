@@ -17,6 +17,7 @@
     "cli": "tsx src/cli/index.ts",
     "operator": "tsx src/operator-cli/index.ts",
     "migration-admin": "tsx src/migration-admin/index.ts",
+    "listing-control-admin": "tsx src/listing-control-admin/index.ts",
     "evidence-capture": "tsx src/evidence-capture/index.ts",
     "test": "vitest run",
     "test:watch": "vitest"

@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
+  Button,
   Card,
   EmptyState,
   InlineGrid,
@@ -11,6 +13,13 @@ import {
   Text,
 } from '@shopify/polaris';
 import { useParams } from 'react-router-dom';
+import ListingDraftEditor from '../components/ListingDraftEditor';
+import {
+  isListingDraftBoundToWorkspace,
+  isListingDraftResponse,
+  useListingDraft,
+  useSaveListingDraft,
+} from '../hooks/useListingDraft';
 import {
   isListingWorkspaceResponse,
   useListingWorkspace,
@@ -55,6 +64,37 @@ const Difference: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 const ListingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const workspace = useListingWorkspace(id);
+  const localDraft = useListingDraft(id);
+  const saveDraft = useSaveListingDraft(id);
+  const [editing, setEditing] = useState(false);
+  const [openingEditor, setOpeningEditor] = useState(false);
+  const currentWorkspace = isListingWorkspaceResponse(workspace.data, id)
+    ? workspace.data
+    : null;
+  const currentDraft = currentWorkspace
+    && isListingDraftResponse(localDraft.data, id)
+    && isListingDraftBoundToWorkspace(localDraft.data, currentWorkspace)
+    ? localDraft.data
+    : null;
+  const currentCatalog = currentWorkspace?.catalog ?? null;
+  const currentMapping = currentWorkspace?.mapping ?? null;
+  const currentEditEligible = Boolean(
+    !workspace.error
+    && !localDraft.error
+    && currentWorkspace
+    && currentDraft
+    && (currentCatalog?.lifecycleStatus === 'active'
+      || currentCatalog?.lifecycleStatus === 'not_listed')
+    && currentCatalog.shopify
+    && currentCatalog.shopify.sku.trim() !== ''
+    && !(currentMapping?.managementModel === 'inventory_offer'
+      && currentMapping.inventorySku === null)
+    && currentDraft.capabilities.saveDraft
+    && currentDraft.capabilities.previewChanges,
+  );
+  useEffect(() => {
+    if (!currentEditEligible) setEditing(false);
+  }, [currentEditEligible]);
 
   if (workspace.isLoading) {
     return (
@@ -64,7 +104,7 @@ const ListingDetail: React.FC = () => {
     );
   }
 
-  if (workspace.error || !isListingWorkspaceResponse(workspace.data, id)) {
+  if (workspace.error || !currentWorkspace) {
     return (
       <Page title="Listing" backAction={{ content: 'Listings', url: '/listings' }}>
         <Card>
@@ -80,7 +120,7 @@ const ListingDetail: React.FC = () => {
     );
   }
 
-  const { catalog, mapping, ebayDetail, evidence } = workspace.data;
+  const { catalog, mapping, ebayDetail, evidence } = currentWorkspace;
   const actual = ebayDetail?.actual ?? null;
   const title = actual?.content.title ?? listingDisplayTitle(catalog);
   const sku = listingDisplaySku(catalog);
@@ -116,6 +156,47 @@ const ListingDetail: React.FC = () => {
       ? ` · ${actual.category.primary.id}` : ''}`
     : '—';
   const observedAt = evidence.detailObservedAtUtc ?? evidence.catalogObservedAtUtc;
+  const validDraft = currentDraft;
+  const draftValid = validDraft !== null;
+  const draftCapabilities = validDraft?.capabilities ?? null;
+  const editableStatus = catalog.lifecycleStatus === 'active'
+    || catalog.lifecycleStatus === 'not_listed';
+  const draftReadOnlyReason = catalog.lifecycleStatus === 'unknown'
+    ? 'Current listing state is unavailable.'
+    : catalog.lifecycleStatus === 'attention'
+      ? 'Resolve listing issues before editing.'
+      : catalog.shopify === null
+        ? 'Map this listing to Shopify before editing.'
+        : catalog.shopify.sku.trim() === ''
+          || (mapping.managementModel === 'inventory_offer' && mapping.inventorySku === null)
+          ? 'A unique SKU is required before editing.'
+          : localDraft.error || (localDraft.data && !draftValid)
+            ? 'Local draft is unavailable.'
+            : !draftCapabilities?.saveDraft || !draftCapabilities.previewChanges
+              ? 'Local draft editing is unavailable.'
+              : null;
+  const canEdit = currentEditEligible && editableStatus
+    && draftReadOnlyReason === null && draftValid;
+  const existingDraft = validDraft?.revision ?? null;
+  const openFreshEditor = async () => {
+    if (!canEdit || openingEditor) return;
+    const trustedWorkspace = workspace.data;
+    if (!trustedWorkspace) return;
+    setOpeningEditor(true);
+    setEditing(false);
+    try {
+      const refreshed = await localDraft.refetch();
+      const freshDraft = isListingDraftResponse(refreshed.data, id)
+        && isListingDraftBoundToWorkspace(refreshed.data, trustedWorkspace)
+        ? refreshed.data
+        : null;
+      if (freshDraft?.capabilities.saveDraft && freshDraft.capabilities.previewChanges) {
+        setEditing(true);
+      }
+    } finally {
+      setOpeningEditor(false);
+    }
+  };
 
   return (
     <Page
@@ -127,7 +208,7 @@ const ListingDetail: React.FC = () => {
           <Badge tone={listingStatusTone(catalog.lifecycleStatus)}>
             {listingStatusLabel(catalog.lifecycleStatus)}
           </Badge>
-          <Badge tone="info">Read only</Badge>
+          <Badge tone="info">Remote read only</Badge>
         </InlineStack>
       )}
       primaryAction={ebayUrl ? {
@@ -135,11 +216,10 @@ const ListingDetail: React.FC = () => {
         url: ebayUrl,
         external: true,
       } : undefined}
-      secondaryActions={shopifyUrl ? [{
-        content: 'View in Shopify',
-        url: shopifyUrl,
-        external: true,
-      }] : undefined}
+      secondaryActions={[
+        ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
+        ...(shopifyUrl ? [{ content: 'View in Shopify', url: shopifyUrl, external: true }] : []),
+      ]}
       fullWidth
     >
       <BlockStack gap="400">
@@ -149,13 +229,52 @@ const ListingDetail: React.FC = () => {
           </Text>
         </InlineStack>
 
+        {editing && canEdit && validDraft ? (
+          <ListingDraftEditor
+            draft={validDraft}
+            saving={saveDraft.isPending}
+            onCancel={() => setEditing(false)}
+            onSave={async (input) => {
+              await saveDraft.mutateAsync(input);
+              setEditing(false);
+            }}
+          />
+        ) : (
+          <Card>
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <BlockStack gap="100">
+                <InlineStack gap="200" blockAlign="center">
+                  <Text as="h2" variant="headingMd">Local draft</Text>
+                  {existingDraft && <Badge tone="info">{`Draft ${existingDraft.revisionNumber}`}</Badge>}
+                </InlineStack>
+                <Text as="p" tone="subdued">
+                  {existingDraft ? `Saved ${formatVerifiedAt(existingDraft.createdAtUtc).replace('Updated ', '')}`
+                    : 'Prepare changes without sending them to Shopify or eBay.'}
+                </Text>
+              </BlockStack>
+              {localDraft.isLoading ? (
+                <Text as="span" tone="subdued">Loading</Text>
+              ) : canEdit ? (
+                <Button onClick={() => { void openFreshEditor(); }} loading={openingEditor}>Edit</Button>
+              ) : (
+                <Badge tone="attention">Read only</Badge>
+              )}
+            </InlineStack>
+            {draftReadOnlyReason && !localDraft.isLoading && (
+              <div style={{ marginTop: '1rem' }}>
+                <Banner tone="info"><Text as="p">{draftReadOnlyReason}</Text></Banner>
+              </div>
+            )}
+          </Card>
+        )}
+
         <Card>
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center" gap="300">
               <Text as="h2" variant="headingMd">Mapping</Text>
               <InlineStack gap="200" blockAlign="center">
                 <Badge tone="attention">Owner unverified</Badge>
-                <Badge tone="info">Read only</Badge>
+                <Badge tone="info">Remote read only</Badge>
               </InlineStack>
             </InlineStack>
             <InlineStack gap="300" blockAlign="center" wrap>
@@ -193,7 +312,7 @@ const ListingDetail: React.FC = () => {
               <Text as="h2" variant="headingMd">Listing</Text>
               <InlineStack gap="200" blockAlign="center">
                 <Badge tone="attention">Owner unverified</Badge>
-                <Badge tone="info">Read only</Badge>
+                <Badge tone="info">Remote read only</Badge>
               </InlineStack>
             </InlineStack>
             <InlineGrid columns={{ xs: 1, sm: 2, md: 3 }} gap="400">

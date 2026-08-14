@@ -72,8 +72,7 @@ export const MigrationSafetyBanner: React.FC<{
     return (
       <Banner tone="critical" title="Migration safety state unavailable">
         <Text as="p">
-          ProductPipeline remains observation-only. No write action is available while the enforced
-          ownership policy cannot be displayed.
+          Shopify and eBay writes remain blocked. Local draft availability is shown on each listing.
         </Text>
       </Banner>
     );
@@ -98,15 +97,16 @@ export const MigrationSafetyBanner: React.FC<{
     <Banner
       tone={safelyQuarantined ? 'success' : 'critical'}
       title={safelyQuarantined
-        ? 'Shadow mode — ProductPipeline writers are quarantined'
-        : 'Writer quarantine is not verified'}
+        ? 'Shadow mode — Shopify and eBay writes are blocked'
+        : 'Provider-write quarantine is not verified'}
     >
       <BlockStack gap="100">
         <Text as="p">
           {baselinePolicyAccepted
             ? 'Accepted ownership policy assigns orders, price, and inventory to Marketplace Connect. This is policy, not current cross-platform parity evidence.'
-            : 'The required Marketplace Connect ownership policy is unavailable or inconsistent. ProductPipeline remains observation-only.'}
+            : 'The required Marketplace Connect ownership policy is unavailable or inconsistent. Shopify and eBay write actions remain blocked.'}
         </Text>
+        <Text as="p" tone="subdued">Local draft availability is shown on each listing.</Text>
         <Text as="p" tone="subdued">
           Historical order backfill: {backfill.label.toLowerCase()} · Cutover watermark: {watermark} ·
           Remote parity: {remoteParity}
@@ -143,7 +143,7 @@ export const OwnershipCards: React.FC<{
                 <Badge tone={access ? 'info' : 'critical'}>{humanize(access)}</Badge>
               </InlineStack>
               <InlineStack gap="200" blockAlign="center">
-                <Text as="span" tone="subdued">Writes</Text>
+                <Text as="span" tone="subdued">Provider writes</Text>
                 <Badge tone={item?.writesAllowed === false ? 'success' : 'critical'}>
                   {item?.writesAllowed === false
                     ? 'Blocked'

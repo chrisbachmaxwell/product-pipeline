@@ -152,6 +152,11 @@ export function isReadOnlyHttpMethod(method: string): boolean {
   return ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
 }
 
+/** One local-only append exception. It grants no provider or publish authority. */
+export function isExactLocalDraftAppend(method: string, originalUrl: string): boolean {
+  return method === 'POST' && originalUrl === '/api/listing-draft';
+}
+
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(
   req: Request,
@@ -159,6 +164,11 @@ export function writerQuarantineMiddleware(
   next: NextFunction,
 ): void {
   if (isReadOnlyHttpMethod(req.method)) {
+    next();
+    return;
+  }
+
+  if (isExactLocalDraftAppend(req.method, req.originalUrl || '')) {
     next();
     return;
   }

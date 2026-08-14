@@ -8,7 +8,7 @@
 
 **ProductPipeline** (formerly "ebay-sync-app" / "Product Bridge") currently contains a broad listing, order-sync, AI-enrichment, image-processing, and ingestion application for **Pictureline's UsedCameraGear.com** store. Its authorized target is a safe, simple replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect is the verified current order importer and price/inventory synchronizer; it remains the incumbent until ProductPipeline passes the per-responsibility gates in `PROJECT_BRAIN.md`. AI/product-enrichment scope is slated for staged removal.
 
-**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only`. All non-read `/api` requests are denied, only three redacted authenticated API reads are mounted, background writers are unmounted, webhooks cannot dispatch or persist payload evidence, the legacy CLI is status-only, and low-level commerce writers fail closed. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
+**Enforced current-source posture:** ProductPipeline is hard-coded to `shadow-read-only` for external commerce. Exact `POST /api/listing-draft` is the sole non-read exception and can append only a bounded local revision after exact-store Shopify-session authentication and stale-base checks. Every other non-read `/api` request is denied; provider writers, background writers, and webhook dispatch remain quarantined. See `docs/WRITER_QUARANTINE.md`. This is source behavior, not deployment or live-parity proof.
 
 **What it does:**
 - Watches a StyleShoots network drive for new product photos → auto-uploads to Shopify
@@ -233,6 +233,8 @@ All stored in `~/.clawdbot/credentials/`:
 | `SHOPIFY_CLIENT_ID` | Shopify Client ID | From file |
 | `SHOPIFY_CLIENT_SECRET` | Shopify Client Secret | From file |
 | `SAFETY_MODE` | Order sync safety: `safe` (rate-limited) or `off` | `safe` |
+| `LISTING_CONTROL_DATABASE_PATH` | Absolute path to the explicitly initialized local-draft store | Unset; draft unavailable |
+| `LISTING_CONTROL_SINGLE_WRITER_ACK` | Exact local-draft single-writer assertion `product-pipeline-local-draft-v1` | Unset; save denied |
 
 ### Deployment (Railway)
 
@@ -339,14 +341,23 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-13: Authenticated Local Listing Draft Workspace (Source Candidate)
+
+- Added authenticated `GET /api/listing-draft?id=...` and exact `POST /api/listing-draft` for an append-only local-draft workspace. The server derives trusted Shopify/eBay identity from a fresh exact-account workspace, binds saves to semantic source/eBay digests plus the latest revision, and records the verified Shopify-session actor. Stale facts or concurrent revisions require reopening the item.
+- Added concise Edit, Preview, and Save draft controls for title, category, condition, condition description, plain-text description, bounded image URLs, fulfillment/payment/return policy IDs, and merchant location. Price and quantity remain visible but read-only under Marketplace Connect; item specifics and identifiers remain comparison-only.
+- Kept Apply, Approve, Publish, provider writes, mapping writes, price/inventory/order sync, token persistence, Marketplace Connect changes, and automatic actions absent. Exact local append is the sole non-read quarantine exception; every other non-read API request remains denied.
+- Upgraded the dedicated listing-control store contract to canonical schema version 2 with immutable revision provenance. Runtime requires an existing exact-scope regular `0600` store, never creates/migrates/repairs it, and enables saves only with the explicit single-writer assertion.
+- Added explicit `listing-control-admin init|verify` operations and `docs/LISTING_CONTROL_ADMIN.md` for the intended Railway `/data/product-pipeline/listing-control.sqlite` path, private-parent permissions, single-replica/one-volume topology, backup/restore, and fail-closed recovery gates. A read-only Production preflight found the intended parent and database absent and the new environment variables unset; this entry therefore makes no deployment/configuration/UI claim.
+- Updated the writer-quarantine, listing-control model, project brain, and Help content to distinguish local draft persistence from external commerce writes. Source/build/tests/deployment and signed-in embedded behavior remain separate release evidence.
+
 ### 2026-08-13: Continuous Listing Reconciliation and Mapping Workspace
 
 - Expanded Listings from a positive-stock intersection into a union reconciliation view: positive-stock Shopify variants, zero/unknown-stock Shopify variants with eBay state, and unmatched or SKU-less active eBay listings all remain visible. Blank, duplicate, and near-collision SKUs do not auto-map.
 - Added a server background refresh every 60 seconds, verified Shopify webhook invalidation, browser polling every 30 seconds, and a five-minute fail-closed freshness limit. A known refresh failure downgrades the prior snapshot to **Unknown** immediately. The UI now says **Active**, **Not listed**, **Needs attention**, or **Unknown**; stale or failed evidence cannot remain Active or Not listed.
-- Added an exact GET-only listing workspace that verifies current eBay Trading detail and, where applicable, the Inventory item and Offer. It shows the Shopify variant -> exact SKU -> management model -> offer -> public listing mapping and current listing/content/delivery fields. Price and inventory identify Marketplace Connect as their verified writer; listing and mapping ownership remain explicitly unverified.
+- At that release, added an exact GET-only listing workspace that verifies current eBay Trading detail and, where applicable, the Inventory item and Offer. It shows the Shopify variant -> exact SKU -> management model -> offer -> public listing mapping and current listing/content/delivery fields. Price and inventory identify Marketplace Connect as their verified writer; listing and mapping ownership remain explicitly unverified.
 - The live audit found 112 active Trading listings but only five Inventory items and five Offers, so the control model explicitly supports both legacy Trading and Inventory/Offer listings.
-- Added a separate, explicitly initialized, append-only listing-control draft store with immutable revisions for the initial bounded field set and audit verification. It is deliberately unwired from routes, credentials, providers, approvals, and commerce writers; no application runtime path can use it to authorize a publish.
-- Kept Marketplace Connect as the price, inventory, and order writer. ProductPipeline remains shadow/read-only and all non-read `/api` requests remain quarantined. The detailed field model and responsibility-by-responsibility cutover plan are in `docs/LISTING_CONTROL_MODEL.md`.
+- At that release, added a separate, explicitly initialized, append-only listing-control draft store with immutable revisions for the initial bounded field set and audit verification. It was deliberately unwired from routes, credentials, providers, approvals, and commerce writers; no application runtime path could use it to authorize a publish.
+- At that release, kept Marketplace Connect as the price, inventory, and order writer and quarantined every non-read `/api` request. The newer source candidate preserves those external-writer boundaries while adding only the exact local-draft append described above.
 - PR #8 merged to `main` as `6a8918677478f919aead632b8d885c23cb6ab738`; Railway reported success and `/health` served that exact commit with shadow read-only mode, external writes disabled, historical backfill disabled, and the full writer quarantine enabled at `2026-08-13T23:20:16.302Z`. Signed-in embedded-app data rendering remains a separate operator verification after reload.
 
 ### 2026-08-13: eBay Seller Identity Pin Incident and Repair
@@ -406,7 +417,7 @@ Test files: `src/services/__tests__/`
 ### 2026-08-11: Hard Writer Quarantine and Offline Reconciliation
 
 - Added an immutable Marketplace Connect incumbent policy: ProductPipeline is hard-coded to shadow read-only, with no runtime override, no historical backfill, no order cutover watermark, and no external commerce writes.
-- Denied every non-read `/api` request, unmounted the legacy scheduler/cloud watcher, removed webhook dispatch and payload persistence, and reduced the legacy CLI to `status`.
+- At that 2026-08-11 release, denied every non-read `/api` request, unmounted the legacy scheduler/cloud watcher, removed webhook dispatch and payload persistence, and reduced the legacy CLI to `status`.
 - Gated low-level eBay non-read requests plus Shopify order/inventory adapters and legacy mutation services so direct imports cannot bypass the route and startup controls.
 - Added read-only Overview, Listings, Orders, Reconciliation, and Settings migration surfaces with explicit Marketplace Connect ownership, quarantine status, proof limits, and operator-safe refresh/review actions.
 - Added strict local snapshot reconciliation and hash-chained audit evidence. It uses no credentials, remote clients, or application database; always records zero external writes/no historical backfill/no order eligibility; and cannot establish live parity.

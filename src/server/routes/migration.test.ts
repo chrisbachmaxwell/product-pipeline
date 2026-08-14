@@ -32,6 +32,9 @@ describe('migration status projection', () => {
     expect(result.sourceOfTruth.baselineEvidence).toBe(
       'operator-attested-browser-observation',
     );
+    expect(result.sourceOfTruth.productPipelineScope).toBe(
+      'provider-read-only-local-draft',
+    );
     expect(result.reconciliation.orderCreationEligible).toBe(false);
     expect(result.reconciliation.counts.historicalOrdersIneligible).toBe(244);
     expect(result.reconciliation.exceptions).toHaveLength(6);
