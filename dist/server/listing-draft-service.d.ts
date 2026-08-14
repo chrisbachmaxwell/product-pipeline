@@ -100,6 +100,15 @@ type Basis = Readonly<{
 declare function eligibleBasis(workspace: ListingWorkspaceDto): Basis;
 type DraftValues = Partial<Record<ListingFieldName, string | null>>;
 declare function fieldsForRevision(basis: Basis, draft: DraftValues): ListingFieldInput[];
+export type ListingDraftBasis = Basis;
+/**
+ * Derive the strict draft-eligible basis (identity, normalized source and
+ * observed field values, and semantic digests) from one live workspace read.
+ * The isolated listing-revise operator CLI uses this to bind a dispatch to
+ * exactly the same normalization the draft workspace saved against; it
+ * performs no store or provider access itself.
+ */
+export declare function deriveListingDraftBasis(workspaceDto: ListingWorkspaceDto): ListingDraftBasis;
 export type ListingDraftServiceDependencies = Readonly<{
     readWorkspace?: (catalogId: string) => Promise<ListingWorkspaceDto>;
     databasePath?: () => string | undefined;

@@ -13,8 +13,12 @@ type SafeScopeSummary = {
     ebayMarketplaceId: string;
 };
 export type MigrationAdminResult = {
-    command: 'init' | 'verify';
-    status: 'preview' | 'initialized-inert' | 'verified';
+    command: 'init' | 'verify' | 'upgrade';
+    status: 'preview' | 'initialized-inert' | 'verified' | 'upgraded' | 'already-current';
+    schemaUpgrade?: {
+        fromVersion: number;
+        toVersion: number;
+    };
     scope: SafeScopeSummary;
     databaseRelativePath: string;
     projection: MigrationStoreProjection | null;
@@ -42,6 +46,13 @@ export declare function initializeMigrationStore(input: {
     repoRoot: string;
     configPath: string;
     createdAtUtc: string;
+    confirmScope: string;
+    now?: number;
+}): MigrationAdminResult;
+export declare function upgradeMigrationStoreSchema(input: {
+    repoRoot: string;
+    configPath: string;
+    appliedAtUtc: string;
     confirmScope: string;
     now?: number;
 }): MigrationAdminResult;

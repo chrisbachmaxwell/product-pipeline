@@ -15,7 +15,18 @@ The focused persistence suite covers filesystem publication/reopen behavior, pro
 - Records contain stable platform identities, policy/evidence digests, state-machine metadata, and timestamps only. Tokens, cookies, secrets, buyers, names, email, phone, addresses, line items, notes, and raw platform payloads are forbidden.
 - The canonical store API opens an exact 0600 regular file, enables its required SQLite constraints, verifies the complete schema/catalog and audit chain, and uses immediate transactions. A process with direct filesystem/SQLite administration can still replace the file or drop its schema and is outside this local threat boundary. The database is not an externally immutable audit service and does not prove production parity.
 - Every current writer remains quarantined. Persisting a row never enables an external write, establishes a production watermark, transfers ownership, or authorizes a canary.
-- The first implementation is deliberately asymmetric: a production-scoped store may record the Marketplace Connect v1 incumbent baseline and shadow evidence only. It rejects a ProductPipeline ownership transfer, production watermark, approval consumption, or execution reservation. Future-state behavior is exercised only against an explicitly scoped sandbox store.
+- The first implementation is deliberately asymmetric: a production-scoped store may record the Marketplace Connect v1 incumbent baseline and shadow evidence only. Outside the schema-v2 listing-revise slice below, it rejects a ProductPipeline ownership transfer, production watermark, approval consumption, or execution reservation. Future-state behavior for every other responsibility is exercised only against an explicitly scoped sandbox store.
+
+## Schema version 2 — production listing-revise slice (2026-08-14, goal G4)
+
+Version 2 narrows exactly four production denials to admit one reviewed responsibility and nothing else:
+
+- `idempotency_intents_deny_production` admits only `action = 'revise_ebay_listing'`; every other production writer intent stays denied by the same trigger.
+- The ownership transition trigger and store guard admit a `listingRevise` chain whose genesis is `paused` (there is no verified Marketplace Connect listing owner to record — a `marketplace_connect` owner for `listingRevise` is permanently rejected in every environment) and whose later versions move only between `paused` and `product_pipeline` under the existing staged-transition pairs.
+- Production reconciliation admits, in addition to shadow zero-write runs, `production_canary` runs for `listingRevise` with `external_writes_observed = 0` — the exact-target post-dispatch verification read.
+- Attempt resolution gains a `listingRevise` branch bound to the new append-only `listing_revise_observations` table: a resolution requires a passed, authoritative, exception-free reconciliation run whose recorded observation effect (`revised_state_observed` / `revised_state_absent`) exactly matches the claimed resolution. The orderImport branch and its `order_links` predicates are unchanged.
+
+The order watermark, historical-backfill, order-creation, price, inventory, mapping, fulfillment, and feedback denials are untouched. Upgrading an existing verified v1 store is an explicit operator action only: `migration-admin upgrade --config … --applied-at … --confirm-scope <exact scope digest>`, backed by `upgradeMigrationStore`, which verifies the complete v1 history and catalog digest before applying v2 in one immediate transaction and re-verifying. Runtime never upgrades; a v1 store fails every ordinary open until the operator upgrades it.
 
 ## Canonical responsibility vocabulary
 

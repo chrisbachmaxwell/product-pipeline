@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, } from '../safety/responsibilities.js';
 import { INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY } from './types.js';
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const MIGRATION_STORE_APPLICATION_ID = 0x50504d53;
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ');
 const migrationResponsibilitiesSql = sqlList(MIGRATION_RESPONSIBILITIES);
@@ -1161,12 +1161,224 @@ ${relationshipTriggerSql}
 function sqlChecksum(sql) {
     return `sha256:${createHash('sha256').update(sql, 'utf8').digest('hex')}`;
 }
+/**
+ * Schema version 2 — the reviewed one-responsibility production
+ * listing-revise slice. It narrows exactly three denial triggers and adds the
+ * durable listing-revise observation record that attempt resolution binds to.
+ * Every other production denial — order intents, watermarks, historical
+ * backfill, price/inventory/mapping/fulfillment/feedback writers — is
+ * unchanged and still enforced by the same triggers.
+ */
+const migrationTwoSql = `
+DROP TRIGGER idempotency_intents_deny_production;
+CREATE TRIGGER idempotency_intents_deny_production
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key AND scope.ebay_environment = 'production'
+)
+AND NEW.action != 'revise_ebay_listing'
+BEGIN
+  SELECT RAISE(ABORT, 'production writer intents are disabled');
+END;
+
+DROP TRIGGER ownership_versions_enforce_safe_transition;
+CREATE TRIGGER ownership_versions_enforce_safe_transition
+BEFORE INSERT ON ownership_versions
+WHEN (
+  NEW.version = 1 AND NEW.owner != 'marketplace_connect'
+  AND NOT (NEW.responsibility = 'listingRevise' AND NEW.owner = 'paused')
+)
+OR (
+  NEW.version > 1 AND NOT EXISTS (
+    SELECT 1 FROM ownership_versions previous
+    WHERE previous.scope_key = NEW.scope_key
+      AND previous.responsibility = NEW.responsibility
+      AND previous.version = NEW.version - 1
+      AND (
+        (previous.owner = 'marketplace_connect' AND NEW.owner = 'paused')
+        OR (previous.owner = 'paused' AND NEW.owner IN ('marketplace_connect', 'product_pipeline'))
+        OR (previous.owner = 'product_pipeline' AND NEW.owner = 'paused')
+      )
+  )
+)
+OR (
+  NEW.responsibility = 'listingRevise' AND NEW.owner = 'marketplace_connect'
+)
+OR EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key
+    AND scope.ebay_environment = 'production'
+    AND NOT (
+      (
+        NEW.version = 1
+        AND NEW.owner = 'marketplace_connect'
+        AND NEW.responsibility IN ('orderImport', 'price', 'inventory')
+      )
+      OR NEW.responsibility = 'listingRevise'
+    )
+)
+OR EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN job_events latest ON latest.job_id = job.job_id
+  WHERE job.scope_key = NEW.scope_key
+    AND job.responsibility = NEW.responsibility
+    AND latest.sequence = (
+      SELECT MAX(candidate.sequence) FROM job_events candidate WHERE candidate.job_id = job.job_id
+    )
+    AND latest.to_state IN ('dispatching', 'reconciliation_required')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'unsafe ownership transition');
+END;
+
+DROP TRIGGER reconciliation_runs_enforce_production_shadow_only;
+CREATE TRIGGER reconciliation_runs_enforce_production_shadow_only
+BEFORE INSERT ON reconciliation_runs
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key
+    AND scope.ebay_environment = 'production'
+    AND NOT (
+      (NEW.mode = 'shadow' AND NEW.authoritative = 0 AND NEW.external_writes_observed = 0)
+      OR (
+        NEW.mode = 'production_canary'
+        AND NEW.responsibility = 'listingRevise'
+        AND NEW.external_writes_observed = 0
+      )
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'production reconciliation is shadow-only and non-authoritative');
+END;
+
+CREATE TABLE listing_revise_observations (
+  observation_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES reconciliation_runs(run_id),
+  intent_key TEXT NOT NULL REFERENCES idempotency_intents(intent_key),
+  target_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  effect TEXT NOT NULL CHECK (effect IN ('revised_state_observed', 'revised_state_absent')),
+  observed_digest TEXT NOT NULL CHECK (${digestCheck('observed_digest')}),
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL
+);
+
+CREATE TRIGGER listing_revise_observations_deny_update
+BEFORE UPDATE ON listing_revise_observations
+BEGIN
+  SELECT RAISE(ABORT, 'listing_revise_observations is append-only');
+END;
+
+CREATE TRIGGER listing_revise_observations_deny_delete
+BEFORE DELETE ON listing_revise_observations
+BEGIN
+  SELECT RAISE(ABORT, 'listing_revise_observations is append-only');
+END;
+
+CREATE TRIGGER listing_revise_observations_deny_conflicting_insert
+BEFORE INSERT ON listing_revise_observations
+WHEN EXISTS (
+  SELECT 1 FROM listing_revise_observations
+  WHERE observation_id = NEW.observation_id OR run_id = NEW.run_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'listing_revise_observations replay or replacement denied');
+END;
+
+CREATE TRIGGER listing_revise_observations_enforce_binding
+BEFORE INSERT ON listing_revise_observations
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM reconciliation_runs run
+  JOIN idempotency_intents intent ON intent.intent_key = NEW.intent_key
+  WHERE run.run_id = NEW.run_id
+    AND run.responsibility = 'listingRevise'
+    AND run.target_identity_key = NEW.target_identity_key
+    AND intent.responsibility = 'listingRevise'
+    AND intent.approval_target_identity_key = NEW.target_identity_key
+    AND intent.scope_key = run.scope_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'listing revise observation binding mismatch');
+END;
+
+DROP TRIGGER attempt_resolutions_require_authoritative_target_reconciliation;
+CREATE TRIGGER attempt_resolutions_require_authoritative_target_reconciliation
+BEFORE INSERT ON attempt_resolutions
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM intent_attempts attempt
+  JOIN execution_jobs job ON job.job_id = attempt.job_id
+  JOIN idempotency_intents intent ON intent.intent_key = attempt.intent_key
+  JOIN reconciliation_runs run ON run.run_id = NEW.reconciliation_run_id
+  JOIN job_events reconciliation_event ON reconciliation_event.job_id = job.job_id
+  WHERE attempt.attempt_id = NEW.attempt_id
+    AND job.scope_key = run.scope_key
+    AND job.responsibility = run.responsibility
+    AND intent.approval_target_identity_key = run.target_identity_key
+    AND run.status = 'passed'
+    AND run.authoritative = 1
+    AND run.mode IN ('test_lane', 'production_canary')
+    AND run.external_writes_observed = 0
+    AND run.result_digest = NEW.evidence_digest
+    AND reconciliation_event.to_state = 'reconciliation_required'
+    AND reconciliation_event.sequence = (
+      SELECT MAX(latest.sequence) FROM job_events latest WHERE latest.job_id = job.job_id
+    )
+    AND run.started_epoch_ms >= reconciliation_event.occurred_epoch_ms
+    AND run.completed_epoch_ms <= NEW.reconciled_epoch_ms
+    AND NOT EXISTS (
+      SELECT 1 FROM reconciliation_exceptions exception
+      WHERE exception.run_id = run.run_id AND exception.severity = 'critical'
+    )
+    AND (
+      (job.responsibility = 'orderImport' AND (
+        (NEW.resolution = 'resolved_existing' AND EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+            AND link.idempotency_intent_key = intent.intent_key
+            AND link.link_kind = 'product_pipeline_created'
+        ))
+        OR
+        (NEW.resolution = 'confirmed_missing' AND NOT EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+        ))
+      ))
+      OR
+      (job.responsibility = 'listingRevise' AND EXISTS (
+        SELECT 1 FROM listing_revise_observations observation
+        WHERE observation.run_id = run.run_id
+          AND observation.intent_key = intent.intent_key
+          AND (
+            (NEW.resolution = 'resolved_existing'
+              AND observation.effect = 'revised_state_observed')
+            OR
+            (NEW.resolution = 'confirmed_missing'
+              AND observation.effect = 'revised_state_absent')
+          )
+      ))
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'attempt resolution lacks authoritative target reconciliation');
+END;
+`;
 export const SCHEMA_MIGRATIONS = [
     {
         version: 1,
         name: 'durable_migration_state_v1',
         sql: migrationOneSql,
         checksum: sqlChecksum(migrationOneSql),
+    },
+    {
+        version: 2,
+        name: 'production_listing_revise_slice_v2',
+        sql: migrationTwoSql,
+        checksum: sqlChecksum(migrationTwoSql),
     },
 ];
 const bootstrapSql = `
@@ -1199,15 +1411,20 @@ BEGIN
   SELECT RAISE(ABORT, 'schema migration replay or replacement denied');
 END;
 `;
-function installSchema(database, appliedAtUtc) {
+function applyMigration(database, migration, appliedAtUtc) {
+    database.exec(migration.sql);
+    database
+        .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)')
+        .run(migration.version, migration.name, migration.checksum, appliedAtUtc);
+    database.pragma(`user_version = ${migration.version}`);
+}
+function installSchema(database, appliedAtUtc, throughVersion = CURRENT_SCHEMA_VERSION) {
     const apply = database.transaction(() => {
         database.exec(bootstrapSql);
         for (const migration of SCHEMA_MIGRATIONS) {
-            database.exec(migration.sql);
-            database
-                .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)')
-                .run(migration.version, migration.name, migration.checksum, appliedAtUtc);
-            database.pragma(`user_version = ${migration.version}`);
+            if (migration.version > throughVersion)
+                break;
+            applyMigration(database, migration, appliedAtUtc);
         }
         database.pragma(`application_id = ${MIGRATION_STORE_APPLICATION_ID}`);
     });
@@ -1228,12 +1445,12 @@ function canonicalCatalog(database) {
 function catalogDigest(database) {
     return sqlChecksum(JSON.stringify(canonicalCatalog(database)));
 }
-function expectedCatalogDigest() {
+function expectedCatalogDigest(throughVersion = CURRENT_SCHEMA_VERSION) {
     const database = new Database(':memory:');
     try {
         database.pragma('foreign_keys = ON');
         database.pragma('recursive_triggers = ON');
-        installSchema(database, '2000-01-01T00:00:00.000Z');
+        installSchema(database, '2000-01-01T00:00:00.000Z', throughVersion);
         return catalogDigest(database);
     }
     finally {
@@ -1241,7 +1458,8 @@ function expectedCatalogDigest() {
     }
 }
 export const EXPECTED_SCHEMA_CATALOG_DIGEST = expectedCatalogDigest();
-export function initializeSchema(database, appliedAtUtc) {
+const expectedCatalogDigestByVersion = new Map(SCHEMA_MIGRATIONS.map((migration) => [migration.version, expectedCatalogDigest(migration.version)]));
+export function initializeSchema(database, appliedAtUtc, throughVersion = CURRENT_SCHEMA_VERSION) {
     const applicationId = database.pragma('application_id', { simple: true });
     const userVersion = database.pragma('user_version', { simple: true });
     const existing = database
@@ -1250,24 +1468,33 @@ export function initializeSchema(database, appliedAtUtc) {
     if (applicationId !== 0 || userVersion !== 0 || existing.count !== 0) {
         throw new Error('Refusing to initialize a non-empty or foreign SQLite database');
     }
-    installSchema(database, appliedAtUtc);
+    if (!SCHEMA_MIGRATIONS.some((migration) => migration.version === throughVersion)) {
+        throw new Error('Requested migration store schema version is unknown');
+    }
+    installSchema(database, appliedAtUtc, throughVersion);
 }
-export function verifySchema(database) {
+export function verifySchemaAtExactVersion(database, requiredVersion) {
+    const expectedDigest = expectedCatalogDigestByVersion.get(requiredVersion);
+    const expectedMigrations = SCHEMA_MIGRATIONS.filter((migration) => migration.version <= requiredVersion);
+    if (expectedDigest === undefined || expectedMigrations.length === 0
+        || expectedMigrations[expectedMigrations.length - 1].version !== requiredVersion) {
+        throw new Error('Requested migration store schema version is unknown');
+    }
     const applicationId = database.pragma('application_id', { simple: true });
     if (applicationId !== MIGRATION_STORE_APPLICATION_ID) {
         throw new Error('SQLite application ID is not ProductPipeline migration state');
     }
     const userVersion = database.pragma('user_version', { simple: true });
-    if (userVersion !== CURRENT_SCHEMA_VERSION) {
-        throw new Error(`Migration store schema version ${String(userVersion)} does not match required version ${CURRENT_SCHEMA_VERSION}`);
+    if (userVersion !== requiredVersion) {
+        throw new Error(`Migration store schema version ${String(userVersion)} does not match required version ${requiredVersion}`);
     }
     const rows = database
         .prepare('SELECT version, name, checksum FROM schema_migrations ORDER BY version')
         .all();
-    if (rows.length !== SCHEMA_MIGRATIONS.length) {
+    if (rows.length !== expectedMigrations.length) {
         throw new Error('Migration store schema history is incomplete or unexpected');
     }
-    for (const [index, expected] of SCHEMA_MIGRATIONS.entries()) {
+    for (const [index, expected] of expectedMigrations.entries()) {
         const actual = rows[index];
         if (actual.version !== expected.version
             || actual.name !== expected.name
@@ -1275,7 +1502,42 @@ export function verifySchema(database) {
             throw new Error(`Migration store schema checksum mismatch at version ${expected.version}`);
         }
     }
-    if (catalogDigest(database) !== EXPECTED_SCHEMA_CATALOG_DIGEST) {
+    if (catalogDigest(database) !== expectedDigest) {
         throw new Error('Migration store SQLite catalog does not match the application schema');
     }
+}
+export function verifySchema(database) {
+    verifySchemaAtExactVersion(database, CURRENT_SCHEMA_VERSION);
+}
+/**
+ * Read the stored schema version without trusting it: the version is accepted
+ * only when the full migration history and catalog digest for that exact
+ * version verify. Used by the explicit operator upgrade path only.
+ */
+export function verifiedStoredSchemaVersion(database) {
+    const userVersion = database.pragma('user_version', { simple: true });
+    if (typeof userVersion !== 'number') {
+        throw new Error('Migration store schema version is unreadable');
+    }
+    verifySchemaAtExactVersion(database, userVersion);
+    return userVersion;
+}
+/**
+ * Apply every migration beyond the store's verified current version, inside
+ * one immediate transaction, and verify the resulting catalog exactly.
+ */
+export function upgradeSchemaToCurrent(database, appliedAtUtc) {
+    const fromVersion = verifiedStoredSchemaVersion(database);
+    if (fromVersion === CURRENT_SCHEMA_VERSION) {
+        return { fromVersion, toVersion: CURRENT_SCHEMA_VERSION };
+    }
+    const pending = SCHEMA_MIGRATIONS.filter((migration) => migration.version > fromVersion);
+    const apply = database.transaction(() => {
+        for (const migration of pending) {
+            applyMigration(database, migration, appliedAtUtc);
+        }
+    });
+    apply.immediate();
+    verifySchema(database);
+    return { fromVersion, toVersion: CURRENT_SCHEMA_VERSION };
 }

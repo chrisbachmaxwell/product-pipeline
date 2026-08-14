@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { createMigrationStore, } from '../migration-store/index.js';
+import { createMigrationStore, upgradeMigrationStore, } from '../migration-store/index.js';
 import { inspectMigrationStoreReadOnly, } from '../migration-store/projection.js';
 import { assertMigrationDatabaseParentForInit, assertMigrationDatabaseTargetAbsent, loadMigrationAdminConfig, MigrationAdminConfigError, requireCanonicalCreationTime, } from './config.js';
 const defaultIo = {
@@ -73,6 +73,7 @@ function safeProjection(projection) {
             attemptResolutions: projection.counts.attemptResolutions,
             reconciliationRuns: projection.counts.reconciliationRuns,
             reconciliationExceptions: projection.counts.reconciliationExceptions,
+            listingReviseObservations: projection.counts.listingReviseObservations,
             auditEvents: projection.counts.auditEvents,
         }
         : null;
@@ -174,6 +175,37 @@ export function initializeMigrationStore(input) {
         safety: safetySummary(),
     };
 }
+export function upgradeMigrationStoreSchema(input) {
+    const loaded = loadMigrationAdminConfig({
+        repoRoot: input.repoRoot,
+        requestedConfigPath: input.configPath,
+    });
+    requireCanonicalCreationTime(input.appliedAtUtc, input.now);
+    if (input.confirmScope !== loaded.scopeDigest) {
+        throw new MigrationAdminConfigError(['scope confirmation digest does not match']);
+    }
+    const upgrade = upgradeMigrationStore({
+        databasePath: loaded.databaseAbsolutePath,
+        expectedScope: loaded.config.scope,
+        appliedAtUtc: input.appliedAtUtc,
+    });
+    const projection = inspectMigrationStoreReadOnly({
+        databasePath: loaded.databaseAbsolutePath,
+        expectedScope: loaded.config.scope,
+    });
+    if (projection.status !== 'verified') {
+        throw new MigrationAdminPostconditionError();
+    }
+    return {
+        command: 'upgrade',
+        status: upgrade.fromVersion === upgrade.toVersion ? 'already-current' : 'upgraded',
+        schemaUpgrade: upgrade,
+        scope: scopeSummary(loaded),
+        databaseRelativePath: loaded.config.databasePath,
+        projection: safeProjection(projection),
+        safety: safetySummary(),
+    };
+}
 export function verifyMigrationStore(input) {
     const loaded = loadMigrationAdminConfig({
         repoRoot: input.repoRoot,
@@ -258,6 +290,32 @@ export function buildMigrationAdminProgram(io = defaultIo) {
             const message = safeError(error);
             io.stderr(options.json
                 ? JSON.stringify({ command: 'init', status: 'denied', error: message })
+                : message);
+            io.setExitCode(1);
+        }
+    });
+    program
+        .command('upgrade')
+        .description('Upgrade one existing verified migration-state database to the current reviewed schema version')
+        .requiredOption('--config <path>', 'Strict nonsecret repository-local configuration')
+        .requiredOption('--applied-at <utc>', 'Canonical UTC upgrade instant')
+        .requiredOption('--confirm-scope <sha256>', 'Exact scope digest confirming the one store to upgrade')
+        .option('--repo-root <path>', 'ProductPipeline repository root', '.')
+        .option('--json', 'Emit one JSON object')
+        .action((options) => {
+        try {
+            const result = upgradeMigrationStoreSchema({
+                repoRoot: options.repoRoot,
+                configPath: options.config,
+                appliedAtUtc: options.appliedAt,
+                confirmScope: options.confirmScope,
+            });
+            printResult(result, Boolean(options.json), io);
+        }
+        catch (error) {
+            const message = safeError(error);
+            io.stderr(options.json
+                ? JSON.stringify({ command: 'upgrade', status: 'denied', error: message })
                 : message);
             io.setExitCode(1);
         }

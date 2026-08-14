@@ -446,7 +446,7 @@ describe('migration-admin strict local boundary', () => {
     })).toThrow(/not in the future/);
   });
 
-  it('exposes exactly init and verify and emits one JSON preview with exit code 2', async () => {
+  it('exposes exactly init, upgrade, and verify and emits one JSON preview with exit code 2', async () => {
     const repository = temporaryRepository();
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -457,7 +457,7 @@ describe('migration-admin strict local boundary', () => {
       setExitCode: (code) => exitCodes.push(code),
     });
     program.exitOverride();
-    expect(program.commands.map((command) => command.name())).toEqual(['init', 'verify']);
+    expect(program.commands.map((command) => command.name())).toEqual(['init', 'upgrade', 'verify']);
     expect(JSON.stringify(program.commands.map((command) => command.options.map((option) => option.long))))
       .not.toMatch(/--live|--write|--force|--reset|--migrate|--watermark|--import|--job/);
 
@@ -479,6 +479,60 @@ describe('migration-admin strict local boundary', () => {
     expect(JSON.parse(stdout[0])).toMatchObject({ command: 'init', status: 'preview' });
     expect(stdout[0]).not.toContain('usedcam-0');
     expect(fs.existsSync(path.join(repository.root, '.local'))).toBe(false);
+  });
+
+  it('upgrades only with the exact scope confirmation and reports already-current idempotently', async () => {
+    const repository = temporaryRepository();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCodes: number[] = [];
+    const io = {
+      stdout: (message: string) => stdout.push(message),
+      stderr: (message: string) => stderr.push(message),
+      setExitCode: (code: number) => exitCodes.push(code),
+    };
+    createDatabaseParent(repository.root);
+    const preview = previewMigrationStoreInitialization({
+      repoRoot: repository.root,
+      configPath: CONFIG_PATH,
+      createdAtUtc: CREATED_AT,
+      now: NOW,
+    });
+    initializeMigrationStore({
+      repoRoot: repository.root,
+      configPath: CONFIG_PATH,
+      createdAtUtc: CREATED_AT,
+      confirmScope: preview.loaded.scopeDigest,
+      now: NOW,
+    });
+
+    const program = buildMigrationAdminProgram(io);
+    program.exitOverride();
+    await program.parseAsync([
+      'node', 'migration-admin', 'upgrade',
+      '--repo-root', repository.root,
+      '--config', CONFIG_PATH,
+      '--applied-at', CREATED_AT,
+      '--confirm-scope', `sha256:${'f'.repeat(64)}`,
+      '--json',
+    ]);
+    expect(exitCodes).toEqual([1]);
+    expect(JSON.parse(stderr[0])).toMatchObject({ command: 'upgrade', status: 'denied' });
+
+    await program.parseAsync([
+      'node', 'migration-admin', 'upgrade',
+      '--repo-root', repository.root,
+      '--config', CONFIG_PATH,
+      '--applied-at', CREATED_AT,
+      '--confirm-scope', preview.loaded.scopeDigest,
+      '--json',
+    ]);
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0])).toMatchObject({
+      command: 'upgrade',
+      status: 'already-current',
+      schemaUpgrade: { fromVersion: 2, toVersion: 2 },
+    });
   });
 
   it('keeps migration-admin isolated from network, credentials, runtime, and legacy CLIs', () => {

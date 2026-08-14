@@ -11,6 +11,7 @@ export {
   openMigrationStore,
   openMigrationStoreReadOnly,
   sha256Digest,
+  upgradeMigrationStore,
 } from './store.js';
 export type { MigrationStore } from './store.js';
 export { CURRENT_SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './schema.js';

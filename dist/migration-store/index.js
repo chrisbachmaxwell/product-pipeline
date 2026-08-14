@@ -2,7 +2,7 @@
  * Dedicated migration-state persistence. This module is intentionally not
  * imported by server startup, legacy sync code, or any external adapter.
  */
-export { MigrationStoreError, createMigrationStore, deriveExternalIdentityKey, deriveIdempotencyKey, deriveScopeKey, openMigrationStore, openMigrationStoreReadOnly, sha256Digest, } from './store.js';
+export { MigrationStoreError, createMigrationStore, deriveExternalIdentityKey, deriveIdempotencyKey, deriveScopeKey, openMigrationStore, openMigrationStoreReadOnly, sha256Digest, upgradeMigrationStore, } from './store.js';
 export { CURRENT_SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './schema.js';
 export { inspectMigrationStoreReadOnly } from './projection.js';
 export * from './types.js';

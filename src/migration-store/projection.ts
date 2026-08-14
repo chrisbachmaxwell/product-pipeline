@@ -27,6 +27,7 @@ export type MigrationStoreProjectionCounts = {
   attemptResolutions: number;
   reconciliationRuns: number;
   reconciliationExceptions: number;
+  listingReviseObservations: number;
   auditEvents: number;
 };
 
@@ -129,6 +130,7 @@ function fixedCounts(counts: Record<string, number>): MigrationStoreProjectionCo
     attemptResolutions: counts.attempt_resolutions,
     reconciliationRuns: counts.reconciliation_runs,
     reconciliationExceptions: counts.reconciliation_exceptions,
+    listingReviseObservations: counts.listing_revise_observations,
     auditEvents: counts.audit_events,
   };
 }
@@ -189,26 +191,29 @@ export function inspectMigrationStoreReadOnly(input: {
         if (storedWatermark !== null) {
           throw new Error('Production migration state contains a forbidden watermark');
         }
-        const acceptedProductionResponsibilities = new Set([
+        const acceptedProductionBaseline = new Set([
           'orderImport',
           'price',
           'inventory',
         ]);
+        // Production execution authority is valid only for the reviewed
+        // listing-revise slice: a paused/product_pipeline listingRevise
+        // ownership chain, and execution rows scoped exclusively to
+        // listingRevise. Any other configured writer state is forbidden.
+        const ownershipValid = ownership.every((entry) => {
+          if (!entry.configured) return true;
+          if (entry.responsibility === 'listingRevise') {
+            return entry.owner !== 'marketplace_connect'
+              && entry.singleWriterVerified === true;
+          }
+          return acceptedProductionBaseline.has(entry.responsibility)
+            && entry.version === 1
+            && entry.owner === 'marketplace_connect'
+            && entry.singleWriterVerified === true;
+        });
         if (
-          ownership.some((entry) =>
-            entry.configured
-            && (
-              !acceptedProductionResponsibilities.has(entry.responsibility)
-              || entry.version !== 1
-              || entry.owner !== 'marketplace_connect'
-              || entry.singleWriterVerified !== true
-            ))
-          || counts.idempotencyIntents !== 0
-          || counts.actionApprovals !== 0
-          || counts.approvalConsumptions !== 0
-          || counts.executionJobs !== 0
-          || counts.intentAttempts !== 0
-          || counts.attemptResolutions !== 0
+          !ownershipValid
+          || store.countExecutionRowsOutsideResponsibility('listingRevise') !== 0
         ) {
           throw new Error('Production migration state contains forbidden execution authority');
         }

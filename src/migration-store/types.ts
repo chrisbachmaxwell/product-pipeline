@@ -101,6 +101,15 @@ export type ReconciliationExceptionInput = {
   detailsDigest: string;
 };
 
+export type ListingReviseEffect = 'revised_state_observed' | 'revised_state_absent';
+
+export type ListingReviseObservationInput = {
+  observationId: string;
+  intentKey: string;
+  effect: ListingReviseEffect;
+  observedDigest: string;
+};
+
 export type AuditVerification = {
   valid: boolean;
   recordCount: number;

@@ -51,7 +51,7 @@ export type UnavailableMigrationStateProjection = {
 export type MigrationStateApiProjection =
   | {
       status: 'verified';
-      schemaVersion: 1;
+      schemaVersion: 2;
       scope: {
         scopeKey: string;
         shopifyStoreDomain: string;
@@ -154,6 +154,7 @@ const COUNT_KEYS = [
   'attemptResolutions',
   'reconciliationRuns',
   'reconciliationExceptions',
+  'listingReviseObservations',
   'auditEvents',
 ] as const;
 
@@ -207,7 +208,7 @@ function normalizeVerifiedProjection(
     (blocker) => typeof blocker === 'string' && BLOCKER.test(blocker),
   );
   const contractValid =
-    projection.schemaVersion === 1 &&
+    projection.schemaVersion === 2 &&
     scope !== null &&
     DIGEST.test(scope.scopeKey) &&
     SHOPIFY_DOMAIN.test(scope.shopifyStoreDomain) &&
@@ -239,13 +240,20 @@ function normalizeVerifiedProjection(
 
   const productionOwnershipValid = scope?.ebayEnvironment !== 'production' || ownership.every(
     (entry) => {
+      if (!entry.configured) return true;
+      // The reviewed listing-revise slice permits a paused/product_pipeline
+      // listingRevise chain; Marketplace Connect is never a valid
+      // listingRevise owner.
+      if (entry.responsibility === 'listingRevise') {
+        return entry.owner !== 'marketplace_connect'
+          && entry.singleWriterVerified === true;
+      }
       const baselineResponsibility = ['orderImport', 'price', 'inventory'].includes(
         entry.responsibility,
       );
-      return entry.configured
-        ? baselineResponsibility && entry.version === 1 && entry.owner === 'marketplace_connect'
-          && entry.singleWriterVerified === true
-        : true;
+      return baselineResponsibility && entry.version === 1
+        && entry.owner === 'marketplace_connect'
+        && entry.singleWriterVerified === true;
     },
   );
 
@@ -261,7 +269,7 @@ function normalizeVerifiedProjection(
 
   return {
     status: 'verified',
-    schemaVersion: 1,
+    schemaVersion: 2,
     scope: {
       scopeKey: scope.scopeKey,
       shopifyStoreDomain: scope.shopifyStoreDomain,
