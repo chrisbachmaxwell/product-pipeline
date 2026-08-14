@@ -5,7 +5,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LISTING_CONTROL_STORE_CAPABILITIES, ListingControlStoreError, deriveListingBaseDigests, initializeListingControlStore, openListingControlStore, openListingControlStoreReadOnly, sha256Digest, } from '../store.js';
+import { LISTING_CONTROL_STORE_CAPABILITIES, ListingControlStoreError, deriveListingBaseDigests, initializeListingControlStore, openListingControlStore, openListingControlStoreReadOnly, sha256Digest, upgradeListingControlStoreV1ToV2, } from '../store.js';
+import { LISTING_CONTROL_APPLICATION_ID, LISTING_CONTROL_MIGRATIONS, LISTING_CONTROL_SCHEMA_VERSION, } from '../schema.js';
 import { LISTING_FIELD_NAMES } from '../types.js';
 const roots = [];
 afterEach(() => {
@@ -96,6 +97,35 @@ function initialized() {
     });
     return { databasePath, store };
 }
+function canonicalV1WithRevision() {
+    const sourcePath = temporaryPath();
+    const source = initializeListingControlStore({ databasePath: sourcePath, scope,
+        createdAtUtc: '2026-08-13T19:59:59.000Z' });
+    const created = source.createRevision(revision());
+    const auditHead = source.verifyAudit().headHash;
+    source.close();
+    const databasePath = temporaryPath();
+    const database = new Database(databasePath);
+    try {
+        fs.chmodSync(databasePath, 0o600);
+        database.pragma('foreign_keys = ON');
+        database.pragma('recursive_triggers = ON');
+        database.exec(LISTING_CONTROL_MIGRATIONS[0].sql);
+        database.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)').run(1, LISTING_CONTROL_MIGRATIONS[0].name, LISTING_CONTROL_MIGRATIONS[0].checksum, '2026-08-13T19:59:59.000Z');
+        database.pragma(`application_id = ${LISTING_CONTROL_APPLICATION_ID}`);
+        database.pragma('user_version = 1');
+        database.exec(`ATTACH DATABASE ${JSON.stringify(sourcePath)} AS source`);
+        for (const table of ['control_scope', 'listing_subjects', 'listing_revisions',
+            'ebay_artifact_bindings', 'shopify_sku_bindings', 'listing_revision_fields', 'audit_events']) {
+            database.exec(`INSERT INTO ${table} SELECT * FROM source.${table}`);
+        }
+        database.exec('DETACH DATABASE source');
+    }
+    finally {
+        database.close();
+    }
+    return { databasePath, revisionDigest: created.revisionDigest, auditHead };
+}
 function expectCode(operation, code) {
     try {
         operation();
@@ -107,6 +137,41 @@ function expectCode(operation, code) {
     }
 }
 describe('listing control store', () => {
+    it('fresh initialization installs the complete immutable V2 migration chain', () => {
+        const { databasePath, store } = initialized();
+        store.close();
+        const database = new Database(databasePath, { readonly: true });
+        expect(database.pragma('user_version', { simple: true })).toBe(LISTING_CONTROL_SCHEMA_VERSION);
+        expect(database.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version').all())
+            .toEqual(LISTING_CONTROL_MIGRATIONS.map(({ version, checksum }) => ({ version, checksum })));
+        database.close();
+    });
+    it('explicitly upgrades canonical V1 data to V2 while preserving revisions and audit', () => {
+        const before = canonicalV1WithRevision();
+        expect(() => openListingControlStore({ databasePath: before.databasePath,
+            expectedScope: scope })).toThrow();
+        const upgraded = upgradeListingControlStoreV1ToV2({ databasePath: before.databasePath,
+            expectedScope: scope, appliedAtUtc: '2026-08-13T20:01:00.000Z' });
+        expect(upgraded.getRevision('revision-1')?.revisionDigest).toBe(before.revisionDigest);
+        expect(upgraded.verifyAudit()).toMatchObject({ valid: true, recordCount: 2,
+            headHash: before.auditHead });
+        upgraded.close();
+    });
+    it('rejects noncanonical V1 before mutation and leaves the rejected bytes unchanged', () => {
+        const before = canonicalV1WithRevision();
+        const database = new Database(before.databasePath);
+        database.exec('DROP TRIGGER schema_migrations_deny_update');
+        database.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 1')
+            .run(`sha256:${'0'.repeat(64)}`);
+        database.close();
+        const rejectedBytes = fs.readFileSync(before.databasePath);
+        expect(() => upgradeListingControlStoreV1ToV2({ databasePath: before.databasePath,
+            expectedScope: scope, appliedAtUtc: '2026-08-13T20:01:00.000Z' })).toThrow();
+        expect(fs.readFileSync(before.databasePath)).toEqual(rejectedBytes);
+        const check = new Database(before.databasePath, { readonly: true });
+        expect(check.pragma('user_version', { simple: true })).toBe(1);
+        check.close();
+    });
     it('initializes explicitly as one 0600 content-review-only file and operational open never creates', () => {
         const databasePath = temporaryPath();
         expectCode(() => openListingControlStore({ databasePath, expectedScope: scope }), 'PATH_REJECTED');
@@ -119,7 +184,8 @@ describe('listing control store', () => {
         expect(fs.statSync(databasePath).mode & 0o777).toBe(0o600);
         expect(store.capabilities).toEqual({
             ...LISTING_CONTROL_STORE_CAPABILITIES,
-            runtimeWired: false,
+            localDraftRuntimeWired: true,
+            providerRuntimeWired: false,
             providerReadSupported: false,
             providerWriteSupported: false,
             externalWritesSupported: false,
@@ -334,6 +400,30 @@ describe('listing control store', () => {
         });
         expectCode(() => store.createRevision(revision({ fields: unsafe })), 'INVALID_INPUT');
         expect(store.verifyAudit()).toMatchObject({ valid: true, recordCount: 1 });
+        store.close();
+    });
+    it('persists unchanged eBay-only facts through the observed lane', () => {
+        const { store } = initialized();
+        const category = '3323';
+        const observed = fields({
+            category: {
+                sourceValue: null,
+                sourceDigest: sha256Digest({ state: 'missing', value: null }),
+                observedValue: category,
+                observedDigest: sha256Digest({ state: 'value', value: category }),
+                proposedValue: category,
+                proposedDigest: sha256Digest({ state: 'value', value: category }),
+                proposedSource: 'observed',
+            },
+        });
+        const created = store.createRevision(revision({ fields: observed }));
+        expect(created.fields.find((field) => field.field === 'category')).toMatchObject({
+            sourceValue: null,
+            overrideValue: null,
+            observedValue: category,
+            proposedValue: category,
+            proposedSource: 'observed',
+        });
         store.close();
     });
     it('does not allow createRevision to assert review or stale truth', () => {

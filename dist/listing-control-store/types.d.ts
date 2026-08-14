@@ -32,7 +32,7 @@ export type ListingFieldInput = Readonly<{
     overrideDigest: Digest;
     proposedValue: string | null;
     proposedDigest: Digest;
-    proposedSource: 'source' | 'default' | 'override' | 'omit';
+    proposedSource: 'source' | 'observed' | 'default' | 'override' | 'omit';
     observedValue: string | null;
     observedDigest: Digest;
 }>;

@@ -24,12 +24,24 @@ export async function verifyShopifySessionToken(token) {
         const shopify = await createShopifyApi();
         const payload = await shopify.session.decodeSessionToken(token);
         const expectedDestination = `https://${credentials.storeDomain}`;
-        return (payload.dest.replace(/\/$/, '') === expectedDestination &&
+        const valid = (payload.dest.replace(/\/$/, '') === expectedDestination &&
             payload.iss.replace(/\/$/, '') === `${expectedDestination}/admin`);
+        if (!valid || typeof payload.sub !== 'string'
+            || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(payload.sub))
+            return null;
+        return Object.freeze({
+            kind: 'shopify_session',
+            actorId: `shopify-user:${payload.sub}`,
+            subject: payload.sub,
+            shopifyStoreDomain: credentials.storeDomain,
+        });
     }
     catch {
-        return false;
+        return null;
     }
+}
+export function apiPrincipal(req) {
+    return (req.apiPrincipal) ?? null;
 }
 /**
  * API authentication supports either:
@@ -49,6 +61,9 @@ export function createApiKeyAuth(dependencies = {}) {
     const testModeEnabled = dependencies.testMode ?? isTestMode;
     return async (req, res, next) => {
         if (testModeEnabled()) {
+            req.apiPrincipal = Object.freeze({
+                kind: 'test_mode', actorId: 'test-mode', subject: null, shopifyStoreDomain: null,
+            });
             next();
             return;
         }
@@ -59,11 +74,17 @@ export function createApiKeyAuth(dependencies = {}) {
             expectedApiKey &&
             providedApiKey &&
             constantTimeEqual(providedApiKey, expectedApiKey)) {
+            req.apiPrincipal = Object.freeze({
+                kind: 'operator_api_key', actorId: 'operator-api-key', subject: null,
+                shopifyStoreDomain: null,
+            });
             next();
             return;
         }
         const sessionToken = bearerToken(req);
-        if (sessionToken && await verifySession(sessionToken)) {
+        const principal = sessionToken ? await verifySession(sessionToken) : null;
+        if (principal) {
+            req.apiPrincipal = principal;
             next();
             return;
         }
@@ -81,13 +102,31 @@ export const apiKeyAuth = createApiKeyAuth();
 const rateLimitStore = new Map();
 const RATE_LIMIT_REQUESTS = 100;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const MAX_RATE_LIMIT_BUCKETS = 10_000;
+function pruneRateLimitStore(now) {
+    for (const [key, bucket] of rateLimitStore) {
+        if (now - bucket.lastRefill >= RATE_LIMIT_WINDOW_MS)
+            rateLimitStore.delete(key);
+    }
+}
+function rateLimitBucket(clientIp, now) {
+    pruneRateLimitStore(now);
+    let bucket = rateLimitStore.get(clientIp);
+    if (!bucket) {
+        if (rateLimitStore.size >= MAX_RATE_LIMIT_BUCKETS)
+            return null;
+        bucket = { tokens: RATE_LIMIT_REQUESTS, lastRefill: now };
+        rateLimitStore.set(clientIp, bucket);
+    }
+    return bucket;
+}
 export const rateLimit = (req, res, next) => {
     const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
     const now = Date.now();
-    let bucket = rateLimitStore.get(clientIp);
+    const bucket = rateLimitBucket(clientIp, now);
     if (!bucket) {
-        bucket = { tokens: RATE_LIMIT_REQUESTS, lastRefill: now };
-        rateLimitStore.set(clientIp, bucket);
+        res.status(429).json({ error: 'Rate limit exceeded' });
+        return;
     }
     const timeDiff = now - bucket.lastRefill;
     const tokensToAdd = Math.floor(timeDiff / RATE_LIMIT_WINDOW_MS * RATE_LIMIT_REQUESTS);
@@ -110,3 +149,9 @@ export const rateLimit = (req, res, next) => {
     });
     next();
 };
+export const API_RATE_LIMIT_TESTING = Object.freeze({
+    maximumBuckets: MAX_RATE_LIMIT_BUCKETS,
+    touch(clientIp, now) { return rateLimitBucket(clientIp, now) !== null; },
+    size() { return rateLimitStore.size; },
+    reset() { rateLimitStore.clear(); },
+});

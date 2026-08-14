@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  API_RATE_LIMIT_TESTING,
   createApiKeyAuth,
   verifyShopifySessionToken,
 } from './auth.js';
@@ -30,6 +31,13 @@ function response() {
   return { res, status, json };
 }
 
+const verifiedPrincipal = {
+  kind: 'shopify_session' as const,
+  actorId: 'shopify-user:operator-1',
+  subject: 'operator-1',
+  shopifyStoreDomain: 'usedcameragear.myshopify.com',
+};
+
 function sessionJwt(overrides: Record<string, unknown> = {}): string {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
@@ -54,13 +62,14 @@ function sessionJwt(overrides: Record<string, unknown> = {}): string {
 }
 
 afterEach(() => {
+  API_RATE_LIMIT_TESTING.reset();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe('API authentication boundary', () => {
   it('does not trust a forged same-origin Referer or Origin', async () => {
-    const verifySession = vi.fn(async () => false);
+    const verifySession = vi.fn(async () => null);
     const middleware = createApiKeyAuth({
       apiKey: () => 'operator-secret',
       operatorApiKeyEnabled: () => true,
@@ -88,7 +97,7 @@ describe('API authentication boundary', () => {
       apiKey: () => 'operator-secret',
       operatorApiKeyEnabled: () => true,
       production: () => true,
-      sessionTokenVerifier: async () => false,
+      sessionTokenVerifier: async () => null,
       testMode: () => false,
     });
 
@@ -109,7 +118,7 @@ describe('API authentication boundary', () => {
       apiKey: () => 'operator-secret',
       operatorApiKeyEnabled: () => true,
       production: () => false,
-      sessionTokenVerifier: async () => false,
+      sessionTokenVerifier: async () => null,
       testMode: () => false,
     });
     const { res } = response();
@@ -124,16 +133,19 @@ describe('API authentication boundary', () => {
     vi.stubEnv('SHOPIFY_CLIENT_ID', 'test-shopify-client');
     vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'test-shopify-secret');
 
-    await expect(verifyShopifySessionToken(sessionJwt())).resolves.toBe(true);
+    await expect(verifyShopifySessionToken(sessionJwt())).resolves.toEqual(verifiedPrincipal);
     await expect(
       verifyShopifySessionToken(sessionJwt({ dest: 'https://other-store.myshopify.com' })),
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
     await expect(
       verifyShopifySessionToken(sessionJwt({ aud: 'other-shopify-client' })),
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
     await expect(
       verifyShopifySessionToken(sessionJwt({ exp: Math.floor(Date.now() / 1000) - 30 })),
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
+    await expect(
+      verifyShopifySessionToken(sessionJwt({ sub: '' })),
+    ).resolves.toBeNull();
   });
 
   it('never enables TEST_MODE authentication bypass in production', async () => {
@@ -156,7 +168,7 @@ describe('API authentication boundary', () => {
     const { res, status } = response();
     const next = vi.fn() as NextFunction;
 
-    await createApiKeyAuth({ sessionTokenVerifier: async () => false })(request(), res, next);
+    await createApiKeyAuth({ sessionTokenVerifier: async () => null })(request(), res, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(status).toHaveBeenCalledWith(401);
@@ -171,5 +183,28 @@ describe('API authentication boundary', () => {
     await createApiKeyAuth()(request(), res, next);
 
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('attaches only the verified Shopify session principal', async () => {
+    const req = request({ authorization: 'Bearer signed-session' });
+    const { res } = response();
+    const next = vi.fn() as NextFunction;
+    await createApiKeyAuth({
+      production: () => true,
+      testMode: () => false,
+      sessionTokenVerifier: async () => verifiedPrincipal,
+    })(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect((req as Request & { apiPrincipal?: unknown }).apiPrincipal).toEqual(verifiedPrincipal);
+  });
+
+  it('bounds and deterministically prunes global IP rate buckets', () => {
+    for (let index = 0; index < API_RATE_LIMIT_TESTING.maximumBuckets; index += 1) {
+      expect(API_RATE_LIMIT_TESTING.touch(`198.51.100.${index}`, 1_000)).toBe(true);
+    }
+    expect(API_RATE_LIMIT_TESTING.size()).toBe(API_RATE_LIMIT_TESTING.maximumBuckets);
+    expect(API_RATE_LIMIT_TESTING.touch('203.0.113.1', 1_000)).toBe(false);
+    expect(API_RATE_LIMIT_TESTING.touch('203.0.113.1', 61_000)).toBe(true);
+    expect(API_RATE_LIMIT_TESTING.size()).toBe(1);
   });
 });

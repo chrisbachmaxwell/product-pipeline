@@ -2,7 +2,8 @@
  * Help article seed — upserts FAQ articles for all shipped features.
  *
  * Idempotent: uses INSERT OR IGNORE by question text.
- * Called on server startup in src/server/index.ts.
+ * The current shadow server does not run seeds at startup. Keep this source
+ * aligned for the separately administered Help database.
  *
  * ## Help Documentation Rule
  * When shipping a new feature, add an article here:
@@ -30,7 +31,7 @@ const articles: HelpArticle[] = [
     sort_order: 1,
     answer: `ProductPipeline is being rebuilt as a simple, operator-safe replacement for Shopify Marketplace Connect's Used Camera Gear eBay integration.
 
-**Current phase:** ProductPipeline is an observation-only shadow. Marketplace Connect remains the production owner for eBay-to-Shopify order import, price, and inventory. ProductPipeline cannot publish, sync, import, update, or delete external commerce data in this phase.
+**Current phase:** ProductPipeline is a provider-read-only shadow. Marketplace Connect remains the production owner for eBay-to-Shopify order import, price, and inventory. Listings can preview and save a bounded **local draft**, but ProductPipeline cannot publish, sync, import, update, or delete external commerce data in this phase.
 
 Use ProductPipeline to review the current ownership policy, local listing/order evidence, exceptions, and offline reconciliation results. AI enrichment, automated image processing, pipeline execution, chat actions, and unsafe bulk-sync controls are legacy scope and are not part of the migration target.
 
@@ -44,7 +45,7 @@ Source, deployment, and live proof are separate: a healthy local screen or consi
 
 **What operators should see:**
 - Overview, Listings, Orders, Reconciliation, and Settings identify the incumbent owner and shadow status.
-- Non-read requests beneath \`/api\` are denied with a writer-quarantined response.
+- Exact \`POST /api/listing-draft\` may append a local draft after verified Shopify-session authentication. Every other non-read API request is denied with a writer-quarantined response.
 - The scheduler and cloud watcher are not mounted.
 - Shopify/eBay webhooks dispatch no work and persist no receipt payload. Verified Shopify receipts produce only a sanitized process log; eBay receipts receive a static no-op acknowledgement.
 - Historical eBay orders are never eligible for Shopify creation; the cutover watermark is unset.
@@ -60,7 +61,7 @@ npm run operator -- audit verify --file .local/operator-audit/operator-cli.jsonl
 
 The operator CLI accepts strict, redacted, local snapshots and appends digest/count/decision evidence to a local hash-chained audit. It has no remote client or application-database adapter, performs zero external writes, and never proves live parity.
 
-Do not disable Marketplace Connect, create a cutover watermark, import an order, or try to bypass the quarantine. Those steps require separate review, evidence, and explicit authorization.`,
+Saving a local draft does not apply, approve, publish, or contact a provider. Do not disable Marketplace Connect, create a cutover watermark, import an order, or try to bypass the quarantine. Those steps require separate review, evidence, and explicit authorization.`,
   },
   {
     question: 'How do I get started?',
@@ -68,8 +69,8 @@ Do not disable Marketplace Connect, create a cutover watermark, import an order,
     sort_order: 3,
     answer: `Start in observation-only mode; do not connect credentials, enable a writer, or use a real order/listing as a test.
 
-1. Open **Overview** and confirm the page reports Marketplace Connect as incumbent and ProductPipeline as shadow read-only.
-2. Review **Listings** and **Orders** as local evidence only. Historical order rows are not import candidates.
+1. Open **Overview** and confirm Marketplace Connect remains the price, inventory, and order owner while ProductPipeline's provider writers are quarantined.
+2. Review **Listings** and open an item to compare its Shopify/eBay mapping. You may preview and save a local draft where enabled; nothing is sent to either provider.
 3. Open **Reconciliation** to review local-ledger exceptions and proof limits. A clean local result is not Shopify/eBay parity.
 4. Open **Settings** to confirm the watermark is missing and external writes/historical backfill are denied. Stale legacy toggles do not override the policy.
 5. For repository-local verification, run \`npm run cli -- status\` and the operator CLI commands in the quarantine help article.
@@ -202,7 +203,15 @@ Check **Pipeline → Images** for a full queue of pending, processing, and compl
 - **Needs attention** means the mapping is missing, ambiguous, or inconsistent.
 - **Unknown** means the latest complete refresh is too old or unavailable.
 
-The catalog refreshes automatically. Open a row to see its mapping, listing fields, management model, and verified ownership by responsibility. ProductPipeline is read-only; Marketplace Connect remains the verified price and inventory writer, while listing and mapping ownership are still unverified.`,
+The catalog refreshes automatically. Open a row to see its mapping, listing fields, management model, and ownership by responsibility. Select **Edit** to prepare and preview a local draft for supported fields, then **Save draft**. The draft stays in ProductPipeline; there is no Apply, Approve, or Publish action. Price and quantity remain read-only under Marketplace Connect, while listing and mapping ownership are still unverified.`,
+  },
+  {
+    question: 'What does Save draft change?',
+    category: 'eBay',
+    sort_order: 1,
+    answer: `**Save draft** appends one local ProductPipeline revision for the item. It can store supported listing, content, image, policy, and location overrides after a preview.
+
+It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot apply, approve, publish, change price or quantity, import an order, or transfer ownership. If the observed listing or latest local revision changed while you were editing, reopen the item before saving again.`,
   },
   {
     question: 'How do I list a product on eBay?',
@@ -214,9 +223,9 @@ The catalog refreshes automatically. Open a row to see its mapping, listing fiel
     question: 'How do I change the eBay category?',
     category: 'eBay',
     sort_order: 2,
-    answer: `Open the item from **Listings** to see the category currently reported by eBay and its Shopify-to-eBay mapping.
+    answer: `Open the item from **Listings**, select **Edit**, enter a positive eBay category ID, and preview the difference. Select **Save draft** to append a versioned local draft.
 
-Editing is not enabled in this release. The next listing-control release will save a versioned local draft, show the exact eBay change for review, and require explicit approval before one remote update.`,
+Saving does not change eBay. Apply, approval, and publishing are not available in this release.`,
   },
   {
     question: 'What are condition descriptions?',
@@ -224,7 +233,7 @@ Editing is not enabled in this release. The next listing-control release will sa
     sort_order: 3,
     answer: `A condition description explains the condition of one item. Open the item from **Listings** to see the current eBay condition and description.
 
-ProductPipeline does not edit it yet. A future edit will create a local draft and preview the exact eBay change before approval.`,
+Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
   },
   {
     question: 'How does eBay order sync work?',
@@ -232,7 +241,7 @@ ProductPipeline does not edit it yet. A future edit will create a local draft an
     sort_order: 4,
     answer: `eBay-to-Shopify order sync is **not active in ProductPipeline's current migration phase**. Marketplace Connect remains the sole production importer.
 
-ProductPipeline's legacy importer remains in source for historical analysis, but it cannot be triggered: non-read API calls are denied, the scheduler is not mounted, eBay webhooks dispatch no order work, the legacy CLI has no order command, the sync service denies at entry, and Shopify order creation independently fails closed.
+ProductPipeline's legacy importer remains in source for historical analysis, but it cannot be triggered: order-related non-read API calls are denied, the scheduler is not mounted, eBay webhooks dispatch no order work, the legacy CLI has no order command, the sync service denies at entry, and Shopify order creation independently fails closed.
 
 **Non-negotiable order rules:**
 - Never import or backfill historical eBay orders.
@@ -348,9 +357,9 @@ Optional. Enter a PhotoRoom template ID to apply a specific background or framin
     question: 'How do I edit condition descriptions?',
     category: 'Settings',
     sort_order: 3,
-    answer: `Condition editing is not enabled in the current Shopify app. Open an item from **Listings** to see the condition and description currently reported by eBay.
+    answer: `Open an item from **Listings**, select **Edit**, and enter the proposed condition description. Preview the difference, then select **Save draft**.
 
-The planned editor will save a local draft, compare it with the current Shopify and eBay values, and show the exact change before approval.`,
+The value is append-only local draft state. It does not update eBay, and this release has no Apply, Approve, or Publish action.`,
   },
   {
     question: 'How do I vote on feature requests?',

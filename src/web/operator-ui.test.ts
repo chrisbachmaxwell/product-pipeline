@@ -400,6 +400,18 @@ describe('stocked listings operator UI', () => {
     expect(isHistoricalBackfillProtected(undefined)).toBe(false);
   });
 
+  it('scopes migration safety copy to provider writes and local draft eligibility', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('./components/MigrationSafety.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain('Shopify and eBay writes remain blocked');
+    expect(source).toContain('Local draft availability is shown on each listing.');
+    expect(source).toContain('Provider writes');
+    expect(source).not.toContain('ProductPipeline remains observation-only');
+    expect(source).not.toContain('No write action is available');
+  });
+
   it('validates the listing workspace identity and remains read only', () => {
     const catalog = listing();
     const workspace = {

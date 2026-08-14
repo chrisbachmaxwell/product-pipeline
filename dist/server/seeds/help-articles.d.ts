@@ -2,7 +2,8 @@
  * Help article seed — upserts FAQ articles for all shipped features.
  *
  * Idempotent: uses INSERT OR IGNORE by question text.
- * Called on server startup in src/server/index.ts.
+ * The current shadow server does not run seeds at startup. Keep this source
+ * aligned for the separately administered Help database.
  *
  * ## Help Documentation Rule
  * When shipping a new feature, add an article here:

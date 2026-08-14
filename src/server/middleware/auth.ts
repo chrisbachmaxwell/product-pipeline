@@ -4,7 +4,14 @@ import { loadShopifyCredentials } from '../../config/credentials.js';
 import { createShopifyApi } from '../../shopify/client.js';
 import { isTestMode } from './test-mode.js';
 
-type SessionTokenVerifier = (token: string) => Promise<boolean>;
+export type ApiPrincipal = Readonly<{
+  kind: 'shopify_session' | 'operator_api_key' | 'test_mode';
+  actorId: string;
+  subject: string | null;
+  shopifyStoreDomain: string | null;
+}>;
+
+type SessionTokenVerifier = (token: string) => Promise<ApiPrincipal | null>;
 
 type ApiAuthDependencies = {
   apiKey?: () => string | undefined;
@@ -31,20 +38,32 @@ function bearerToken(req: Request): string | null {
  * Verify an App Bridge session JWT locally. This performs no OAuth exchange,
  * token refresh, database access, or platform request.
  */
-export async function verifyShopifySessionToken(token: string): Promise<boolean> {
+export async function verifyShopifySessionToken(token: string): Promise<ApiPrincipal | null> {
   try {
     const credentials = await loadShopifyCredentials();
     const shopify = await createShopifyApi();
     const payload = await shopify.session.decodeSessionToken(token);
     const expectedDestination = `https://${credentials.storeDomain}`;
 
-    return (
+    const valid = (
       payload.dest.replace(/\/$/, '') === expectedDestination &&
       payload.iss.replace(/\/$/, '') === `${expectedDestination}/admin`
     );
+    if (!valid || typeof payload.sub !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(payload.sub)) return null;
+    return Object.freeze({
+      kind: 'shopify_session' as const,
+      actorId: `shopify-user:${payload.sub}`,
+      subject: payload.sub,
+      shopifyStoreDomain: credentials.storeDomain,
+    });
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function apiPrincipal(req: Request): ApiPrincipal | null {
+  return ((req as Request & { apiPrincipal?: ApiPrincipal }).apiPrincipal) ?? null;
 }
 
 /**
@@ -66,6 +85,9 @@ export function createApiKeyAuth(dependencies: ApiAuthDependencies = {}) {
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (testModeEnabled()) {
+      (req as Request & { apiPrincipal?: ApiPrincipal }).apiPrincipal = Object.freeze({
+        kind: 'test_mode', actorId: 'test-mode', subject: null, shopifyStoreDomain: null,
+      });
       next();
       return;
     }
@@ -79,12 +101,18 @@ export function createApiKeyAuth(dependencies: ApiAuthDependencies = {}) {
       providedApiKey &&
       constantTimeEqual(providedApiKey, expectedApiKey)
     ) {
+      (req as Request & { apiPrincipal?: ApiPrincipal }).apiPrincipal = Object.freeze({
+        kind: 'operator_api_key', actorId: 'operator-api-key', subject: null,
+        shopifyStoreDomain: null,
+      });
       next();
       return;
     }
 
     const sessionToken = bearerToken(req);
-    if (sessionToken && await verifySession(sessionToken)) {
+    const principal = sessionToken ? await verifySession(sessionToken) : null;
+    if (principal) {
+      (req as Request & { apiPrincipal?: ApiPrincipal }).apiPrincipal = principal;
       next();
       return;
     }
@@ -105,15 +133,33 @@ export const apiKeyAuth = createApiKeyAuth();
 const rateLimitStore = new Map<string, { tokens: number; lastRefill: number }>();
 const RATE_LIMIT_REQUESTS = 100;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const MAX_RATE_LIMIT_BUCKETS = 10_000;
+
+function pruneRateLimitStore(now: number): void {
+  for (const [key, bucket] of rateLimitStore) {
+    if (now - bucket.lastRefill >= RATE_LIMIT_WINDOW_MS) rateLimitStore.delete(key);
+  }
+}
+
+function rateLimitBucket(clientIp: string, now: number) {
+  pruneRateLimitStore(now);
+  let bucket = rateLimitStore.get(clientIp);
+  if (!bucket) {
+    if (rateLimitStore.size >= MAX_RATE_LIMIT_BUCKETS) return null;
+    bucket = { tokens: RATE_LIMIT_REQUESTS, lastRefill: now };
+    rateLimitStore.set(clientIp, bucket);
+  }
+  return bucket;
+}
 
 export const rateLimit = (req: Request, res: Response, next: NextFunction) => {
   const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
 
-  let bucket = rateLimitStore.get(clientIp);
+  const bucket = rateLimitBucket(clientIp, now);
   if (!bucket) {
-    bucket = { tokens: RATE_LIMIT_REQUESTS, lastRefill: now };
-    rateLimitStore.set(clientIp, bucket);
+    res.status(429).json({ error: 'Rate limit exceeded' });
+    return;
   }
 
   const timeDiff = now - bucket.lastRefill;
@@ -140,3 +186,10 @@ export const rateLimit = (req: Request, res: Response, next: NextFunction) => {
 
   next();
 };
+
+export const API_RATE_LIMIT_TESTING = Object.freeze({
+  maximumBuckets: MAX_RATE_LIMIT_BUCKETS,
+  touch(clientIp: string, now: number) { return rateLimitBucket(clientIp, now) !== null; },
+  size() { return rateLimitStore.size; },
+  reset() { rateLimitStore.clear(); },
+});

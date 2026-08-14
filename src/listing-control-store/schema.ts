@@ -6,7 +6,7 @@ import {
   LISTING_MANAGEMENT_MODELS,
 } from './types.js';
 
-export const LISTING_CONTROL_SCHEMA_VERSION = 1;
+export const LISTING_CONTROL_SCHEMA_VERSION = 2;
 export const LISTING_CONTROL_APPLICATION_ID = 0x50504c43;
 
 const sqlList = (values: readonly string[]): string =>
@@ -322,6 +322,76 @@ BEGIN
 END;`).join('\n')}
 `;
 
+/**
+ * V2 adds a truthful unchanged-observation provenance lane. The table rebuild
+ * preserves every immutable V1 row and leaves V1's checksum untouched.
+ */
+const migrationTwoSql = `
+CREATE TABLE listing_revision_fields_v2 (
+  revision_id TEXT NOT NULL REFERENCES listing_revisions(revision_id),
+  field_name TEXT NOT NULL CHECK (field_name IN (${sqlList(LISTING_FIELD_NAMES)})),
+  source_value TEXT,
+  source_digest TEXT NOT NULL CHECK (${digestCheck('source_digest')}),
+  default_value TEXT,
+  default_digest TEXT NOT NULL CHECK (${digestCheck('default_digest')}),
+  override_value TEXT,
+  override_digest TEXT NOT NULL CHECK (${digestCheck('override_digest')}),
+  proposed_value TEXT,
+  proposed_digest TEXT NOT NULL CHECK (${digestCheck('proposed_digest')}),
+  proposed_source TEXT NOT NULL CHECK (proposed_source IN ('source', 'observed', 'default', 'override', 'omit')),
+  observed_value TEXT,
+  observed_digest TEXT NOT NULL CHECK (${digestCheck('observed_digest')}),
+  PRIMARY KEY (revision_id, field_name),
+  CHECK (default_value IS NULL),
+  CHECK (proposed_source <> 'default'),
+  CHECK (
+    (proposed_source = 'omit' AND proposed_value IS NULL)
+    OR (proposed_source = 'source' AND source_value IS NOT NULL AND proposed_value IS source_value)
+    OR (proposed_source = 'observed' AND observed_value IS NOT NULL AND proposed_value IS observed_value)
+    OR (proposed_source = 'override' AND override_value IS NOT NULL AND proposed_value IS override_value)
+  )
+) WITHOUT ROWID;
+
+INSERT INTO listing_revision_fields_v2 (
+  revision_id, field_name, source_value, source_digest, default_value, default_digest,
+  override_value, override_digest, proposed_value, proposed_digest, proposed_source,
+  observed_value, observed_digest
+)
+SELECT
+  revision_id, field_name, source_value, source_digest, default_value, default_digest,
+  override_value, override_digest, proposed_value, proposed_digest, proposed_source,
+  observed_value, observed_digest
+FROM listing_revision_fields;
+
+DROP TRIGGER listing_revision_fields_deny_conflicting_insert;
+DROP TRIGGER listing_revision_fields_deny_update;
+DROP TRIGGER listing_revision_fields_deny_delete;
+DROP TABLE listing_revision_fields;
+ALTER TABLE listing_revision_fields_v2 RENAME TO listing_revision_fields;
+
+CREATE TRIGGER listing_revision_fields_deny_conflicting_insert
+BEFORE INSERT ON listing_revision_fields
+WHEN EXISTS (
+  SELECT 1 FROM listing_revision_fields field
+  WHERE field.revision_id = NEW.revision_id AND field.field_name = NEW.field_name
+)
+BEGIN
+  SELECT RAISE(ABORT, 'listing field replay or replacement denied');
+END;
+
+CREATE TRIGGER listing_revision_fields_deny_update
+BEFORE UPDATE ON listing_revision_fields
+BEGIN
+  SELECT RAISE(ABORT, 'listing_revision_fields is append-only');
+END;
+
+CREATE TRIGGER listing_revision_fields_deny_delete
+BEFORE DELETE ON listing_revision_fields
+BEGIN
+  SELECT RAISE(ABORT, 'listing_revision_fields is append-only');
+END;
+`;
+
 const checksum = (value: string): string =>
   `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 
@@ -332,11 +402,21 @@ export const LISTING_CONTROL_MIGRATIONS = Object.freeze([
     sql: migrationOneSql,
     checksum: checksum(migrationOneSql),
   }),
+  Object.freeze({
+    version: 2,
+    name: 'listing-control-observed-provenance-v2',
+    sql: migrationTwoSql,
+    checksum: checksum(migrationTwoSql),
+  }),
 ]);
 
-function installSchema(database: InstanceType<typeof Database>, appliedAtUtc: string): void {
+function installMigrations(
+  database: InstanceType<typeof Database>,
+  appliedAtUtc: string,
+  migrations: readonly (typeof LISTING_CONTROL_MIGRATIONS)[number][],
+): void {
   const apply = database.transaction(() => {
-    for (const migration of LISTING_CONTROL_MIGRATIONS) {
+    for (const migration of migrations) {
       database.exec(migration.sql);
       database.prepare(
         'INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)',
@@ -346,6 +426,10 @@ function installSchema(database: InstanceType<typeof Database>, appliedAtUtc: st
     database.pragma(`application_id = ${LISTING_CONTROL_APPLICATION_ID}`);
   });
   apply.immediate();
+}
+
+function installSchema(database: InstanceType<typeof Database>, appliedAtUtc: string): void {
+  installMigrations(database, appliedAtUtc, LISTING_CONTROL_MIGRATIONS);
 }
 
 function canonicalCatalog(database: InstanceType<typeof Database>) {
@@ -365,12 +449,12 @@ function catalogDigest(database: InstanceType<typeof Database>): string {
   return checksum(JSON.stringify(canonicalCatalog(database)));
 }
 
-function expectedCatalogDigest(): string {
+function expectedCatalogDigest(migrations = LISTING_CONTROL_MIGRATIONS): string {
   const database = new Database(':memory:');
   try {
     database.pragma('foreign_keys = ON');
     database.pragma('recursive_triggers = ON');
-    installSchema(database, '2000-01-01T00:00:00.000Z');
+    installMigrations(database, '2000-01-01T00:00:00.000Z', migrations);
     return catalogDigest(database);
   } finally {
     database.close();
@@ -378,6 +462,9 @@ function expectedCatalogDigest(): string {
 }
 
 export const LISTING_CONTROL_EXPECTED_CATALOG_DIGEST = expectedCatalogDigest();
+const LISTING_CONTROL_V1_EXPECTED_CATALOG_DIGEST = expectedCatalogDigest(
+  LISTING_CONTROL_MIGRATIONS.slice(0, 1),
+);
 
 export function initializeListingControlSchema(
   database: InstanceType<typeof Database>,
@@ -418,4 +505,38 @@ export function verifyListingControlSchema(database: InstanceType<typeof Databas
   if (catalogDigest(database) !== LISTING_CONTROL_EXPECTED_CATALOG_DIGEST) {
     throw new Error('Listing control SQLite catalog does not match the application schema');
   }
+}
+
+export function verifyListingControlSchemaV1(database: InstanceType<typeof Database>): void {
+  if (database.pragma('application_id', { simple: true }) !== LISTING_CONTROL_APPLICATION_ID
+    || database.pragma('user_version', { simple: true }) !== 1) {
+    throw new Error('Listing control V1 schema identity mismatch');
+  }
+  const history = database.prepare(
+    'SELECT version, name, checksum FROM schema_migrations ORDER BY version',
+  ).all() as Array<{ version: number; name: string; checksum: string }>;
+  const expected = LISTING_CONTROL_MIGRATIONS[0]!;
+  if (history.length !== 1 || history[0]?.version !== expected.version
+    || history[0].name !== expected.name || history[0].checksum !== expected.checksum
+    || catalogDigest(database) !== LISTING_CONTROL_V1_EXPECTED_CATALOG_DIGEST) {
+    throw new Error('Listing control V1 schema is not canonical');
+  }
+}
+
+/** Explicit admin-only upgrade. Runtime open paths never invoke this function. */
+export function upgradeListingControlSchemaV1ToV2(
+  database: InstanceType<typeof Database>,
+  appliedAtUtc: string,
+): void {
+  verifyListingControlSchemaV1(database);
+  const migration = LISTING_CONTROL_MIGRATIONS[1]!;
+  const apply = database.transaction(() => {
+    database.exec(migration.sql);
+    database.prepare(
+      'INSERT INTO schema_migrations (version, name, checksum, applied_at_utc) VALUES (?, ?, ?, ?)',
+    ).run(migration.version, migration.name, migration.checksum, appliedAtUtc);
+    database.pragma(`user_version = ${migration.version}`);
+  });
+  apply.immediate();
+  verifyListingControlSchema(database);
 }

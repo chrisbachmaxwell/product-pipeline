@@ -52,6 +52,16 @@ export function getNewCapabilities(): Capability[] {
 // ---------------------------------------------------------------------------
 
 registerCapability({
+  id: 'local-listing-drafts',
+  name: 'Local Listing Drafts',
+  description: 'Preview local listing drafts and, when configured, save local revisions without changing Shopify or eBay.',
+  category: 'ebay',
+  examplePrompts: ['open a listing draft', 'save this local draft'],
+  apiEndpoints: ['GET /api/listing-draft', 'POST /api/listing-draft'],
+  addedAt: '2026-08-13',
+});
+
+registerCapability({
   id: 'product-sync',
   name: 'Product Sync',
   description: 'Sync products from Shopify to eBay — push titles, prices, inventory and images.',

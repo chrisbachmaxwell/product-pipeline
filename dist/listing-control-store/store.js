@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { initializeListingControlSchema, verifyListingControlSchema, } from './schema.js';
+import { initializeListingControlSchema, upgradeListingControlSchemaV1ToV2, verifyListingControlSchema, verifyListingControlSchemaV1, } from './schema.js';
 import { LISTING_DRAFT_STATES, LISTING_FIELD_NAMES, LISTING_MANAGEMENT_MODELS, } from './types.js';
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const GENESIS_HASH = 'GENESIS';
@@ -19,7 +19,8 @@ const PROHIBITED_VALUE_PATTERNS = [
     /(?:v\^|v%5e)1\.1(?:#|%23)[^\s"']{8,}(?:t\^|t%5e)/i,
 ];
 export const LISTING_CONTROL_STORE_CAPABILITIES = Object.freeze({
-    runtimeWired: false,
+    localDraftRuntimeWired: true,
+    providerRuntimeWired: false,
     providerReadSupported: false,
     providerWriteSupported: false,
     externalWritesSupported: false,
@@ -288,13 +289,16 @@ function canonicalField(input) {
     }
     const selectedValue = input.proposedSource === 'source'
         ? sourceValue
-        : input.proposedSource === 'override'
-            ? overrideValue
-            : input.proposedSource === 'omit'
-                ? null
-                : undefined;
+        : input.proposedSource === 'observed'
+            ? observedValue
+            : input.proposedSource === 'override'
+                ? overrideValue
+                : input.proposedSource === 'omit'
+                    ? null
+                    : undefined;
     if (selectedValue === undefined
-        || ((input.proposedSource === 'source' || input.proposedSource === 'override') && selectedValue === null)
+        || ((input.proposedSource === 'source' || input.proposedSource === 'observed'
+            || input.proposedSource === 'override') && selectedValue === null)
         || proposedValue !== selectedValue) {
         throw new ListingControlStoreError('INVALID_INPUT', `${input.field} proposed provenance mismatch`);
     }
@@ -1016,6 +1020,34 @@ export function openListingControlStoreReadOnly(input) {
     }
     catch (error) {
         database.close();
+        translateError(error);
+    }
+}
+/**
+ * Explicit operational migration for a pre-existing canonical V1 file. This
+ * is intentionally absent from every runtime open/request path.
+ */
+export function upgradeListingControlStoreV1ToV2(input) {
+    assertExactKeys(input, ['databasePath', 'expectedScope', 'appliedAtUtc'], 'upgrade');
+    const databasePath = normalizeExactPath(input.databasePath, true);
+    const applied = timestamp(input.appliedAtUtc, 'appliedAtUtc');
+    let database = null;
+    try {
+        database = new Database(databasePath, { fileMustExist: true });
+        configureWritable(database);
+        verifyListingControlSchemaV1(database);
+        const scope = verifyExpectedScope(database, input.expectedScope);
+        verifyIntegrity(database, scope.scopeKey);
+        upgradeListingControlSchemaV1ToV2(database, applied.utc);
+        verifyIntegrity(database, scope.scopeKey);
+        database.close();
+        database = null;
+        fs.chmodSync(databasePath, 0o600);
+        return openListingControlStore({ databasePath, expectedScope: input.expectedScope });
+    }
+    catch (error) {
+        if (database?.open)
+            database.close();
         translateError(error);
     }
 }

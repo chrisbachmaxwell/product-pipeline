@@ -4,7 +4,9 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
   initializeListingControlSchema,
+  upgradeListingControlSchemaV1ToV2,
   verifyListingControlSchema,
+  verifyListingControlSchemaV1,
 } from './schema.js';
 import {
   LISTING_DRAFT_STATES,
@@ -36,7 +38,8 @@ const PROHIBITED_VALUE_PATTERNS = [
   /(?:v\^|v%5e)1\.1(?:#|%23)[^\s"']{8,}(?:t\^|t%5e)/i,
 ] as const;
 export const LISTING_CONTROL_STORE_CAPABILITIES = Object.freeze({
-  runtimeWired: false,
+  localDraftRuntimeWired: true,
+  providerRuntimeWired: false,
   providerReadSupported: false,
   providerWriteSupported: false,
   externalWritesSupported: false,
@@ -347,13 +350,16 @@ function canonicalField(input: ListingFieldInput): ListingFieldInput {
   }
   const selectedValue = input.proposedSource === 'source'
     ? sourceValue
+    : input.proposedSource === 'observed'
+      ? observedValue
     : input.proposedSource === 'override'
       ? overrideValue
       : input.proposedSource === 'omit'
         ? null
         : undefined;
   if (selectedValue === undefined
-    || ((input.proposedSource === 'source' || input.proposedSource === 'override') && selectedValue === null)
+    || ((input.proposedSource === 'source' || input.proposedSource === 'observed'
+      || input.proposedSource === 'override') && selectedValue === null)
     || proposedValue !== selectedValue) {
     throw new ListingControlStoreError('INVALID_INPUT', `${input.field} proposed provenance mismatch`);
   }
@@ -1265,6 +1271,37 @@ export function openListingControlStoreReadOnly(input: {
     return new ListingControlStoreImpl(database, databasePath, canonicalScope(input.expectedScope), scope.scopeKey, false);
   } catch (error) {
     database.close();
+    translateError(error);
+  }
+}
+
+/**
+ * Explicit operational migration for a pre-existing canonical V1 file. This
+ * is intentionally absent from every runtime open/request path.
+ */
+export function upgradeListingControlStoreV1ToV2(input: {
+  databasePath: string;
+  expectedScope: ListingControlScope;
+  appliedAtUtc: string;
+}): ListingControlStore {
+  assertExactKeys(input, ['databasePath', 'expectedScope', 'appliedAtUtc'], 'upgrade');
+  const databasePath = normalizeExactPath(input.databasePath, true);
+  const applied = timestamp(input.appliedAtUtc, 'appliedAtUtc');
+  let database: Sqlite | null = null;
+  try {
+    database = new Database(databasePath, { fileMustExist: true });
+    configureWritable(database);
+    verifyListingControlSchemaV1(database);
+    const scope = verifyExpectedScope(database, input.expectedScope);
+    verifyIntegrity(database, scope.scopeKey);
+    upgradeListingControlSchemaV1ToV2(database, applied.utc);
+    verifyIntegrity(database, scope.scopeKey);
+    database.close();
+    database = null;
+    fs.chmodSync(databasePath, 0o600);
+    return openListingControlStore({ databasePath, expectedScope: input.expectedScope });
+  } catch (error) {
+    if (database?.open) database.close();
     translateError(error);
   }
 }
