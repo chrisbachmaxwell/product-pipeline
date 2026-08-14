@@ -167,7 +167,7 @@ Before shipping any change to order sync code:
 ## 7. Deployment Notes
 
 - Railway auto-deploys from `git push origin main`
-- Production DB: `~/.clawdbot/ebaysync.db` (not the dev DB at `src/db/product-pipeline.db`)
+- Current Railway Production legacy DB contract: `/data/ebaysync.db` on the attached volume (not the dev DB at `src/db/product-pipeline.db`). The older `~/.clawdbot/ebaysync.db` path is stale local-era documentation and must never be substituted for a Production operation.
 - `SAFETY_MODE` defaults to `"safe"` even if the env var is not set
 - After any order-sync-related deploy, monitor the Shopify orders page for 30 minutes
 
@@ -183,7 +183,7 @@ Format:
 Description of what changed and why.
 ```
 
-This file was last updated: **2026-02-24**
+This file was last updated: **2026-08-14**
 
 ---
 

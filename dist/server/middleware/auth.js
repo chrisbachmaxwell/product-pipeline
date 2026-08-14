@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
-import { loadShopifyCredentials } from '../../config/credentials.js';
-import { createShopifyApi } from '../../shopify/client.js';
+import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../../shopify/production-identity.js';
+import { decodeShopifySessionTokenForRequest } from '../../shopify/request-verification.js';
 import { isTestMode } from './test-mode.js';
 function constantTimeEqual(left, right) {
     const leftBuffer = Buffer.from(left);
@@ -20,10 +20,10 @@ function bearerToken(req) {
  */
 export async function verifyShopifySessionToken(token) {
     try {
-        const credentials = await loadShopifyCredentials();
-        const shopify = await createShopifyApi();
-        const payload = await shopify.session.decodeSessionToken(token);
-        const expectedDestination = `https://${credentials.storeDomain}`;
+        const payload = await decodeShopifySessionTokenForRequest(token);
+        if (payload === null)
+            return null;
+        const expectedDestination = `https://${PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain}`;
         const valid = (payload.dest.replace(/\/$/, '') === expectedDestination &&
             payload.iss.replace(/\/$/, '') === `${expectedDestination}/admin`);
         if (!valid || typeof payload.sub !== 'string'
@@ -33,7 +33,7 @@ export async function verifyShopifySessionToken(token) {
             kind: 'shopify_session',
             actorId: `shopify-user:${payload.sub}`,
             subject: payload.sub,
-            shopifyStoreDomain: credentials.storeDomain,
+            shopifyStoreDomain: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain,
         });
     }
     catch {

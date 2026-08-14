@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { loadShopifyCredentials } from '../../config/credentials.js';
-import { createShopifyApi } from '../../shopify/client.js';
+import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../../shopify/production-identity.js';
+import { decodeShopifySessionTokenForRequest } from '../../shopify/request-verification.js';
 import { isTestMode } from './test-mode.js';
 
 export type ApiPrincipal = Readonly<{
@@ -40,10 +40,9 @@ function bearerToken(req: Request): string | null {
  */
 export async function verifyShopifySessionToken(token: string): Promise<ApiPrincipal | null> {
   try {
-    const credentials = await loadShopifyCredentials();
-    const shopify = await createShopifyApi();
-    const payload = await shopify.session.decodeSessionToken(token);
-    const expectedDestination = `https://${credentials.storeDomain}`;
+    const payload = await decodeShopifySessionTokenForRequest(token);
+    if (payload === null) return null;
+    const expectedDestination = `https://${PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain}`;
 
     const valid = (
       payload.dest.replace(/\/$/, '') === expectedDestination &&
@@ -55,7 +54,7 @@ export async function verifyShopifySessionToken(token: string): Promise<ApiPrinc
       kind: 'shopify_session' as const,
       actorId: `shopify-user:${payload.sub}`,
       subject: payload.sub,
-      shopifyStoreDomain: credentials.storeDomain,
+      shopifyStoreDomain: PRODUCT_PIPELINE_SHOPIFY_IDENTITY.storeDomain,
     });
   } catch {
     return null;

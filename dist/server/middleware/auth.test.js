@@ -24,13 +24,13 @@ const verifiedPrincipal = {
     subject: 'operator-1',
     shopifyStoreDomain: 'usedcameragear.myshopify.com',
 };
-function sessionJwt(overrides = {}) {
+function sessionJwt(overrides = {}, secret = 'test-shopify-secret') {
     const now = Math.floor(Date.now() / 1000);
     const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify({
         iss: 'https://usedcameragear.myshopify.com/admin',
         dest: 'https://usedcameragear.myshopify.com',
-        aud: 'test-shopify-client',
+        aud: '2db0555e4848a8264383dc0edfcfb8fe',
         sub: 'operator-1',
         exp: now + 60,
         nbf: now - 1,
@@ -41,7 +41,7 @@ function sessionJwt(overrides = {}) {
     })).toString('base64url');
     const unsigned = `${header}.${payload}`;
     const signature = crypto
-        .createHmac('sha256', 'test-shopify-secret')
+        .createHmac('sha256', secret)
         .update(unsigned)
         .digest('base64url');
     return `${unsigned}.${signature}`;
@@ -106,13 +106,58 @@ describe('API authentication boundary', () => {
         expect(next).toHaveBeenCalledOnce();
     });
     it('cryptographically verifies the exact Shopify app, store, and token lifetime', async () => {
-        vi.stubEnv('SHOPIFY_CLIENT_ID', 'test-shopify-client');
+        vi.stubEnv('SHOPIFY_CLIENT_ID', '2db0555e4848a8264383dc0edfcfb8fe');
         vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'test-shopify-secret');
         await expect(verifyShopifySessionToken(sessionJwt())).resolves.toEqual(verifiedPrincipal);
         await expect(verifyShopifySessionToken(sessionJwt({ dest: 'https://other-store.myshopify.com' }))).resolves.toBeNull();
         await expect(verifyShopifySessionToken(sessionJwt({ aud: 'other-shopify-client' }))).resolves.toBeNull();
         await expect(verifyShopifySessionToken(sessionJwt({ exp: Math.floor(Date.now() / 1000) - 30 }))).resolves.toBeNull();
         await expect(verifyShopifySessionToken(sessionJwt({ sub: '' }))).resolves.toBeNull();
+    });
+    it('accepts current and time-bounded previous signatures during rotation', async () => {
+        vi.stubEnv('SHOPIFY_CLIENT_ID', '2db0555e4848a8264383dc0edfcfb8fe');
+        vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'new-test-shopify-secret');
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET', 'old-test-shopify-secret');
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC', new Date(Date.now() + 30 * 60 * 1_000).toISOString());
+        await expect(verifyShopifySessionToken(sessionJwt({}, 'new-test-shopify-secret')))
+            .resolves.toEqual(verifiedPrincipal);
+        await expect(verifyShopifySessionToken(sessionJwt({}, 'old-test-shopify-secret')))
+            .resolves.toEqual(verifiedPrincipal);
+    });
+    it.each([
+        { previous: 'new-test-shopify-secret', expiryOffset: 30 * 60 * 1_000 },
+        { previous: 'old-test-shopify-secret', expiryOffset: 65 * 60 * 1_000 },
+        { previous: 'unsafe previous secret', expiryOffset: 30 * 60 * 1_000 },
+    ])('fails closed on unsafe previous-secret configuration %#', async ({ previous, expiryOffset }) => {
+        vi.stubEnv('SHOPIFY_CLIENT_ID', '2db0555e4848a8264383dc0edfcfb8fe');
+        vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'new-test-shopify-secret');
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET', previous);
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC', new Date(Date.now() + expiryOffset).toISOString());
+        await expect(verifyShopifySessionToken(sessionJwt({}, 'new-test-shopify-secret')))
+            .resolves.toBeNull();
+    });
+    it('stops accepting the previous JWT at cutoff without disrupting the primary', async () => {
+        vi.stubEnv('SHOPIFY_CLIENT_ID', '2db0555e4848a8264383dc0edfcfb8fe');
+        vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'new-test-shopify-secret');
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET', 'old-test-shopify-secret');
+        vi.stubEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC', new Date().toISOString());
+        await expect(verifyShopifySessionToken(sessionJwt({}, 'new-test-shopify-secret')))
+            .resolves.toEqual(verifiedPrincipal);
+        await expect(verifyShopifySessionToken(sessionJwt({}, 'old-test-shopify-secret')))
+            .resolves.toBeNull();
+    });
+    it('rejects noncanonical segments and malformed numeric lifetime claims', async () => {
+        vi.stubEnv('SHOPIFY_CLIENT_ID', '2db0555e4848a8264383dc0edfcfb8fe');
+        vi.stubEnv('SHOPIFY_CLIENT_SECRET', 'test-shopify-secret');
+        const canonical = sessionJwt();
+        const [header, payload, signature] = canonical.split('.');
+        await expect(verifyShopifySessionToken(`${header}.${payload}.${signature}=`))
+            .resolves.toBeNull();
+        await expect(verifyShopifySessionToken(sessionJwt({ nbf: 'not-numeric' })))
+            .resolves.toBeNull();
+        const now = Math.floor(Date.now() / 1_000);
+        await expect(verifyShopifySessionToken(sessionJwt({ iat: now - 600, exp: now + 60 })))
+            .resolves.toBeNull();
     });
     it('never enables TEST_MODE authentication bypass in production', async () => {
         vi.stubEnv('NODE_ENV', 'production');

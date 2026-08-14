@@ -1,0 +1,23 @@
+# Release Maintenance Incidents
+
+This ledger records credential-free release-maintenance incidents and prevention work. It does not authorize provider commerce writes, credential changes, deployment, or retry.
+
+## SCR-2026-08-14-001 — Shopify secret rotation was not fail-safe
+
+**Status:** source candidate committed as `3309dfd` on draft PR #15; focused/full source verification and independent source review passed, while incident-state documentation review, deployment, and Production execution remain required.
+
+**Trigger:** planned ProductPipeline Shopify credential maintenance exposed that the existing runtime verified inbound Shopify requests with only one client secret and had no fixed, audited way to rotate the one stored Production Shopify access token after a client-secret change.
+
+**Safety outcome:** work stopped before Production deployment, Production database access, provider token rotation, stored-token mutation, old-secret revocation, or any commerce write. A clean new Shopify secondary secret was generated and protected Railway control-plane values were committed as new primary plus old previous, but active deployment `259f4262-0943-4c26-a47b-6b722f73fc75` remains on revision `234e0cb4de8aeafe494492f7039317915969b9aa` with its old-primary snapshot. Marketplace Connect ownership and the provider-writer quarantine remain unchanged.
+
+**Failure risks:** changing the primary secret without bounded overlap could reject App Bridge sessions or Shopify webhooks still signed with the oldest unrevoked secret. An ad hoc token exchange could target the wrong shop/app, change scopes, expose a provider error body, mutate the wrong database row, lose unrelated database state, retry an ambiguous credential effect, or persist the one-hour dashboard refresh token into the database/token row.
+
+**Prevention candidate:** the runtime now verifies canonical exact-store HS256 session JWTs and webhook HMACs against the current secret plus one distinct optional previous secret for no more than one hour. At cutoff, the previous secret is ignored while current-secret verification remains available. Production and ambiguous environments are environment-only, and token acquisition remains primary-only with bounded redacted transport.
+
+The separate credential administrator pins the exact Production Railway service, Shopify store/app, legacy database, and four canonical read-only scopes. Rotation requires a dedicated expiring single-writer acknowledgement, an active old/new verifier overlap, and at least 15 minutes remaining immediately before the single no-retry provider request. It performs current-token preflight, a complete verified private backup, fresh-token authority verification, full-row compare-and-swap, read-only reopen proof, and final provider verification. It is not imported or mounted by the server and has no provider commerce-write adapter.
+
+**Regression gates:** dual-secret JWT/webhook tests cover current, previous, malformed, duplicate, overlong, exact-cutoff, and post-cutoff behavior. Credential-admin tests cover exact runtime/DB binding, canonical schema and scope authority, wrong shop/app, timeout/redirect/body bounds, no mutation before provider success, backup integrity/permissions, unrelated-state preservation, dispatch-window expiry, forward commit after a verified remote effect, compare-and-swap races, redacted output, refresh-token non-persistence to the database/token row, and the server/provider-write import boundary.
+
+**Already-staged recovery decision:** for this incident only, the reviewed release may deploy directly with the new secret as primary, the old secret as previous, and a fresh canonical cutoff no more than one hour ahead, subject to every gate in `docs/SHOPIFY_CREDENTIAL_ROTATION.md`. Before the provider token-rotation request, failed release or inbound proof requires rollback to deployment `259f4262-0943-4c26-a47b-6b722f73fc75`, which restores its old image and custom-variable snapshot, followed by a stop. At or after that provider request, or after old-secret revocation, rollback is forbidden and the forward reconciliation procedure applies. This exception expires when the incident closes.
+
+**Open proof:** source tests and builds do not prove deployment or Production behavior. Before closure, require independent review of this incident-state documentation, exact merge/deployment evidence, one-settled-replica/one-volume topology proof, signed-in App Bridge and verified-shadow webhook evidence at the documented phases, successful fixed preflight/rotate/verify results, temporary-variable removal, old-secret revocation, and a credential-free incident closure note. Any ambiguous post-dispatch outcome remains open and must not be retried blindly.

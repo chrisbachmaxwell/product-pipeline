@@ -115,7 +115,7 @@ Located at `~/projects/product-pipeline/image-service/` — a separate Python Fa
 | `photo_templates` | Saved image processing parameter templates |
 | `image_processing_log` | Per-image processing status and results |
 
-DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (production)
+DB location: `src/db/product-pipeline.db` (development); `/data/ebaysync.db` is the current Railway Production legacy-database contract. The older `~/.clawdbot/ebaysync.db` path is stale local-era documentation, not a Production target.
 
 ## 3. Current State
 
@@ -207,9 +207,9 @@ DB location: `src/db/product-pipeline.db` (dev), `~/.clawdbot/ebaysync.db` (prod
 
 ## 5. Configuration & Environment
 
-### Credentials (file-based)
+### Credentials
 
-All stored in `~/.clawdbot/credentials/`:
+Legacy local development may read `~/.clawdbot/credentials/` only when `NODE_ENV` is explicitly `development` or `test`. Production and ambiguous environments require Shopify credentials from protected environment variables and never fall back to a file.
 
 | File | Contents |
 |------|----------|
@@ -230,8 +230,10 @@ All stored in `~/.clawdbot/credentials/`:
 | `EBAY_DEV_ID` | eBay Dev ID | From file |
 | `EBAY_CERT_ID` | eBay Cert ID | From file |
 | `EBAY_RU_NAME` | eBay Redirect URI Name | From file |
-| `SHOPIFY_CLIENT_ID` | Shopify Client ID | From file |
-| `SHOPIFY_CLIENT_SECRET` | Shopify Client Secret | From file |
+| `SHOPIFY_CLIENT_ID` | Exact ProductPipeline Shopify client ID | Required outside explicit development/test |
+| `SHOPIFY_CLIENT_SECRET` | Current/primary Shopify client secret | Required outside explicit development/test |
+| `SHOPIFY_PREVIOUS_CLIENT_SECRET` | Optional previous secret for bounded inbound verification only | Unset |
+| `SHOPIFY_PREVIOUS_CLIENT_SECRET_EXPIRES_AT_UTC` | Canonical previous-secret cutoff, at most one hour | Unset |
 | `SAFETY_MODE` | Order sync safety: `safe` (rate-limited) or `off` | `safe` |
 | `LISTING_CONTROL_DATABASE_PATH` | Absolute path to the explicitly initialized local-draft store | Unset; draft unavailable |
 | `LISTING_CONTROL_SINGLE_WRITER_ACK` | Exact local-draft single-writer assertion `product-pipeline-local-draft-v1` | Unset; save denied |
@@ -312,7 +314,7 @@ Test files: `src/services/__tests__/`
 | **Drizzle ORM** | Type-safe, lightweight, great SQLite support |
 | **Express 5** | Familiar, async route support, serves both API + static frontend |
 | **Factory pattern for images** | Self-hosted service saves PhotoRoom API costs; factory enables seamless fallback |
-| **File-based credentials** | Predates env vars; supports both now (env overrides files) |
+| **Environment-only Production Shopify credentials** | Local files predate env vars and remain available only in explicit development/test; Production and ambiguous environments fail closed without protected environment credentials |
 | **Draft/staging system** | Chris wanted to review AI descriptions before publishing to Shopify |
 | **Capability registry** | Chat widget and UI auto-discover features; no manual prompt maintenance |
 | **Chokidar watcher** | Reliable cross-platform file watching with debounce/stabilization |
@@ -340,6 +342,21 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-14: Shopify Already-Staged Credential-Recovery Decision
+
+- Recorded the incident-only recovery exception for `SCR-2026-08-14-001`: a clean Shopify secondary secret and protected Railway new-primary/old-previous values were already committed while active deployment `259f4262-0943-4c26-a47b-6b722f73fc75` still runs revision `234e0cb4de8aeafe494492f7039317915969b9aa` with its old-primary snapshot.
+- This documentation authorizes no execution. A direct candidate deployment is permitted only after draft PR #15's incident-state documentation is independently reviewed and a fresh canonical cutoff no more than one hour ahead satisfies the exact release, authentication, webhook, topology, quarantine, and dispatch-window gates.
+- Rollback to deployment `259f4262-0943-4c26-a47b-6b722f73fc75` is allowed only before the provider token-rotation request. At or after that request, or after old-secret revocation, the runbook requires forward reconciliation rather than rollback, restore, or blind retry.
+- Runtime source, compiled output, and package metadata remain unchanged from `3309dfd`; this documentation amendment performed no provider, Railway, database, or commerce mutation.
+
+### 2026-08-14: Shopify Credential-Rotation Safety Candidate
+
+- Added exact-store inbound Shopify request verification with canonical HS256 App Bridge JWT validation and webhook HMAC validation across the primary secret plus one distinct optional previous secret. The previous-secret window is canonical, hard-capped at one hour, and ignored at cutoff without disrupting primary verification. Production and ambiguous environments now use environment credentials only; token acquisition remains primary-only and uses fixed redacted bounded transport.
+- Added the standalone compiled `credential-admin` with option-free preflight, rotate, and verify commands pinned to the exact Production Railway project/environment/service, Used Camera Gear store/app, `/data/ebaysync.db`, and the canonical four read-only scopes. It is never imported or mounted by the server and has no provider commerce-write adapter.
+- Rotation requires an active dual-verifier overlap and dedicated single-writer acknowledgement with at least 15 minutes remaining at the one no-retry provider dispatch. It verifies the current authority, creates a complete private mode-`0600` SQLite backup with bounded logical whole-database content proof, verifies the fresh authority, compare-and-swaps only the exact Shopify row in an `IMMEDIATE` transaction, reopens read-only, and verifies the committed token. The temporary dashboard refresh token is never persisted to the database or token row; its protected Railway variable remains operator-managed until explicit cleanup.
+- Added fixed value-free failure codes, explicit output truth for one provider credential mutation versus zero external commerce writes, adversarial source/compiled tests, the operator runbook, release-maintenance incident `SCR-2026-08-14-001`, and concise Settings help that keeps credential controls out of the app.
+- Local verification passed the focused 8-file / 88-test security suite, full 54-file / 582-test suite, TypeScript no-emit check, Production build, compiled command help and malformed-argument redaction checks, and whitespace checks. The source/build candidate was committed and pushed as `3309dfd` on draft PR #15 and independently source-reviewed GO; it is not merged, deployed, or live-verified. The source work performed no provider, Railway, Production database, Marketplace Connect, or Lightspeed mutation.
 
 ### 2026-08-14: Local Draft Production Initialization and Description-Cap Incident Closure
 
