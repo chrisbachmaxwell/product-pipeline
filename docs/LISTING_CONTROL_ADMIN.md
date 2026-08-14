@@ -8,6 +8,8 @@ PR #11 repair `bab71a5` merged to `main` as `789dc7782cea5da33a5fddd8617d1c364cb
 
 The newer AI-proposal source candidate requires canonical schema version 3. The last verified Production store is still version 2. Proposal preparation and local approval therefore remain unproved in Production until the explicit stopped-writer migration, dedicated AI configuration, deployment, and signed-in verification in `docs/AI_LISTING_PROPOSALS.md` are complete.
 
+**Current freeze:** release-maintenance incident `RMI-2026-08-14-001` is open, maintenance is stopped, and containment is in progress. Maintenance tooling exposed credential material; the active deployment still has its earlier environment snapshot. No commerce write occurred, but local writes and the version-3 migration remain frozen until every exposed credential class is rotated or invalidated, the safe fixed-command boundary is proven, the store baseline is re-verified, and an authorized human explicitly opens a new maintenance window. See `docs/RELEASE_MAINTENANCE_INCIDENTS.md`. Do not use any output from the failed attempt as state or readiness evidence.
+
 ## Fixed Production scope and path
 
 - Shopify store: `usedcameragear.myshopify.com`
@@ -55,6 +57,14 @@ Before initialization or every release that can save drafts:
 
 The relevant Railway behavior is documented in [Volumes](https://docs.railway.com/volumes/reference) and [Deployment teardown](https://docs.railway.com/deployments/deployment-teardown).
 
+## Remote maintenance command boundary
+
+Production administration must not use an arbitrary remote shell. `railway ssh ... sh -lc` is forbidden, as are other `sh`/`bash` command wrappers, login or interactive shells, profile-loading shells, and any remote shell or process-environment introspection. Do not run environment-printing commands, inspect process-environment files, enable tracing/debug output, or use a diagnostic wrapper that serializes environment or process state.
+
+Use only a fixed, single-purpose process invocation or a version-controlled audited maintenance script pinned to the reviewed release revision. It must be allowlisted for exactly one operation, must not spawn a general-purpose shell, and must emit zero environment output on stdout and stderr. Review its output schema and prove the zero-environment-output behavior in an isolated non-Production run before using it in Production. If a documented inner command cannot be invoked without a remote shell, stop; the command is not yet safe to run.
+
+Never pass a secret through command arguments, inline assignments, shell fragments, temporary scripts, pasted input, logs, screenshots, or transcripts. Use only the approved secret-management surface for configuration. Maintenance evidence may record fixed redacted result fields and class-level rotation status, but never values, masked suffixes, user tokens, personal data, or raw command output.
+
 ## One-time initialization for a new store
 
 Initialization is an explicit administrative action after the reviewed build is deployed. Runtime startup never creates, migrates, repairs, or replaces the store.
@@ -77,6 +87,8 @@ Never use `init` for the existing Production file. Upgrade that verified version
 
 The web runtime accepts only the current canonical schema and never upgrades it. Use a maintenance window for the existing Production store:
 
+This procedure is suspended while `RMI-2026-08-14-001` remains open or any rotation/resume gate in `docs/RELEASE_MAINTENANCE_INCIDENTS.md` is incomplete. The command block below describes inner admin operations only; it is not approval to wrap them in Railway SSH or a general-purpose shell.
+
 1. Verify the exact service and one-writer topology, then stop every process that can open the store writable.
 2. Verify version-2 integrity with the previously deployed admin build and create a consistent, restorable backup while writers remain stopped.
 3. Run the reviewed version-3 admin build against the exact path:
@@ -98,6 +110,8 @@ After verification, configure the two listing-control environment variables abov
 ## Routine verification and fail-closed handling
 
 Run the following before and after a deployment that changes listing-control code and after any volume restore:
+
+In Production, invoke this inner operation only through the fixed single-purpose command or audited-script boundary above. Never wrap it in `railway ssh ... sh -lc` or inspect the remote environment to prepare it.
 
 ```sh
 LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \

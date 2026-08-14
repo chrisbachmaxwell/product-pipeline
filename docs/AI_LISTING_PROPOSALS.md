@@ -46,6 +46,8 @@ The proposal path does not fall back to the legacy `OPENAI_API_KEY`. Never put e
 
 The last verified Production store is schema version 2. The version-3 source must not be treated as deployed or usable until an operator completes a stopped-writer maintenance window:
 
+Release-maintenance incident `RMI-2026-08-14-001` currently blocks this procedure. A Railway SSH wrapper invoked through `sh -lc` unexpectedly emitted the container environment before the intended checks. No commerce write occurred, but every credential class present must be rotated and the prior generation revoked before migration can resume. Local draft/proposal writes remain frozen. Complete the credential-free rotation, fixed-command, store-baseline, backup, and human resume gates in `docs/RELEASE_MAINTENANCE_INCIDENTS.md` before step 1.
+
 1. Verify the exact Railway service, one-replica/one-volume topology, `/data/product-pipeline/listing-control.sqlite`, private permissions, and current version-2 integrity using the previously deployed admin build.
 2. Stop every process that can open the store writable. Create a consistent provider-supported volume backup, or copy only while every writer is stopped. Record the backup identity, source revision, UTC time, and digest without recording row content.
 3. With the reviewed version-3 build, run:
@@ -56,6 +58,8 @@ The last verified Production store is schema version 2. The version-3 source mus
    LISTING_CONTROL_DATABASE_PATH=/data/product-pipeline/listing-control.sqlite \
      node dist/listing-control-admin/index.js verify
    ```
+
+   These are inner admin operations, not an approved remote transport. Never invoke them through `railway ssh ... sh -lc`, another remote shell wrapper, or any environment-inspection path. Production execution requires the fixed single-purpose command or audited script defined in `docs/LISTING_CONTROL_ADMIN.md`, with zero environment output.
 
 4. Require redacted output showing `fromSchemaVersion: 2`, `schemaVersion: 3`, `mode: local_draft_only`, and `externalWritesPerformed: 0` for the upgrade, followed by a successful version-3 verification.
 5. Configure the dedicated AI key, restart one application replica deliberately, then verify health, the signed-in listing workspace, automatic proposal preparation, local approval, stale-base refusal, and zero commerce writes separately.

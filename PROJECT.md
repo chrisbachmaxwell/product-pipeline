@@ -227,7 +227,7 @@ All stored in `~/.clawdbot/credentials/`:
 |----------|---------|---------|
 | `PORT` | Server port | `3000` |
 | `OPENAI_API_KEY` | OpenAI API for AI descriptions | Required |
-| `AI_PROPOSAL_OPENAI_API_KEY` | Dedicated key for bounded local listing proposals; no fallback to legacy key | Unset; proposals unavailable |
+| `AI_PROPOSAL_OPENAI_API_KEY` | Dedicated key for bounded local listing proposals; no fallback to legacy key | No default; a Production replacement may be staged while proposals remain unavailable behind the store/write/readiness gates |
 | `LISTING_PROPOSAL_MODEL` | Allowlisted proposal model | `gpt-5.6-terra` |
 | `PHOTOROOM_API_KEY` | PhotoRoom API key (fallback image processor) | Optional |
 | `IMAGE_PROCESSOR` / `IMAGE_SERVICE` | Image provider: `self-hosted`, `photoroom`, `auto` | `auto` |
@@ -347,6 +347,14 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-14: Release-Maintenance Credential Disclosure Containment
+
+- Recorded open incident `RMI-2026-08-14-001` without credential values, masked suffixes, user tokens, personal data, or raw command output. During Railway release maintenance, a wrapper invoked through `sh -lc` unexpectedly emitted the container environment; a separate broad eBay credential-page inspection rendered a short-lived user token.
+- No commerce write occurred. The output is not accepted as verification evidence, local draft/proposal writes remain frozen, and the version-2-to-version-3 migration must not resume until every credential class present at exposure time is rotated and its prior generation revoked.
+- Updated the listing-control, proposal, and writer-quarantine runbooks to forbid `railway ssh ... sh -lc`, all substitute remote shell wrappers, and every remote shell/environment-introspection path. Production maintenance now requires a reviewed fixed single-purpose command or audited revision-pinned script with zero environment output.
+- Added fail-closed rotation and resume gates: private class inventory through the approved secret-management surface, issuer-side rotation/revocation, safe-command proof, store-baseline re-verification, consistent backup, and explicit human approval to lift the freeze.
+- The repository patch is documentation-only. Separate containment through the Railway and OpenAI control planes revoked the exposed OpenAI generations, retained one new staged purpose-specific proposal key, removed unused exposed variables, and kept the local-writer acknowledgement absent. No source code, compiled output, package, commerce-provider data, listing-control store, or migration state changed.
 
 ### 2026-08-14: Railway Deployment Health Gate (Source Candidate)
 
