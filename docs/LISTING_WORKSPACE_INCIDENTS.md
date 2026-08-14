@@ -45,6 +45,7 @@ All closure gates have evidence. The incident is closed; its prevention limits a
 
 ```text
 Objective: Continue bounded provider-control work from the deployed read/mapping/local-draft foundation.
+Continuation checkout: /Users/chrismaxwell/Documents/Codex/2026-08-11/project-pipeline/work/product-pipeline-modern; fetch origin/main and require clean status. Preserve the sibling work/product-pipeline dirty checkout and do not stage from it.
 Verified deployment: PR #11 repair bab71a5 merged as 789dc7782cea5da33a5fddd8617d1c364cbb783e; Railway deployment 623f7eca-74ae-4ff8-8bec-99a761767793 SUCCESS; public health served the exact merge at 2026-08-14T16:13:06.046Z.
 Verified workspace: Aputure variant gid://shopify/ProductVariant/54881767358755; SKU APD0170A3B-OB; eBay listing 147232036779; complete Mapping, Listing, Content, and Delivery with description summary. Edit control visible but not opened; no Save clicked.
 Store baseline: one replica; /data volume; /data/product-pipeline/listing-control.sqlite; schema 2; local_draft_only; mode 0600; admin verified; externalWritesPerformed 0.
