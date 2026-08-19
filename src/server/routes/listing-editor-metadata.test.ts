@@ -9,8 +9,12 @@ import {
 } from '../listing-editor-metadata.js';
 import {
   buildLiveListingCatalogSnapshot,
+  type CapturedEbayActiveListing,
+  type CapturedEbayOffer,
+  type CapturedShopifyVariant,
   type LiveListingCatalogSnapshot,
 } from '../live-listing-catalog.js';
+import { LIVE_LISTING_CATALOG_SOURCE_TESTING } from '../live-listing-catalog-source.js';
 import { EBAY_CONDITIONS } from '../../shared/ebay-conditions.js';
 
 const ENDPOINT = '/api/listing-editor-metadata';
@@ -106,11 +110,75 @@ function enrichedDetail(input: Readonly<{
   };
 }
 
-function snapshotWithRows(rows: readonly unknown[]): LiveListingCatalogSnapshot {
+function snapshotWithRows(
+  rows: readonly unknown[],
+  editorFacets?: readonly unknown[],
+): LiveListingCatalogSnapshot {
   return {
     observedAtUtc: new Date().toISOString(),
     rows,
+    ...(editorFacets === undefined ? {} : { editorFacets }),
   } as unknown as LiveListingCatalogSnapshot;
+}
+
+/** Full census-built snapshot so the builder's coverage invariants stay honest. */
+function builtSnapshot(input: Readonly<{
+  variants: readonly CapturedShopifyVariant[];
+  listings: readonly CapturedEbayActiveListing[];
+  offers: readonly CapturedEbayOffer[];
+}>): LiveListingCatalogSnapshot {
+  const observedAtUtc = new Date().toISOString();
+  return buildLiveListingCatalogSnapshot({
+    observedAtUtc,
+    shopifyVariants: input.variants,
+    ebayActiveListings: input.listings,
+    ebayInventoryItems: input.variants.map((variant) => ({ sku: variant.sku })),
+    ebayOffers: input.offers,
+    coverage: {
+      shopify: {
+        source: 'shopify-admin-graphql', storeDomain: 'usedcameragear.myshopify.com',
+        shopId: 'gid://shopify/Shop/86254518563', observedAtUtc,
+        paginationComplete: true, variantPageCount: 1,
+        totalVariantsCaptured: input.variants.length,
+        positiveStockVariants: input.variants.filter((variant) =>
+          variant.available !== null && variant.available > 0).length,
+        excludedZeroInventory: input.variants.filter((variant) =>
+          variant.available !== null && variant.available <= 0).length,
+        excludedUnknownInventory: input.variants.filter((variant) =>
+          variant.available === null).length,
+        productStatusCounts: { ACTIVE: input.variants.length },
+      },
+      ebay: {
+        source: 'ebay-trading-api+ebay-inventory-api', marketplaceId: 'EBAY_US',
+        sellerAccountVerified: true, observedAtUtc,
+        trading: {
+          paginationComplete: true, pageCount: 1,
+          activeListingCount: new Set(input.listings.map((listing) => listing.listingId)).size,
+        },
+        inventory: {
+          inventoryItemsComplete: true, inventoryItemPageCount: 1,
+          inventoryItemCount: input.variants.length,
+          offersComplete: true, offerPageCount: 1, offerCount: input.offers.length,
+          unpublishedArtifactsChecked: true,
+        },
+      },
+    },
+  });
+}
+
+function activeVariant(sku: string, suffix: string): CapturedShopifyVariant {
+  return {
+    productId: `gid://shopify/Product/1${suffix}`,
+    variantId: `gid://shopify/ProductVariant/2${suffix}`,
+    sku,
+    title: `Camera ${suffix}`,
+    variantTitle: 'Default Title',
+    productStatus: 'ACTIVE',
+    primaryImageUrl: null,
+    imageCount: 1,
+    available: 1,
+    price: { amount: '39.95', currency: 'USD' },
+  };
 }
 
 function fixtureSnapshot(): LiveListingCatalogSnapshot {
@@ -330,6 +398,150 @@ describe('GET /api/listing-editor-metadata', () => {
     expect(response.status).toBe(503);
     expect(response.body).toEqual({ error: 'Listing editor metadata is unavailable' });
     expect(snapshotReads).toBe(0);
+  });
+
+  it('populates all facets from census-captured Trading and offer facet data', async () => {
+    const snapshot = builtSnapshot({
+      variants: [activeVariant('SKU-A', '01'), activeVariant('SKU-B', '02')],
+      listings: [
+        {
+          listingId: '147502608418',
+          sku: 'SKU-A',
+          primaryCategoryId: '30088',
+          primaryCategoryName: 'Battery Grips',
+          fulfillmentPolicyId: '297085892011',
+          paymentPolicyId: '297085893011',
+          returnPolicyId: '305862667011',
+        },
+        // Trading item exposed no facets; the offer census fills them in.
+        { listingId: '247502608419', sku: 'SKU-B' },
+      ],
+      offers: [
+        {
+          offerId: 'OFFER-A', sku: 'SKU-A', status: 'PUBLISHED',
+          listingId: '147502608418', listingStatus: 'ACTIVE',
+          // Trading category id wins; the offer's is ignored for this listing.
+          categoryId: '99999',
+          merchantLocationKey: 'warehouse-1',
+        },
+        {
+          offerId: 'OFFER-B', sku: 'SKU-B', status: 'PUBLISHED',
+          listingId: '247502608419', listingStatus: 'ACTIVE',
+          categoryId: '11724',
+          fulfillmentPolicyId: '297085892011',
+          paymentPolicyId: '297085893011',
+          returnPolicyId: '111111111011',
+          merchantLocationKey: 'warehouse-1',
+        },
+      ],
+    });
+    const router = createShadowApiRouter({ getSnapshot: async () => snapshot });
+    const response = await requestJson(router, ENDPOINT);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      conditions: EXPECTED_CONDITIONS,
+      categories: [
+        { id: '11724', name: null, usageCount: 1 },
+        { id: '30088', name: 'Battery Grips', usageCount: 1 },
+      ],
+      policies: {
+        fulfillment: [{ id: '297085892011', usageCount: 2 }],
+        payment: [{ id: '297085893011', usageCount: 2 }],
+        return: [
+          { id: '111111111011', usageCount: 1 },
+          { id: '305862667011', usageCount: 1 },
+        ],
+      },
+      merchantLocations: [{ id: 'warehouse-1', usageCount: 2 }],
+    });
+
+    // The row-serving endpoint on the same snapshot must never expose facets.
+    const rowsResponse = await requestJson(router, '/api/authoritative-listings');
+    expect(rowsResponse.status).toBe(200);
+    expect(JSON.stringify(rowsResponse.body)).not.toMatch(
+      /297085892011|297085893011|305862667011|warehouse-1|policyId|merchantLocation|editorFacets|ebayDetail|30088/i,
+    );
+  });
+
+  it('extracts only validated facets from captured Trading item bodies', () => {
+    expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.tradingListingFacets({
+      ItemID: '147502608418',
+      SKU: 'SKU-A',
+      PrimaryCategory: { CategoryID: '30088', CategoryName: 'Battery Grips' },
+      SellerProfiles: {
+        SellerShippingProfile: { ShippingProfileID: '297085892011' },
+        SellerPaymentProfile: { PaymentProfileID: 297085893011 },
+        SellerReturnProfile: { ReturnProfileID: '305862667011' },
+      },
+    })).toEqual({
+      primaryCategoryId: '30088',
+      primaryCategoryName: 'Battery Grips',
+      fulfillmentPolicyId: '297085892011',
+      paymentPolicyId: '297085893011',
+      returnPolicyId: '305862667011',
+    });
+
+    expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.tradingListingFacets({
+      ItemID: '147502608418',
+      PrimaryCategory: { CategoryID: 'not-digits', CategoryName: 'x'.repeat(257) },
+      SellerProfiles: {
+        SellerShippingProfile: { ShippingProfileID: '12.5' },
+        SellerPaymentProfile: 'not-a-record',
+      },
+    })).toEqual({});
+
+    expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.tradingListingFacets({ ItemID: '1' })).toEqual({});
+  });
+
+  it('extracts only validated facets from captured offer bodies', () => {
+    expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.offerListingFacets({
+      offerId: 'OFFER-A',
+      categoryId: '11724',
+      listingPolicies: {
+        fulfillmentPolicyId: '297085892011',
+        paymentPolicyId: '297085893011',
+        returnPolicyId: '305862667011',
+      },
+      merchantLocationKey: 'warehouse-1',
+    })).toEqual({
+      categoryId: '11724',
+      fulfillmentPolicyId: '297085892011',
+      paymentPolicyId: '297085893011',
+      returnPolicyId: '305862667011',
+      merchantLocationKey: 'warehouse-1',
+    });
+
+    expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.offerListingFacets({
+      offerId: 'OFFER-B',
+      categoryId: 99.5,
+      listingPolicies: 'not-a-record',
+      merchantLocationKey: '   ',
+    })).toEqual({});
+  });
+
+  it('drops malformed snapshot facet observations without failing the request', () => {
+    const metadata = buildListingEditorMetadata(snapshotWithRows([], [
+      {
+        listingId: '1', categoryId: '30088', categoryName: 'Battery Grips',
+        fulfillmentPolicyId: '297085892011', paymentPolicyId: null,
+        returnPolicyId: null, merchantLocationKey: 'warehouse-1',
+      },
+      'not-a-record',
+      {
+        listingId: '2', categoryId: 42, categoryName: 7,
+        fulfillmentPolicyId: 'x'.repeat(257), paymentPolicyId: '   ',
+        returnPolicyId: undefined, merchantLocationKey: ['warehouse-1'],
+      },
+    ]));
+    expect(metadata.categories).toEqual([
+      { id: '30088', name: 'Battery Grips', usageCount: 1 },
+    ]);
+    expect(metadata.policies).toEqual({
+      fulfillment: [{ id: '297085892011', usageCount: 1 }],
+      payment: [],
+      return: [],
+    });
+    expect(metadata.merchantLocations).toEqual([{ id: 'warehouse-1', usageCount: 1 }]);
   });
 
   it('exposes exactly the fixed 11-entry frozen eBay condition table', () => {

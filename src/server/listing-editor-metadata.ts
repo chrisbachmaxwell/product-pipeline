@@ -7,13 +7,21 @@ import type { LiveListingCatalogSnapshot } from './live-listing-catalog.js';
  * remote reads and zero writes: it only projects whatever enriched per-listing
  * detail the cached snapshot rows already carry.
  *
- * The current snapshot rows (see live-listing-catalog.ts) do not embed the
- * enriched eBay detail (category, seller-profile policy ids, merchant
- * location key). When a row does carry that detail — under the same
- * `ebayDetail` key the listing workspace DTO uses, with the exact shape
- * produced by enriched-listing-detail.ts — it is aggregated here; rows
- * without it simply contribute nothing, so absent facets fail closed to
- * empty arrays rather than triggering any new provider request.
+ * Two cached sources are aggregated, both revalidated here before use:
+ *
+ * 1. `snapshot.editorFacets` — per-active-listing facet observations the
+ *    census capture already extracts from the bulk Trading and getOffers
+ *    response bodies (see buildEditorFacets in live-listing-catalog.ts).
+ *    This is the production path. The observations deliberately live OFF
+ *    the catalog rows so row-serving endpoints never expose policy or
+ *    location identifiers.
+ * 2. Rows carrying an optional `ebayDetail` payload (the listing-workspace
+ *    key, in the exact enriched-listing-detail.ts shape), should a future
+ *    snapshot embed per-row detail.
+ *
+ * Rows and observations without usable data simply contribute nothing, so
+ * absent facets fail closed to empty arrays rather than triggering any new
+ * provider request.
  */
 
 const MAX_FACET_ENTRIES = 500;
@@ -101,6 +109,21 @@ function categoryList(
     })));
 }
 
+function tallyCategory(
+  categories: Map<string, { name: string | null; usageCount: number }>,
+  id: string | null,
+  name: string | null,
+): void {
+  if (id === null) return;
+  const existing = categories.get(id);
+  if (existing === undefined) {
+    categories.set(id, { name, usageCount: 1 });
+  } else {
+    existing.usageCount += 1;
+    if (existing.name === null) existing.name = name;
+  }
+}
+
 export function buildListingEditorMetadata(
   snapshot: LiveListingCatalogSnapshot,
 ): ListingEditorMetadataDto {
@@ -112,6 +135,20 @@ export function buildListingEditorMetadata(
   const returnPolicies = new Map<string, number>();
   const merchantLocations = new Map<string, number>();
 
+  const facetObservations: readonly unknown[] = Array.isArray(snapshot.editorFacets)
+    ? snapshot.editorFacets
+    : [];
+  for (const rawObservation of facetObservations) {
+    const observation = asRecord(rawObservation);
+    if (observation === null) continue;
+    const categoryId = safeFacetString(observation.categoryId);
+    tallyCategory(categories, categoryId, safeFacetString(observation.categoryName));
+    tally(fulfillment, safeFacetString(observation.fulfillmentPolicyId));
+    tally(payment, safeFacetString(observation.paymentPolicyId));
+    tally(returnPolicies, safeFacetString(observation.returnPolicyId));
+    tally(merchantLocations, safeFacetString(observation.merchantLocationKey));
+  }
+
   for (const rawRow of rows) {
     const detail = asRecord(asRecord(rawRow)?.ebayDetail);
     if (detail === null) continue;
@@ -119,17 +156,11 @@ export function buildListingEditorMetadata(
     const offer = asRecord(asRecord(detail.management)?.offer);
 
     const primaryCategory = asRecord(asRecord(actual?.category)?.primary);
-    const categoryId = safeFacetString(primaryCategory?.id);
-    if (categoryId !== null) {
-      const name = safeFacetString(primaryCategory?.name);
-      const existing = categories.get(categoryId);
-      if (existing === undefined) {
-        categories.set(categoryId, { name, usageCount: 1 });
-      } else {
-        existing.usageCount += 1;
-        if (existing.name === null) existing.name = name;
-      }
-    }
+    tallyCategory(
+      categories,
+      safeFacetString(primaryCategory?.id),
+      safeFacetString(primaryCategory?.name),
+    );
 
     const policies = asRecord(actual?.policies);
     tally(fulfillment, safeFacetString(policies?.fulfillmentPolicyId)
