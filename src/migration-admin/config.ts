@@ -5,6 +5,9 @@ import type { Digest, IntegrationScope } from '../migration-store/types.js';
 
 export const MIGRATION_DATABASE_RELATIVE_PATH =
   '.local/migration-state/product-pipeline-migration-v1.sqlite';
+export const MIGRATION_DATABASE_BASENAME = 'product-pipeline-migration-v1.sqlite';
+export const MIGRATION_DATABASE_DIRECTORY_NAME = 'migration-state';
+const MAX_DATABASE_PATH_LENGTH = 512;
 
 export type MigrationAdminLane = 'development' | 'sandbox' | 'production-shadow';
 
@@ -13,7 +16,13 @@ export type MigrationAdminConfig = {
   project: 'product-pipeline';
   lane: MigrationAdminLane;
   mode: 'migration-state-admin';
-  databasePath: typeof MIGRATION_DATABASE_RELATIVE_PATH;
+  /**
+   * Either the fixed repository-local path, or an exact absolute durable path
+   * (e.g. on the deployment's persistent volume) whose final two components
+   * are `migration-state/product-pipeline-migration-v1.sqlite`. The durable
+   * form must resolve outside the repository checkout.
+   */
+  databasePath: string;
   scope: IntegrationScope;
   safety: {
     externalPlatformAccess: false;
@@ -208,12 +217,7 @@ export function parseMigrationAdminConfig(value: unknown): MigrationAdminConfig 
     issues,
   );
   const mode = literal(root.mode, 'migration-state-admin', 'config.mode', issues);
-  const databasePath = literal(
-    root.databasePath,
-    MIGRATION_DATABASE_RELATIVE_PATH,
-    'config.databasePath',
-    issues,
-  );
+  const databasePath = databasePathField(root.databasePath, issues);
 
   const scopeValue = requireRecord(root.scope, 'config.scope', issues);
   let scope: IntegrationScope | undefined;
@@ -436,6 +440,92 @@ function assertMigrationDirectoryPermissions(
   }
 }
 
+function databasePathField(value: unknown, issues: string[]): string | undefined {
+  if (value === MIGRATION_DATABASE_RELATIVE_PATH) return value;
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > MAX_DATABASE_PATH_LENGTH
+    || value.includes(' ')
+    || CONTROL_CHARACTER_PATTERN.test(value)
+    || value.startsWith('file:')
+    || value === ':memory:'
+    || !path.isAbsolute(value)
+    || path.normalize(value) !== value
+    || value.split(path.sep).some((segment) => segment === '.' || segment === '..')
+    || path.basename(value) !== MIGRATION_DATABASE_BASENAME
+    || path.basename(path.dirname(value)) !== MIGRATION_DATABASE_DIRECTORY_NAME
+  ) {
+    issues.push(
+      'config.databasePath must be the fixed repository-local path or an exact absolute durable '
+        + `path ending in ${MIGRATION_DATABASE_DIRECTORY_NAME}/${MIGRATION_DATABASE_BASENAME}`,
+    );
+    return undefined;
+  }
+  return value;
+}
+
+export function isDurableMigrationDatabasePath(databasePath: string): boolean {
+  return databasePath !== MIGRATION_DATABASE_RELATIVE_PATH;
+}
+
+/**
+ * Validates the parent directories of an absolute durable database path (the
+ * `migration-state` directory and the volume root that contains it): both must
+ * be regular non-symlink directories that are not group/world writable, and no
+ * ancestor of the volume root may be a symlink (proven by realpath equality).
+ * With `requireExists` false a missing tail is tolerated (load-time); with it
+ * true the parent must already exist (init-time — the operator creates it).
+ */
+function assertDurableMigrationParent(parent: string, requireExists: boolean): void {
+  const volumeRoot = path.dirname(parent);
+  let realVolumeRoot: string;
+  try {
+    realVolumeRoot = fs.realpathSync(volumeRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (requireExists) {
+        throw new MigrationAdminConfigError(['migration database parent is missing']);
+      }
+      return;
+    }
+    throw new MigrationAdminConfigError([
+      'migration database path could not be inspected safely',
+    ]);
+  }
+  if (realVolumeRoot !== volumeRoot) {
+    throw new MigrationAdminConfigError([
+      'migration database path may not traverse a symbolic link',
+    ]);
+  }
+  for (const directory of [volumeRoot, parent]) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (requireExists) {
+          throw new MigrationAdminConfigError(['migration database parent is missing']);
+        }
+        return;
+      }
+      throw new MigrationAdminConfigError([
+        'migration database path could not be inspected safely',
+      ]);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new MigrationAdminConfigError([
+        'migration database parent must use regular directories',
+      ]);
+    }
+    if ((stat.mode & 0o022) !== 0) {
+      throw new MigrationAdminConfigError([
+        'migration database parent directories must not be group/world writable',
+      ]);
+    }
+  }
+}
+
 export function validateMigrationRepositoryRoot(repoRoot: string): string {
   let resolvedRoot: string;
   try {
@@ -540,19 +630,28 @@ export function loadMigrationAdminConfig(input: {
   const repositoryRoot = validateMigrationRepositoryRoot(input.repoRoot);
   const loaded = readConfigFile(repositoryRoot, input.requestedConfigPath);
   const config = parseMigrationAdminConfig(loaded.value);
-  const databaseAbsolutePath = path.resolve(
-    repositoryRoot,
-    ...MIGRATION_DATABASE_RELATIVE_PATH.split('/'),
-  );
-  if (!insideRoot(repositoryRoot, databaseAbsolutePath)) {
-    throw new MigrationAdminConfigError(['migration database path escaped the repository']);
+  const durable = isDurableMigrationDatabasePath(config.databasePath);
+  const databaseAbsolutePath = durable
+    ? config.databasePath
+    : path.resolve(repositoryRoot, ...MIGRATION_DATABASE_RELATIVE_PATH.split('/'));
+  if (durable) {
+    if (insideRoot(repositoryRoot, databaseAbsolutePath)) {
+      throw new MigrationAdminConfigError([
+        'durable migration database path must resolve outside the repository',
+      ]);
+    }
+    assertDurableMigrationParent(path.dirname(databaseAbsolutePath), false);
+  } else {
+    if (!insideRoot(repositoryRoot, databaseAbsolutePath)) {
+      throw new MigrationAdminConfigError(['migration database path escaped the repository']);
+    }
+    assertNoSymlinkComponentsIfPresent(
+      repositoryRoot,
+      path.dirname(databaseAbsolutePath),
+      'migration database path',
+    );
+    assertMigrationDirectoryPermissions(repositoryRoot, true);
   }
-  assertNoSymlinkComponentsIfPresent(
-    repositoryRoot,
-    path.dirname(databaseAbsolutePath),
-    'migration database path',
-  );
-  assertMigrationDirectoryPermissions(repositoryRoot, true);
   try {
     const databaseStat = fs.lstatSync(databaseAbsolutePath);
     if (!databaseStat.isFile() || databaseStat.isSymbolicLink() || databaseStat.nlink !== 1) {
@@ -598,12 +697,16 @@ export function loadMigrationAdminConfig(input: {
 export function assertMigrationDatabaseParentForInit(
   loaded: LoadedMigrationAdminConfig,
 ): void {
-  const expectedParent = path.join(loaded.repositoryRoot, '.local', 'migration-state');
-  if (path.dirname(loaded.databaseAbsolutePath) !== expectedParent) {
-    throw new MigrationAdminConfigError(['migration database path is outside its fixed directory']);
+  if (isDurableMigrationDatabasePath(loaded.config.databasePath)) {
+    assertDurableMigrationParent(path.dirname(loaded.databaseAbsolutePath), true);
+  } else {
+    const expectedParent = path.join(loaded.repositoryRoot, '.local', 'migration-state');
+    if (path.dirname(loaded.databaseAbsolutePath) !== expectedParent) {
+      throw new MigrationAdminConfigError(['migration database path is outside its fixed directory']);
+    }
+    assertNoSymlinkComponents(loaded.repositoryRoot, expectedParent, 'migration database path');
+    assertMigrationDirectoryPermissions(loaded.repositoryRoot, false);
   }
-  assertNoSymlinkComponents(loaded.repositoryRoot, expectedParent, 'migration database path');
-  assertMigrationDirectoryPermissions(loaded.repositoryRoot, false);
   for (const candidate of [
     loaded.databaseAbsolutePath,
     `${loaded.databaseAbsolutePath}-journal`,

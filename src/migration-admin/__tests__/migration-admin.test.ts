@@ -425,6 +425,125 @@ describe('migration-admin strict local boundary', () => {
     expect(fs.existsSync(repository.databasePath)).toBe(false);
   });
 
+  it('initializes and verifies a store on an absolute durable path outside the repository', () => {
+    const volume = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'product-pipeline-durable-volume-')),
+    );
+    temporaryDirectories.push(volume);
+    fs.chmodSync(volume, 0o755);
+    const durableParent = path.join(volume, 'migration-state');
+    fs.mkdirSync(durableParent, { mode: 0o700 });
+    const durableDatabasePath = path.join(
+      durableParent,
+      'product-pipeline-migration-v1.sqlite',
+    );
+    const repository = temporaryRepository({
+      ...validConfig(),
+      databasePath: durableDatabasePath,
+    });
+
+    const loaded = loadMigrationAdminConfig({
+      repoRoot: repository.root,
+      requestedConfigPath: CONFIG_PATH,
+    });
+    expect(loaded.databaseAbsolutePath).toBe(durableDatabasePath);
+
+    const result = initializeMigrationStore({
+      repoRoot: repository.root,
+      configPath: CONFIG_PATH,
+      createdAtUtc: CREATED_AT,
+      confirmScope: loaded.scopeDigest,
+      now: NOW,
+    });
+    expect(result.status).toBe('initialized-inert');
+    expect(fs.statSync(durableDatabasePath).mode & 0o777).toBe(0o600);
+    expect(fs.existsSync(repository.databasePath)).toBe(false);
+
+    const verified = verifyMigrationStore({
+      repoRoot: repository.root,
+      configPath: CONFIG_PATH,
+    });
+    expect(verified.status).toBe('verified');
+  });
+
+  it('rejects unsafe durable database paths without creating state', () => {
+    const volume = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'product-pipeline-durable-volume-')),
+    );
+    temporaryDirectories.push(volume);
+    fs.chmodSync(volume, 0o755);
+    const durableParent = path.join(volume, 'migration-state');
+    fs.mkdirSync(durableParent, { mode: 0o700 });
+
+    const parseIssue = /config\.databasePath/;
+    for (const databasePath of [
+      '.local/other/product-pipeline-migration-v1.sqlite',
+      path.join(volume, 'migration-state', 'other.sqlite'),
+      path.join(volume, 'not-migration-state', 'product-pipeline-migration-v1.sqlite'),
+      `${volume}/migration-state/../migration-state/product-pipeline-migration-v1.sqlite`,
+      `file:${durableParent}/product-pipeline-migration-v1.sqlite`,
+    ]) {
+      expect(() => parseMigrationAdminConfig({ ...validConfig(), databasePath }))
+        .toThrow(parseIssue);
+    }
+
+    const insideRepository = temporaryRepository();
+    const insidePath = path.join(
+      fs.realpathSync(insideRepository.root),
+      'migration-state',
+      'product-pipeline-migration-v1.sqlite',
+    );
+    fs.writeFileSync(insideRepository.configAbsolutePath, JSON.stringify({
+      ...validConfig(),
+      databasePath: insidePath,
+    }));
+    expect(() => loadMigrationAdminConfig({
+      repoRoot: insideRepository.root,
+      requestedConfigPath: CONFIG_PATH,
+    })).toThrow(/outside the repository/);
+
+    const missingParent = temporaryRepository({
+      ...validConfig(),
+      databasePath: path.join(volume, 'absent', 'migration-state', 'product-pipeline-migration-v1.sqlite'),
+    });
+    expect(() => initializeMigrationStore({
+      repoRoot: missingParent.root,
+      configPath: CONFIG_PATH,
+      createdAtUtc: CREATED_AT,
+      confirmScope: loadMigrationAdminConfig({
+        repoRoot: missingParent.root,
+        requestedConfigPath: CONFIG_PATH,
+      }).scopeDigest,
+      now: NOW,
+    })).toThrow(/parent is missing/);
+
+    const writableParent = path.join(volume, 'writable');
+    fs.mkdirSync(writableParent, { mode: 0o777 });
+    fs.chmodSync(writableParent, 0o777);
+    fs.mkdirSync(path.join(writableParent, 'migration-state'), { mode: 0o700 });
+    const writableRepository = temporaryRepository({
+      ...validConfig(),
+      databasePath: path.join(writableParent, 'migration-state', 'product-pipeline-migration-v1.sqlite'),
+    });
+    expect(() => loadMigrationAdminConfig({
+      repoRoot: writableRepository.root,
+      requestedConfigPath: CONFIG_PATH,
+    })).toThrow(/group\/world writable/);
+
+    const linkedRoot = path.join(volume, 'linked-root');
+    fs.symlinkSync(volume, linkedRoot);
+    const linkedRepository = temporaryRepository({
+      ...validConfig(),
+      databasePath: path.join(linkedRoot, 'migration-state', 'product-pipeline-migration-v1.sqlite'),
+    });
+    expect(() => loadMigrationAdminConfig({
+      repoRoot: linkedRepository.root,
+      requestedConfigPath: CONFIG_PATH,
+    })).toThrow(/symbolic link/);
+
+    expect(fs.readdirSync(durableParent)).toEqual([]);
+  });
+
   it('rejects oversized, non-normalized, and future-dated inputs', () => {
     const oversized = temporaryRepository();
     fs.writeFileSync(oversized.configAbsolutePath, ' '.repeat(32 * 1024 + 1));
