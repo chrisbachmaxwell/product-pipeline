@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { isAllowlistedListingHtml } from '../listing-html';
 import { apiClient } from './useApi';
 import type { ListingWorkspaceResponse } from './useListingWorkspace';
 
@@ -95,10 +96,12 @@ const positiveDecimalId = (value: string): boolean =>
   /^[1-9]\d{0,31}$/u.test(value);
 const safeMerchantKey = (value: string): boolean =>
   /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
-const plainDescription = (value: string): boolean => value.length <= 20_000
+// Plain text, or HTML restricted to the strict attribute-free allowlist
+// (see src/web/listing-html.ts). The field stays a single string.
+const safeDescription = (value: string): boolean => value.length <= 20_000
   && value.trim().length > 0
   && value.trim() === value
-  && !/<\/?[a-z][^>]*>/iu.test(value)
+  && isAllowlistedListingHtml(value)
   && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value);
 
 export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSaveInput => {
@@ -122,7 +125,7 @@ export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSa
     || !stringOrNull(value.draft.returnPolicyId)
     || !stringOrNull(value.draft.merchantLocation)) return false;
   if (title !== null && (title.trim() !== title || title.length === 0 || title.length > 80)) return false;
-  if (description !== null && !plainDescription(description)) return false;
+  if (description !== null && !safeDescription(description)) return false;
   for (const id of [value.draft.category, value.draft.condition,
     value.draft.fulfillmentPolicyId, value.draft.paymentPolicyId,
     value.draft.returnPolicyId]) {
@@ -205,7 +208,7 @@ export const isListingDraftResponse = (
   const draftDescription = value.sections.content.description.draft;
   if (draftDescription !== null && (
     draftDescription.length > 20_000
-    || /<\/?[a-z][^>]*>/iu.test(draftDescription)
+    || !isAllowlistedListingHtml(draftDescription)
     || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(draftDescription)
   )) return false;
   if (value.capabilities.saveDraft && (
