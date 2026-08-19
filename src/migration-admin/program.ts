@@ -130,6 +130,7 @@ function safeProjection(projection: MigrationStoreProjection): MigrationStorePro
         reconciliationRuns: projection.counts.reconciliationRuns,
         reconciliationExceptions: projection.counts.reconciliationExceptions,
         listingReviseObservations: projection.counts.listingReviseObservations,
+        targetEffectObservations: projection.counts.targetEffectObservations,
         auditEvents: projection.counts.auditEvents,
       }
     : null;

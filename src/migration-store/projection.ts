@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CURRENT_SCHEMA_VERSION } from './schema.js';
-import { openMigrationStoreReadOnly } from './store.js';
+import {
+  openMigrationStoreReadOnly,
+  PRODUCTION_ENABLED_RESPONSIBILITIES,
+} from './store.js';
 import {
   MIGRATION_RESPONSIBILITIES,
   type Digest,
@@ -28,6 +31,7 @@ export type MigrationStoreProjectionCounts = {
   reconciliationRuns: number;
   reconciliationExceptions: number;
   listingReviseObservations: number;
+  targetEffectObservations: number;
   auditEvents: number;
 };
 
@@ -131,6 +135,7 @@ function fixedCounts(counts: Record<string, number>): MigrationStoreProjectionCo
     reconciliationRuns: counts.reconciliation_runs,
     reconciliationExceptions: counts.reconciliation_exceptions,
     listingReviseObservations: counts.listing_revise_observations,
+    targetEffectObservations: counts.target_effect_observations,
     auditEvents: counts.audit_events,
   };
 }
@@ -188,32 +193,55 @@ export function inspectMigrationStoreReadOnly(input: {
         throw new Error('Read-only projection received a writable or externally wired store');
       }
       if (store.scope.ebayEnvironment === 'production') {
-        if (storedWatermark !== null) {
+        // A production watermark is valid only once the operator has recorded
+        // the ProductPipeline single-writer orderImport ownership chain (the
+        // Marketplace Connect disable evidence); otherwise it is forbidden.
+        const orderImportOwnership = ownership.find(
+          (entry) => entry.responsibility === 'orderImport',
+        );
+        if (
+          storedWatermark !== null
+          && !(
+            orderImportOwnership?.configured === true
+            && orderImportOwnership.owner === 'product_pipeline'
+            && orderImportOwnership.singleWriterVerified === true
+          )
+        ) {
           throw new Error('Production migration state contains a forbidden watermark');
         }
-        const acceptedProductionBaseline = new Set([
+        const noIncumbentResponsibilities = new Set([
+          'listingCreate',
+          'listingRevise',
+          'listingEndRelist',
+        ]);
+        const verifiedIncumbentResponsibilities = new Set([
           'orderImport',
           'price',
           'inventory',
         ]);
+        const stagedOwners = new Set(['marketplace_connect', 'paused', 'product_pipeline']);
         // Production execution authority is valid only for the reviewed
-        // listing-revise slice: a paused/product_pipeline listingRevise
-        // ownership chain, and execution rows scoped exclusively to
-        // listingRevise. Any other configured writer state is forbidden.
+        // replacement slice: Class A chains that never name Marketplace
+        // Connect, Class B chains staged from the v1 Marketplace Connect
+        // baseline, and execution rows scoped exclusively to the six enabled
+        // writer responsibilities. Any other configured writer state
+        // (mapping, fulfillment, feedback) is forbidden.
         const ownershipValid = ownership.every((entry) => {
           if (!entry.configured) return true;
-          if (entry.responsibility === 'listingRevise') {
+          if (noIncumbentResponsibilities.has(entry.responsibility)) {
             return entry.owner !== 'marketplace_connect'
               && entry.singleWriterVerified === true;
           }
-          return acceptedProductionBaseline.has(entry.responsibility)
-            && entry.version === 1
-            && entry.owner === 'marketplace_connect'
+          return verifiedIncumbentResponsibilities.has(entry.responsibility)
+            && entry.owner !== null
+            && stagedOwners.has(entry.owner)
             && entry.singleWriterVerified === true;
         });
         if (
           !ownershipValid
-          || store.countExecutionRowsOutsideResponsibility('listingRevise') !== 0
+          || store.countExecutionRowsOutsideResponsibilities(
+            PRODUCTION_ENABLED_RESPONSIBILITIES,
+          ) !== 0
         ) {
           throw new Error('Production migration state contains forbidden execution authority');
         }
