@@ -1,0 +1,679 @@
+/**
+ * Isolated price/inventory alignment operator CLI — the Marketplace Connect
+ * replacement slice for the `price` and `inventory` responsibilities.
+ *
+ * It is never imported or mounted by the server. One `dispatch` invocation
+ * is the one-action, exact-target operator approval: the operator must name
+ * the exact catalog row, SKU, listing id, offer id (the literal `none` for a
+ * Trading-model target, which has no offer), the one field (`price` or
+ * `quantity`), AND the manifest digest previously printed by `plan`. Any
+ * mismatch, moved drift, missing ownership, consumed approval, or foreign
+ * target fails closed before a provider write. Every intent, approval, job,
+ * attempt, reconciliation run, and resolution is recorded durably in the
+ * migration-state store's hash-chained audit before and after the one
+ * bounded provider call.
+ *
+ * OWNERSHIP: Marketplace Connect is the verified production incumbent for
+ * price and inventory sync. `establish-ownership` is the transfer ceremony
+ * and REQUIRES the operator-supplied Marketplace-Connect-disabled evidence
+ * digest — the proof that 'Sync price' / 'Sync inventory' was unchecked in
+ * Marketplace Connect BEFORE ProductPipeline may own the responsibility. Two
+ * live writers must never coexist. See docs/PRICE_INVENTORY_DISPATCH.md.
+ */
+import { randomUUID } from 'node:crypto';
+import { Command } from 'commander';
+import { deriveExternalIdentityKey, deriveIdempotencyKey, deriveScopeKey, openMigrationStore, MigrationStoreError, } from '../migration-store/index.js';
+import { sha256Digest } from '../listing-control-store/index.js';
+import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import { deriveListingDraftBasis, } from '../server/listing-draft-service.js';
+import { readListingWorkspace } from '../server/listing-workspace-reader.js';
+import { compareAlignedState, deriveAlignmentManifest, parseAlignmentPrice, parseAlignmentQuantity, reconstructAlignmentManifest, AlignmentManifestError, } from './manifest.js';
+import { createPriceInventoryDispatchAdapter, createProductionDispatchTokenProvider, AlignDispatchError, } from './dispatch-adapter.js';
+import { createTradingAlignDispatchAdapter, TradingAlignDispatchError, } from './trading-dispatch-adapter.js';
+const APPROVAL_TTL_MS = 10 * 60_000;
+const defaultIo = {
+    stdout: (message) => process.stdout.write(`${message}\n`),
+    stderr: (message) => process.stderr.write(`${message}\n`),
+    setExitCode: (code) => {
+        process.exitCode = code;
+    },
+};
+const MIGRATION_SCOPE = Object.freeze({
+    shopifyStoreDomain: LISTING_DRAFT_SCOPE.shopifyStoreDomain,
+    ebayEnvironment: LISTING_DRAFT_SCOPE.ebayEnvironment,
+    ebaySellerId: LISTING_DRAFT_SCOPE.ebaySellerId,
+    ebayMarketplaceId: LISTING_DRAFT_SCOPE.ebayMarketplaceId,
+});
+/** field -> migration-store responsibility and intent action. */
+const FIELD_RESPONSIBILITY = Object.freeze({
+    price: 'price',
+    quantity: 'inventory',
+});
+const FIELD_ACTION = Object.freeze({
+    price: 'update_ebay_price',
+    quantity: 'update_ebay_inventory',
+});
+const ESTABLISHABLE_RESPONSIBILITIES = Object.freeze(['price', 'inventory']);
+class PriceInventoryAdminError extends Error {
+    code;
+    constructor(code) {
+        super('Price/inventory alignment operation denied');
+        this.code = code;
+        this.name = 'PriceInventoryAdminError';
+    }
+}
+const deny = (code) => {
+    throw new PriceInventoryAdminError(code);
+};
+function safeErrorCode(error) {
+    if (error instanceof PriceInventoryAdminError)
+        return error.code;
+    if (error instanceof AlignmentManifestError)
+        return error.code;
+    if (error instanceof AlignDispatchError)
+        return error.code;
+    if (error instanceof TradingAlignDispatchError)
+        return error.code;
+    if (error instanceof MigrationStoreError)
+        return `MIGRATION_STORE_${error.code}`;
+    return 'PRICE_INVENTORY_DENIED';
+}
+/**
+ * Exact-target offer-id acceptance: an inventory-model target must be named
+ * by its exact offer id, while a Trading-model target (which has no offer)
+ * must be named with the literal `none` — any other combination is a
+ * mismatch, so `none` can never select an inventory-managed listing.
+ */
+function exactOfferIdMatches(ebayOfferId, optionValue) {
+    return ebayOfferId === null ? optionValue === 'none' : ebayOfferId === optionValue;
+}
+function exactField(value) {
+    if (value !== 'price' && value !== 'quantity')
+        deny('PLAN_FIELD_INVALID');
+    return value;
+}
+function createMonotonicClock(now) {
+    let lastMs = 0;
+    return () => {
+        const currentMs = Math.max(now().getTime(), lastMs);
+        lastMs = currentMs;
+        return new Date(currentMs).toISOString();
+    };
+}
+function assertExactTarget(basis, options) {
+    const identity = basis.identity;
+    if (identity.rawSku !== options.sku
+        || identity.ebayListingId !== options.listingId
+        || !exactOfferIdMatches(identity.ebayOfferId, options.offerId)) {
+        deny('REALIGN_EXACT_TARGET_MISMATCH');
+    }
+}
+async function deriveExactTarget(readWorkspace, options) {
+    const field = exactField(options.field);
+    const workspaceDto = await readWorkspace(options.catalogId);
+    const basis = deriveListingDraftBasis(workspaceDto);
+    assertExactTarget(basis, options);
+    const derived = deriveAlignmentManifest({ basis, field });
+    return { basis, field, derived };
+}
+function ensureIdentity(store, input, occurredAtUtc) {
+    const identityKey = deriveExternalIdentityKey(input);
+    const existing = store.getIdentity(identityKey);
+    if (existing)
+        return identityKey;
+    store.registerIdentity(input, {
+        eventId: `identity:${identityKey.slice(7, 27)}`,
+        occurredAtUtc,
+    });
+    return identityKey;
+}
+/**
+ * Store identities exactly as `assertActionIdentityShape` requires:
+ * `update_ebay_price` is keyed Shopify variant -> eBay offer (inventory
+ * model) or eBay listing (Trading model); `update_ebay_inventory` is keyed
+ * Shopify variant -> eBay inventory SKU for both models.
+ */
+function alignmentIdentityInputs(identity, field) {
+    const source = {
+        platform: 'shopify',
+        kind: 'variant',
+        bindingKey: `shopify-variant:${identity.shopifyVariantGid}`,
+        storeDomain: MIGRATION_SCOPE.shopifyStoreDomain,
+        externalGid: identity.shopifyVariantGid,
+    };
+    const ebayBase = {
+        platform: 'ebay',
+        environment: MIGRATION_SCOPE.ebayEnvironment,
+        sellerId: MIGRATION_SCOPE.ebaySellerId,
+        marketplaceId: MIGRATION_SCOPE.ebayMarketplaceId,
+    };
+    if (field === 'quantity') {
+        return {
+            source,
+            target: {
+                ...ebayBase,
+                kind: 'inventory_sku',
+                bindingKey: `ebay-inventory-sku:${identity.rawSku}`,
+                externalId: identity.rawSku,
+            },
+        };
+    }
+    return {
+        source,
+        target: identity.ebayOfferId !== null
+            ? {
+                ...ebayBase,
+                kind: 'offer',
+                bindingKey: `ebay-offer:${identity.ebayOfferId}`,
+                externalId: identity.ebayOfferId,
+            }
+            : {
+                ...ebayBase,
+                kind: 'listing',
+                bindingKey: `ebay-listing:${identity.ebayListingId}`,
+                externalId: identity.ebayListingId,
+            },
+    };
+}
+function manifestSummary(target) {
+    const { manifest, manifestDigest } = target.derived;
+    return {
+        manifestDigest,
+        field: manifest.field,
+        responsibility: FIELD_RESPONSIBILITY[manifest.field],
+        identity: manifest.identity,
+        drift: { before: manifest.before, after: manifest.after },
+        manifest,
+        externalWritesPerformed: 0,
+    };
+}
+async function runReconciliation(input) {
+    const responsibility = FIELD_RESPONSIBILITY[input.field];
+    const startedAtUtc = input.clock();
+    const freshDto = await input.readWorkspace(input.catalogId);
+    const freshBasis = deriveListingDraftBasis(freshDto);
+    const comparison = compareAlignedState({
+        manifest: input.derived.manifest,
+        freshBasis,
+    });
+    const completedAtUtc = input.clock();
+    const runId = `price-inventory-run:${input.uuid()}`;
+    const resultDigest = sha256Digest({
+        schemaVersion: 1,
+        manifestDigest: input.derived.manifestDigest,
+        field: input.field,
+        effect: comparison.effect,
+        observedValue: comparison.observedValue,
+        freshEbayDigest: freshBasis.ebayDigest,
+    });
+    const resolvable = comparison.effect === 'effect_observed'
+        || (comparison.effect === 'effect_absent' && input.resolveAbsent);
+    const exceptions = [];
+    if (!resolvable) {
+        exceptions.push({
+            exceptionId: `price-inventory-exception:${input.uuid()}`,
+            code: 'ALIGNED_STATE_NOT_YET_OBSERVED',
+            severity: 'critical',
+            subjectIdentityKey: input.targetIdentityKey,
+            detailsDigest: resultDigest,
+        });
+    }
+    input.store.recordReconciliationRun({
+        runId,
+        responsibility,
+        targetIdentityKey: input.targetIdentityKey,
+        mode: 'production_canary',
+        status: 'passed',
+        sourceSnapshotDigest: input.derived.manifestDigest,
+        targetSnapshotDigest: freshBasis.ebayDigest,
+        resultDigest,
+        authoritative: resolvable,
+        authorityEvidenceDigest: input.derived.manifestDigest,
+        externalWritesObserved: 0,
+        startedAtUtc,
+        completedAtUtc,
+        exceptions,
+        targetEffectObservation: {
+            observationId: `price-inventory-observation:${input.uuid()}`,
+            intentKey: input.intentKey,
+            responsibility,
+            effect: comparison.effect,
+            observedDigest: freshBasis.ebayDigest,
+        },
+        audit: { eventId: `reconciliation:${runId}`, occurredAtUtc: completedAtUtc },
+    });
+    if (!resolvable) {
+        return { effect: comparison.effect, resolution: null, runId };
+    }
+    const resolution = comparison.effect === 'effect_observed'
+        ? 'resolved_existing'
+        : 'confirmed_missing';
+    const reconciledAtUtc = input.clock();
+    input.store.resolveUnknownAttempt({
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        resolution,
+        reconciliationRunId: runId,
+        reconciliationResultDigest: resultDigest,
+        reconciledAtUtc,
+        audit: { eventId: `resolution:${runId}`, occurredAtUtc: reconciledAtUtc },
+    });
+    return { effect: comparison.effect, resolution, runId };
+}
+export function buildPriceInventoryAdminProgram(dependencies = {}) {
+    const io = dependencies.io ?? defaultIo;
+    const readWorkspace = dependencies.readWorkspace ?? readListingWorkspace;
+    const openMigration = dependencies.openMigration ?? openMigrationStore;
+    const createAdapter = dependencies.createAdapter ?? (() => createPriceInventoryDispatchAdapter({
+        getAccessToken: createProductionDispatchTokenProvider(),
+    }));
+    const createTradingAdapter = dependencies.createTradingAdapter ?? (() => createTradingAlignDispatchAdapter({
+        getAccessToken: createProductionDispatchTokenProvider(),
+    }));
+    const now = dependencies.now ?? (() => new Date());
+    const uuid = dependencies.uuid ?? randomUUID;
+    const program = new Command();
+    program
+        .name('price-inventory-admin')
+        .description('Isolated one-action price/inventory alignment dispatch for exactly one eBay listing')
+        .showHelpAfterError();
+    const withTargetOptions = (command) => command
+        .requiredOption('--catalog-id <id>', 'Exact listings catalog row id')
+        .requiredOption('--sku <sku>', 'Exact raw SKU of the one target')
+        .requiredOption('--listing-id <id>', 'Exact eBay listing id of the one target')
+        .requiredOption('--offer-id <id>', 'Exact eBay offer id of the one target, or the literal "none" for a Trading-model target')
+        .requiredOption('--field <field>', 'Exactly one aligned field: "price" or "quantity"');
+    program
+        .command('establish-ownership')
+        .description('Record the staged marketplace_connect -> paused -> product_pipeline ownership chain for '
+        + 'one responsibility, requiring Marketplace-Connect-disabled evidence')
+        .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
+        .requiredOption('--confirm-scope <sha256>', 'Exact migration scope key confirming the store')
+        .requiredOption('--responsibility <responsibility>', 'Exactly one responsibility to transfer: "price" or "inventory"')
+        .requiredOption('--baseline-evidence <sha256>', 'Digest of the reviewed Marketplace Connect incumbent baseline evidence')
+        .requiredOption('--mc-disabled-evidence <sha256>', 'Digest of the recorded proof that the Marketplace Connect sync toggle for this '
+        + 'responsibility is unchecked (REQUIRED before any transfer)')
+        .action((options) => {
+        try {
+            if (!ESTABLISHABLE_RESPONSIBILITIES.includes(options.responsibility)) {
+                deny('REALIGN_RESPONSIBILITY_INVALID');
+            }
+            const responsibility = options.responsibility;
+            if (options.confirmScope !== deriveScopeKey(MIGRATION_SCOPE)) {
+                deny('REALIGN_SCOPE_CONFIRMATION_MISMATCH');
+            }
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                let current = store.getCurrentOwnership(responsibility);
+                if (current && current.owner === 'product_pipeline') {
+                    io.stdout(JSON.stringify({
+                        command: 'establish-ownership', status: 'already-established',
+                        responsibility, version: current.version, externalWritesPerformed: 0,
+                    }));
+                    return;
+                }
+                if (!current) {
+                    // Truthful v1 genesis: Marketplace Connect is the verified
+                    // production incumbent for price and inventory.
+                    const genesisAt = clock();
+                    store.recordOwnershipVersion({
+                        responsibility,
+                        version: 1,
+                        owner: 'marketplace_connect',
+                        singleWriterVerified: true,
+                        evidenceDigest: options.baselineEvidence,
+                        effectiveAtUtc: genesisAt,
+                        recordedAtUtc: genesisAt,
+                        audit: {
+                            eventId: `ownership:${responsibility}:v1:${uuid()}`,
+                            occurredAtUtc: genesisAt,
+                        },
+                    });
+                    current = store.getCurrentOwnership(responsibility);
+                }
+                if (current && current.owner === 'marketplace_connect') {
+                    // The staged pause requires the Marketplace-Connect-disabled
+                    // proof: the operator unchecked the sync toggle first.
+                    const pauseAt = clock();
+                    store.recordOwnershipVersion({
+                        responsibility,
+                        version: current.version + 1,
+                        owner: 'paused',
+                        singleWriterVerified: true,
+                        evidenceDigest: options.mcDisabledEvidence,
+                        effectiveAtUtc: pauseAt,
+                        recordedAtUtc: pauseAt,
+                        audit: {
+                            eventId: `ownership:${responsibility}:v${current.version + 1}:${uuid()}`,
+                            occurredAtUtc: pauseAt,
+                        },
+                    });
+                    current = store.getCurrentOwnership(responsibility);
+                }
+                if (!current || current.owner !== 'paused') {
+                    throw new PriceInventoryAdminError('REALIGN_OWNERSHIP_CHAIN_INVALID');
+                }
+                const transferAt = clock();
+                store.recordOwnershipVersion({
+                    responsibility,
+                    version: current.version + 1,
+                    owner: 'product_pipeline',
+                    singleWriterVerified: true,
+                    evidenceDigest: options.mcDisabledEvidence,
+                    effectiveAtUtc: transferAt,
+                    recordedAtUtc: transferAt,
+                    audit: {
+                        eventId: `ownership:${responsibility}:v${current.version + 1}:${uuid()}`,
+                        occurredAtUtc: transferAt,
+                    },
+                });
+                io.stdout(JSON.stringify({
+                    command: 'establish-ownership', status: 'established',
+                    responsibility, version: current.version + 1, externalWritesPerformed: 0,
+                }));
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'establish-ownership', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
+    withTargetOptions(program
+        .command('plan')
+        .description('Derive and print the exact drift and alignment manifest without any store or provider '
+        + 'write'))
+        .action(async (options) => {
+        try {
+            const target = await deriveExactTarget(readWorkspace, options);
+            io.stdout(JSON.stringify({
+                command: 'plan',
+                status: 'preview',
+                ...manifestSummary(target),
+            }));
+            io.setExitCode(2);
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'plan', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
+    withTargetOptions(program
+        .command('dispatch')
+        .description('One-action exact-target alignment of one field to eBay, with durable idempotent job '
+        + 'state and immediate post-action reconciliation'))
+        .requiredOption('--manifest-digest <sha256>', 'Exact manifest digest printed by plan')
+        .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
+        .action(async (options) => {
+        try {
+            const target = await deriveExactTarget(readWorkspace, options);
+            if (target.derived.manifestDigest !== options.manifestDigest) {
+                deny('REALIGN_MANIFEST_DIGEST_MISMATCH');
+            }
+            const responsibility = FIELD_RESPONSIBILITY[target.field];
+            const action = FIELD_ACTION[target.field];
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                const ownership = store.getCurrentOwnership(responsibility);
+                if (!ownership || ownership.owner !== 'product_pipeline'
+                    || !ownership.singleWriterVerified) {
+                    deny('REALIGN_OWNERSHIP_NOT_ESTABLISHED');
+                }
+                const identityInputs = alignmentIdentityInputs(target.basis.identity, target.field);
+                const sourceIdentityKey = ensureIdentity(store, identityInputs.source, clock());
+                const targetIdentityKey = ensureIdentity(store, identityInputs.target, clock());
+                const intentKey = deriveIdempotencyKey({
+                    scopeKey: deriveScopeKey(MIGRATION_SCOPE),
+                    action,
+                    sourceIdentityKey,
+                    targetIdentityKey,
+                    desiredStateDigest: target.derived.manifestDigest,
+                });
+                if (store.getIntent(intentKey) !== null) {
+                    deny('REALIGN_INTENT_ALREADY_RECORDED');
+                }
+                const createdAtUtc = clock();
+                store.createIdempotencyIntent({
+                    action,
+                    sourceIdentityKey,
+                    targetIdentityKey,
+                    desiredStateDigest: target.derived.manifestDigest,
+                    createdAtUtc,
+                    audit: { eventId: `intent:${intentKey.slice(7, 27)}`, occurredAtUtc: createdAtUtc },
+                });
+                const approvalToken = `price-inventory-approval:${uuid()}`;
+                const issuedAtUtc = clock();
+                const expiresAtUtc = new Date(Date.parse(issuedAtUtc) + APPROVAL_TTL_MS).toISOString();
+                const ownershipVersion = ownership.version;
+                store.issueActionApproval({
+                    approvalToken,
+                    intentKey,
+                    responsibility,
+                    targetIdentityKey,
+                    ownershipVersion,
+                    issuedAtUtc,
+                    expiresAtUtc,
+                    evidenceDigest: target.derived.manifestDigest,
+                    audit: { eventId: `approval:${uuid()}`, occurredAtUtc: issuedAtUtc },
+                });
+                const jobId = `price-inventory-job:${uuid()}`;
+                const attemptId = `price-inventory-attempt:${uuid()}`;
+                const reservedAtUtc = clock();
+                store.reserveExecutionJob({
+                    jobId,
+                    approvalToken,
+                    intentKey,
+                    responsibility,
+                    targetIdentityKey,
+                    ownershipVersion,
+                    approvalEvidenceDigest: target.derived.manifestDigest,
+                    reservedAtUtc,
+                    evidenceDigest: target.derived.manifestDigest,
+                    audit: { eventId: `job:${jobId}:reserved`, occurredAtUtc: reservedAtUtc },
+                });
+                const dispatchAtUtc = clock();
+                store.markDispatchingOutcomeUnknown({
+                    jobId,
+                    attemptId,
+                    approvalToken,
+                    approvalEvidenceDigest: target.derived.manifestDigest,
+                    occurredAtUtc: dispatchAtUtc,
+                    evidenceDigest: target.derived.manifestDigest,
+                    audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
+                });
+                // Exactly ONE bounded provider call per dispatch, chosen by the
+                // target's management model.
+                let dispatchFailed = false;
+                const identity = target.basis.identity;
+                const after = target.derived.manifest.after;
+                try {
+                    if (identity.managementModel === 'inventory_api') {
+                        const adapter = createAdapter();
+                        if (target.field === 'price') {
+                            await adapter.updateOfferPrice({
+                                sku: identity.ebayInventorySku,
+                                offerId: identity.ebayOfferId,
+                                price: parseAlignmentPrice(after),
+                            });
+                        }
+                        else {
+                            await adapter.updateOfferQuantity({
+                                sku: identity.ebayInventorySku,
+                                offerId: identity.ebayOfferId,
+                                quantity: parseAlignmentQuantity(after),
+                            });
+                        }
+                    }
+                    else {
+                        const tradingAdapter = createTradingAdapter();
+                        await tradingAdapter.reviseInventoryStatus(target.field === 'price'
+                            ? {
+                                listingId: identity.ebayListingId,
+                                field: 'price',
+                                price: parseAlignmentPrice(after),
+                            }
+                            : {
+                                listingId: identity.ebayListingId,
+                                field: 'quantity',
+                                quantity: parseAlignmentQuantity(after),
+                            });
+                    }
+                }
+                catch {
+                    dispatchFailed = true;
+                }
+                const requiredAtUtc = clock();
+                store.requirePostDispatchReconciliation({
+                    jobId,
+                    attemptId,
+                    occurredAtUtc: requiredAtUtc,
+                    evidenceDigest: target.derived.manifestDigest,
+                    audit: {
+                        eventId: `job:${jobId}:reconciliation-required`,
+                        occurredAtUtc: requiredAtUtc,
+                    },
+                });
+                const reconciliation = await runReconciliation({
+                    store,
+                    derived: target.derived,
+                    field: target.field,
+                    intentKey,
+                    targetIdentityKey,
+                    jobId,
+                    attemptId,
+                    readWorkspace,
+                    catalogId: options.catalogId,
+                    clock,
+                    uuid,
+                    resolveAbsent: dispatchFailed,
+                });
+                io.stdout(JSON.stringify({
+                    command: 'dispatch',
+                    status: reconciliation.resolution === 'resolved_existing'
+                        ? 'dispatched-and-reconciled'
+                        : 'dispatched-unresolved',
+                    jobId,
+                    attemptId,
+                    intentKey,
+                    field: target.field,
+                    responsibility,
+                    manifestDigest: target.derived.manifestDigest,
+                    providerDispatchReported: !dispatchFailed,
+                    effect: reconciliation.effect,
+                    resolution: reconciliation.resolution,
+                    reconciliationRunId: reconciliation.runId,
+                    externalCommerceWritesAttempted: 1,
+                }));
+                if (reconciliation.resolution !== 'resolved_existing')
+                    io.setExitCode(1);
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'dispatch', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
+    withTargetOptions(program
+        .command('reconcile')
+        .description('Re-run post-dispatch reconciliation for an outstanding reconciliation_required job. '
+        + '--before/--after must reproduce the exact dispatched manifest digest'))
+        .requiredOption('--manifest-digest <sha256>', 'Exact manifest digest printed by plan')
+        .requiredOption('--before <value>', 'Exact before-value from the dispatched manifest, or the literal "none" for null')
+        .requiredOption('--after <value>', 'Exact after-value from the dispatched manifest')
+        .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
+        .requiredOption('--job-id <id>', 'Exact job id printed by dispatch')
+        .requiredOption('--attempt-id <id>', 'Exact attempt id printed by dispatch')
+        .option('--accept-absent', 'Explicitly accept a still-absent aligned effect as the terminal confirmed_missing outcome')
+        .action(async (options) => {
+        try {
+            const field = exactField(options.field);
+            const workspaceDto = await readWorkspace(options.catalogId);
+            const freshBasis = deriveListingDraftBasis(workspaceDto);
+            assertExactTarget(freshBasis, options);
+            const derived = reconstructAlignmentManifest({
+                identity: freshBasis.identity,
+                field,
+                before: options.before === 'none' ? null : options.before,
+                after: options.after,
+            });
+            if (derived.manifestDigest !== options.manifestDigest) {
+                deny('REALIGN_MANIFEST_DIGEST_MISMATCH');
+            }
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                const identityInputs = alignmentIdentityInputs(freshBasis.identity, field);
+                const sourceIdentityKey = deriveExternalIdentityKey(identityInputs.source);
+                const targetIdentityKey = deriveExternalIdentityKey(identityInputs.target);
+                const intentKey = deriveIdempotencyKey({
+                    scopeKey: deriveScopeKey(MIGRATION_SCOPE),
+                    action: FIELD_ACTION[field],
+                    sourceIdentityKey,
+                    targetIdentityKey,
+                    desiredStateDigest: derived.manifestDigest,
+                });
+                if (store.getIntent(intentKey) === null)
+                    deny('REALIGN_INTENT_NOT_FOUND');
+                const reconciliation = await runReconciliation({
+                    store,
+                    derived,
+                    field,
+                    intentKey,
+                    targetIdentityKey,
+                    jobId: options.jobId,
+                    attemptId: options.attemptId,
+                    readWorkspace,
+                    catalogId: options.catalogId,
+                    clock,
+                    uuid,
+                    resolveAbsent: options.acceptAbsent === true,
+                });
+                io.stdout(JSON.stringify({
+                    command: 'reconcile',
+                    status: reconciliation.resolution === null ? 'unresolved' : 'reconciled',
+                    jobId: options.jobId,
+                    attemptId: options.attemptId,
+                    field,
+                    effect: reconciliation.effect,
+                    resolution: reconciliation.resolution,
+                    reconciliationRunId: reconciliation.runId,
+                    externalWritesPerformed: 0,
+                }));
+                if (reconciliation.resolution === null)
+                    io.setExitCode(1);
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'reconcile', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
+    return program;
+}
