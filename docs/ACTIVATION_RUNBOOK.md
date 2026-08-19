@@ -49,7 +49,13 @@ Per-slice runbooks with exact flags, error codes, and rollback procedures:
    - Fresh store: `migration-admin init` (see `docs/MIGRATION_ADMIN.md`).
    - Existing v1/v2 store: `migration-admin verify`, then `migration-admin upgrade`
      with the exact catalog-digest confirmation it prints, then `verify` again.
-   - The store path must be on the persistent volume, alongside the app database.
+   - Put the store on the persistent volume so it survives redeploys: set the
+     config's `databasePath` to the absolute durable form
+     `<volume>/migration-state/product-pipeline-migration-v1.sqlite` (the same
+     volume that holds the app database — see the directory of `DATABASE_PATH`),
+     and create its parent first with `mkdir -p -m 700 <volume>/migration-state`.
+     The repository-local `.local/...` path lives on the ephemeral container
+     filesystem and is wiped on every deploy.
 3. **Exercise the signed-in draft save once (G3 close-out).** From your signed-in
    embedded-app browser session, follow the one-click step in
    `docs/LISTING_DRAFT_SAVE_EXERCISE.md` (edit any listing draft field and save;

@@ -18,7 +18,14 @@ The strict schema requires:
 - the exact ProductPipeline project/mode and schema version;
 - a lane whose eBay environment matches (`development`/`sandbox` use sandbox; `production-shadow` uses production);
 - exact Shopify store, eBay environment/seller/`EBAY_US` scope;
-- the fixed ignored path `.local/migration-state/product-pipeline-migration-v1.sqlite`;
+- a `databasePath` that is either the fixed ignored repository path
+  `.local/migration-state/product-pipeline-migration-v1.sqlite` or an exact absolute durable
+  path (for a deployment’s persistent volume) whose final two components are
+  `migration-state/product-pipeline-migration-v1.sqlite`. The durable form must resolve
+  outside the repository checkout; its `migration-state` directory and the volume root that
+  contains it must be regular non-symlink directories that are not group/world writable
+  (create with `mkdir -p -m 700 <volume>/migration-state`), no ancestor may be a symlink,
+  and the parent must already exist at `init` time — the tool never creates it;
 - explicit false assertions for platform access, external writes, historical backfill, ownership transfer, and credential use;
 - a null cutover watermark.
 
@@ -64,7 +71,12 @@ The mounted application reads migration state only when `MIGRATION_STATE_CONFIG_
 
 The API/UI projection is deeply allowlisted. It can show the local schema, safe scope subset, fixed counts, ownership summaries, watermark absence, audit status, and blockers. It never returns a database/config path, seller ID, raw row, approval or entity identifier, rejected value, credential, customer value, or store handle. It always reports zero eligible orders, no historical backfill, no canary authorization, no cutover authorization, and no external-write capability.
 
-Do not configure this on Railway yet. Version 1 intentionally supports only the ignored repository-local path; durable volume placement, one-replica/topology fencing, backup/restore, trusted time, and external audit anchoring require a separate review. A verified local projection is not Shopify/eBay/Marketplace Connect evidence or production parity.
+For production (Railway) use, place the store on the persistent volume with the absolute
+durable `databasePath` form above (e.g. `<volume>/migration-state/product-pipeline-migration-v1.sqlite`,
+alongside the application database) so it survives redeploys — the repository-local path lives on the
+ephemeral container filesystem and is wiped on every deploy. One-replica/topology fencing,
+backup/restore rehearsal, trusted time, and external audit anchoring remain separate deployment
+gates. A verified local projection is not Shopify/eBay/Marketplace Connect evidence or production parity.
 
 ## Exit codes
 
