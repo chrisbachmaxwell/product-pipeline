@@ -54,6 +54,46 @@ function crossSourceNearCollisionShopifySkus(shopifyValues, ebayValues) {
     }
     return affectedShopifySkus;
 }
+/**
+ * One facet observation per unique active listing, merged from the bulk
+ * Trading census (preferred, carries the category name) and the bulk offer
+ * census (offer categoryId, listing policies, merchant location). Listings
+ * where neither capture exposed any facet are omitted entirely.
+ */
+function buildEditorFacets(activeListings, offers) {
+    const offersByListingId = new Map();
+    for (const offer of offers) {
+        if (offer.listingId !== null && !offersByListingId.has(offer.listingId)) {
+            offersByListingId.set(offer.listingId, offer);
+        }
+    }
+    const observations = new Map();
+    for (const listing of activeListings) {
+        if (observations.has(listing.listingId))
+            continue;
+        const offer = offersByListingId.get(listing.listingId);
+        const categoryId = listing.primaryCategoryId ?? offer?.categoryId ?? null;
+        const observation = Object.freeze({
+            listingId: listing.listingId,
+            categoryId,
+            categoryName: listing.primaryCategoryId !== undefined
+                ? listing.primaryCategoryName ?? null
+                : null,
+            fulfillmentPolicyId: listing.fulfillmentPolicyId ?? offer?.fulfillmentPolicyId ?? null,
+            paymentPolicyId: listing.paymentPolicyId ?? offer?.paymentPolicyId ?? null,
+            returnPolicyId: listing.returnPolicyId ?? offer?.returnPolicyId ?? null,
+            merchantLocationKey: offer?.merchantLocationKey ?? null,
+        });
+        if (observation.categoryId !== null
+            || observation.fulfillmentPolicyId !== null
+            || observation.paymentPolicyId !== null
+            || observation.returnPolicyId !== null
+            || observation.merchantLocationKey !== null) {
+            observations.set(listing.listingId, observation);
+        }
+    }
+    return Object.freeze([...observations.values()]);
+}
 function requireUnique(values, key) {
     const seen = new Set();
     for (const value of values) {
@@ -262,6 +302,7 @@ export function buildLiveListingCatalogSnapshot(input) {
     return Object.freeze({
         observedAtUtc: input.observedAtUtc,
         rows: Object.freeze(rows),
+        editorFacets: buildEditorFacets(input.ebayActiveListings, input.ebayOffers),
         summary,
         coverage,
     });

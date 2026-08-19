@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isAllowlistedListingHtml } from '../shared/listing-html.js';
 import { ListingControlStoreError, deriveListingBaseDigests, openListingControlStore, openListingControlStoreReadOnly, sha256Digest, } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE, LISTING_DRAFT_SINGLE_WRITER_ACK, } from '../listing-control-config.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from './listing-workspace-reader.js';
@@ -146,7 +147,7 @@ export function parseSaveListingDraftRequest(value) {
             conditionDescription: exactOverrideText(draft.conditionDescription, 1_000),
             description: (() => {
                 const description = exactOverrideText(draft.description, 20_000);
-                if (description !== null && /<\/?[A-Za-z][^>]*>/u.test(description))
+                if (description !== null && !isAllowlistedListingHtml(description))
                     return invalid();
                 return description;
             })(),

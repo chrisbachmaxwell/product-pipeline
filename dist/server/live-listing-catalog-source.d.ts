@@ -30,6 +30,12 @@ declare function captureShopify(accessToken: string): Promise<{
     coverage: Omit<LiveListingCatalogSnapshot['coverage']['shopify'], never>;
 }>;
 declare function tradingCall(accessToken: string, callName: 'GetUser' | 'GetMyeBaySelling', body: string): Promise<Record<string, any>>;
+type TradingListingFacets = Partial<Pick<CapturedEbayActiveListing, 'primaryCategoryId' | 'primaryCategoryName' | 'fulfillmentPolicyId' | 'paymentPolicyId' | 'returnPolicyId'>>;
+/** Facets the GetMyeBaySelling item body already carries; keys only when valid. */
+declare function tradingListingFacets(item: Record<string, any>): TradingListingFacets;
+type OfferListingFacets = Partial<Pick<CapturedEbayOffer, 'categoryId' | 'fulfillmentPolicyId' | 'paymentPolicyId' | 'returnPolicyId' | 'merchantLocationKey'>>;
+/** Facets the bulk getOffers body already carries natively; keys only when valid. */
+declare function offerListingFacets(offer: Record<string, any>): OfferListingFacets;
 declare function captureTrading(accessToken: string): Promise<{
     listings: CapturedEbayActiveListing[];
     pageCount: number;
@@ -87,6 +93,8 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     tradingCall: typeof tradingCall;
     captureTrading: typeof captureTrading;
     captureInventory: typeof captureInventory;
+    tradingListingFacets: typeof tradingListingFacets;
+    offerListingFacets: typeof offerListingFacets;
     LIVE_CATALOG_REFRESH_INTERVAL_MS: 60000;
 }>;
 export {};

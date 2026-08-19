@@ -265,10 +265,18 @@ describe('local listing draft UI contract', () => {
     expect(isListingDraftBoundToWorkspace(shopifyOnlyDraft, shopifyOnlyWorkspace)).toBe(true);
   });
 
-  it('rejects HTML draft descriptions and keeps remote/local scope explicit', () => {
+  it('rejects unsafe HTML draft descriptions and keeps remote/local scope explicit', () => {
     const unsafe = draft();
-    unsafe.sections.content.description.draft = '<p>Hidden markup</p>';
+    unsafe.sections.content.description.draft = '<p onclick="alert(1)">Hidden markup</p>';
     expect(isListingDraftResponse(unsafe, unsafe.catalogId)).toBe(false);
+    unsafe.sections.content.description.draft = '<script>alert(1)</script>';
+    expect(isListingDraftResponse(unsafe, unsafe.catalogId)).toBe(false);
+    unsafe.sections.content.description.draft = '<img src="x">';
+    expect(isListingDraftResponse(unsafe, unsafe.catalogId)).toBe(false);
+    const formatted = draft();
+    formatted.sections.content.description.draft =
+      '<h2>Details</h2><p>Includes <strong>hood</strong> and <a href="https://example.com/manual">manual</a></p>';
+    expect(isListingDraftResponse(formatted, formatted.catalogId)).toBe(true);
     const page = readFileSync(
       fileURLToPath(new URL('../pages/ListingDetail.tsx', import.meta.url)),
       'utf8',
@@ -310,7 +318,19 @@ describe('local listing draft UI contract', () => {
     })).toBe(false);
     expect(isListingDraftSaveInput({
       ...valid,
-      draft: { ...valid.draft, description: '<p>HTML</p>' },
+      draft: { ...valid.draft, description: '<p>Allowlisted <em>HTML</em></p>' },
+    })).toBe(true);
+    expect(isListingDraftSaveInput({
+      ...valid,
+      draft: { ...valid.draft, description: '<p style="color:red">HTML</p>' },
+    })).toBe(false);
+    expect(isListingDraftSaveInput({
+      ...valid,
+      draft: { ...valid.draft, description: '<script>alert(1)</script>' },
+    })).toBe(false);
+    expect(isListingDraftSaveInput({
+      ...valid,
+      draft: { ...valid.draft, description: '<a href="javascript:alert(1)">x</a>' },
     })).toBe(false);
     expect(isListingDraftSaveInput({
       ...valid,

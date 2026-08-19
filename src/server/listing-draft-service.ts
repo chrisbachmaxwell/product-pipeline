@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isAllowlistedListingHtml } from '../shared/listing-html.js';
 import {
   ListingControlStoreError,
   deriveListingBaseDigests,
@@ -230,7 +231,7 @@ export function parseSaveListingDraftRequest(value: unknown): SaveListingDraftRe
       conditionDescription: exactOverrideText(draft.conditionDescription, 1_000),
       description: (() => {
         const description = exactOverrideText(draft.description, 20_000);
-        if (description !== null && /<\/?[A-Za-z][^>]*>/u.test(description)) return invalid();
+        if (description !== null && !isAllowlistedListingHtml(description)) return invalid();
         return description;
       })(),
       images: canonicalImages(draft.images),

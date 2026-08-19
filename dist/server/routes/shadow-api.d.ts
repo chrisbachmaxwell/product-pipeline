@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { type LiveListingCatalogRouteDependencies } from '../live-listing-catalog-source.js';
 import { type ListingWorkspaceDto } from '../listing-workspace-reader.js';
-export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/authoritative-listings", "/api/listing-workspace", "/api/listings", "/api/capabilities"];
+export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/authoritative-listings", "/api/listing-workspace", "/api/listing-editor-metadata", "/api/listings", "/api/capabilities"];
 export type LocalListingProjection = {
     id: number | string;
     shopify_product_id: string;

@@ -135,6 +135,14 @@ describe('local listing draft service', () => {
         expect(() => parseSaveListingDraftRequest({ ...valid,
             draft: { ...valid.draft, description: '<script>x</script>' } })).toThrow();
         expect(() => parseSaveListingDraftRequest({ ...valid,
+            draft: { ...valid.draft, description: '<p onclick="x()">hi</p>' } })).toThrow();
+        expect(() => parseSaveListingDraftRequest({ ...valid,
+            draft: { ...valid.draft, description: '<a href="javascript:alert(1)">x</a>' } })).toThrow();
+        expect(parseSaveListingDraftRequest({ ...valid, draft: { ...valid.draft,
+                description: '<p>Clean <strong>bold</strong> and a <a href="https://example.com/spec">link</a></p><ul><li>one</li></ul>' } })
+            .draft.description)
+            .toBe('<p>Clean <strong>bold</strong> and a <a href="https://example.com/spec">link</a></p><ul><li>one</li></ul>');
+        expect(() => parseSaveListingDraftRequest({ ...valid,
             draft: { ...valid.draft, images: JSON.stringify(['https://cdn.shopify.com/a.jpg?token=x']) } })).toThrow();
         expect(() => parseSaveListingDraftRequest({ ...valid,
             draft: { ...valid.draft, images: JSON.stringify(['https://cdn.shopify.com/a.jpg?v=']) } })).toThrow();
