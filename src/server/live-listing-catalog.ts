@@ -31,6 +31,16 @@ export type CapturedShopifyVariant = Readonly<{
 export type CapturedEbayActiveListing = Readonly<{
   listingId: string;
   sku: string;
+  /**
+   * Optional editor facets already present in the bulk Trading census
+   * response. Keys are only set when the capture validated a value; they are
+   * never required, so pre-existing captures and fixtures stay byte-identical.
+   */
+  primaryCategoryId?: string;
+  primaryCategoryName?: string;
+  fulfillmentPolicyId?: string;
+  paymentPolicyId?: string;
+  returnPolicyId?: string;
 }>;
 
 export type CapturedEbayInventoryItem = Readonly<{ sku: string }>;
@@ -41,6 +51,28 @@ export type CapturedEbayOffer = Readonly<{
   status: string | null;
   listingId: string | null;
   listingStatus: string | null;
+  /** Optional editor facets already present in the bulk getOffers response. */
+  categoryId?: string;
+  fulfillmentPolicyId?: string;
+  paymentPolicyId?: string;
+  returnPolicyId?: string;
+  merchantLocationKey?: string;
+}>;
+
+/**
+ * Per-active-listing editor facet observation aggregated by the listing
+ * editor metadata endpoint. Deliberately kept OFF the catalog rows so the
+ * row-serving consumers (/api/authoritative-listings, /api/listing-workspace)
+ * remain byte-identical and never expose policy or location identifiers.
+ */
+export type ListingEditorFacetObservation = Readonly<{
+  listingId: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  fulfillmentPolicyId: string | null;
+  paymentPolicyId: string | null;
+  returnPolicyId: string | null;
+  merchantLocationKey: string | null;
 }>;
 
 export type LiveCatalogCoverage = Readonly<{
@@ -131,6 +163,8 @@ export type LiveListingCatalogRow = Readonly<{
 export type LiveListingCatalogSnapshot = Readonly<{
   observedAtUtc: string;
   rows: readonly LiveListingCatalogRow[];
+  /** Additive; absent on hand-built snapshots. Never served through row projections. */
+  editorFacets?: readonly ListingEditorFacetObservation[];
   summary: Readonly<{
     active: number;
     notListed: number;
@@ -225,6 +259,49 @@ function crossSourceNearCollisionShopifySkus(
     }
   }
   return affectedShopifySkus;
+}
+
+/**
+ * One facet observation per unique active listing, merged from the bulk
+ * Trading census (preferred, carries the category name) and the bulk offer
+ * census (offer categoryId, listing policies, merchant location). Listings
+ * where neither capture exposed any facet are omitted entirely.
+ */
+function buildEditorFacets(
+  activeListings: readonly CapturedEbayActiveListing[],
+  offers: readonly CapturedEbayOffer[],
+): readonly ListingEditorFacetObservation[] {
+  const offersByListingId = new Map<string, CapturedEbayOffer>();
+  for (const offer of offers) {
+    if (offer.listingId !== null && !offersByListingId.has(offer.listingId)) {
+      offersByListingId.set(offer.listingId, offer);
+    }
+  }
+  const observations = new Map<string, ListingEditorFacetObservation>();
+  for (const listing of activeListings) {
+    if (observations.has(listing.listingId)) continue;
+    const offer = offersByListingId.get(listing.listingId);
+    const categoryId = listing.primaryCategoryId ?? offer?.categoryId ?? null;
+    const observation: ListingEditorFacetObservation = Object.freeze({
+      listingId: listing.listingId,
+      categoryId,
+      categoryName: listing.primaryCategoryId !== undefined
+        ? listing.primaryCategoryName ?? null
+        : null,
+      fulfillmentPolicyId: listing.fulfillmentPolicyId ?? offer?.fulfillmentPolicyId ?? null,
+      paymentPolicyId: listing.paymentPolicyId ?? offer?.paymentPolicyId ?? null,
+      returnPolicyId: listing.returnPolicyId ?? offer?.returnPolicyId ?? null,
+      merchantLocationKey: offer?.merchantLocationKey ?? null,
+    });
+    if (observation.categoryId !== null
+      || observation.fulfillmentPolicyId !== null
+      || observation.paymentPolicyId !== null
+      || observation.returnPolicyId !== null
+      || observation.merchantLocationKey !== null) {
+      observations.set(listing.listingId, observation);
+    }
+  }
+  return Object.freeze([...observations.values()]);
 }
 
 function requireUnique<T>(values: readonly T[], key: (value: T) => string): void {
@@ -455,6 +532,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
   return Object.freeze({
     observedAtUtc: input.observedAtUtc,
     rows: Object.freeze(rows),
+    editorFacets: buildEditorFacets(input.ebayActiveListings, input.ebayOffers),
     summary,
     coverage,
   });
