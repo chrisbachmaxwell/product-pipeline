@@ -18,6 +18,16 @@ export type CapturedShopifyVariant = Readonly<{
 export type CapturedEbayActiveListing = Readonly<{
     listingId: string;
     sku: string;
+    /**
+     * Optional editor facets already present in the bulk Trading census
+     * response. Keys are only set when the capture validated a value; they are
+     * never required, so pre-existing captures and fixtures stay byte-identical.
+     */
+    primaryCategoryId?: string;
+    primaryCategoryName?: string;
+    fulfillmentPolicyId?: string;
+    paymentPolicyId?: string;
+    returnPolicyId?: string;
 }>;
 export type CapturedEbayInventoryItem = Readonly<{
     sku: string;
@@ -28,6 +38,27 @@ export type CapturedEbayOffer = Readonly<{
     status: string | null;
     listingId: string | null;
     listingStatus: string | null;
+    /** Optional editor facets already present in the bulk getOffers response. */
+    categoryId?: string;
+    fulfillmentPolicyId?: string;
+    paymentPolicyId?: string;
+    returnPolicyId?: string;
+    merchantLocationKey?: string;
+}>;
+/**
+ * Per-active-listing editor facet observation aggregated by the listing
+ * editor metadata endpoint. Deliberately kept OFF the catalog rows so the
+ * row-serving consumers (/api/authoritative-listings, /api/listing-workspace)
+ * remain byte-identical and never expose policy or location identifiers.
+ */
+export type ListingEditorFacetObservation = Readonly<{
+    listingId: string;
+    categoryId: string | null;
+    categoryName: string | null;
+    fulfillmentPolicyId: string | null;
+    paymentPolicyId: string | null;
+    returnPolicyId: string | null;
+    merchantLocationKey: string | null;
 }>;
 export type LiveCatalogCoverage = Readonly<{
     shopify: Readonly<{
@@ -118,6 +149,8 @@ export type LiveListingCatalogRow = Readonly<{
 export type LiveListingCatalogSnapshot = Readonly<{
     observedAtUtc: string;
     rows: readonly LiveListingCatalogRow[];
+    /** Additive; absent on hand-built snapshots. Never served through row projections. */
+    editorFacets?: readonly ListingEditorFacetObservation[];
     summary: Readonly<{
         active: number;
         notListed: number;

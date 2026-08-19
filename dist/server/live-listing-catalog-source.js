@@ -349,19 +349,88 @@ async function tradingCall(accessToken, callName, body) {
         deny();
     return result;
 }
+/**
+ * Optional editor-facet extraction from already-captured census bodies.
+ * These helpers never deny(): facet data is a best-effort byproduct of the
+ * bulk reads, so an absent or malformed value is dropped per listing rather
+ * than failing the whole capture.
+ */
+function facetRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value
+        : null;
+}
+function facetDigits(value, maximum) {
+    const text = typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+        ? String(value)
+        : value;
+    return typeof text === 'string' && text.length > 0 && text.length <= maximum
+        && /^\d+$/u.test(text) ? text : null;
+}
+function facetText(value, maximum = 256) {
+    return typeof value === 'string' && value.length > 0 && value.length <= maximum
+        && value.trim().length > 0 && !/[\u0000-\u001F\u007F]/u.test(value)
+        ? value
+        : null;
+}
+/** Facets the GetMyeBaySelling item body already carries; keys only when valid. */
+function tradingListingFacets(item) {
+    const primary = facetRecord(item.PrimaryCategory);
+    const profiles = facetRecord(item.SellerProfiles);
+    const facets = {};
+    const primaryCategoryId = facetDigits(primary?.CategoryID, 32);
+    if (primaryCategoryId !== null) {
+        facets.primaryCategoryId = primaryCategoryId;
+        const primaryCategoryName = facetText(primary?.CategoryName, 256);
+        if (primaryCategoryName !== null)
+            facets.primaryCategoryName = primaryCategoryName;
+    }
+    const fulfillmentPolicyId = facetDigits(facetRecord(profiles?.SellerShippingProfile)?.ShippingProfileID, 64);
+    if (fulfillmentPolicyId !== null)
+        facets.fulfillmentPolicyId = fulfillmentPolicyId;
+    const paymentPolicyId = facetDigits(facetRecord(profiles?.SellerPaymentProfile)?.PaymentProfileID, 64);
+    if (paymentPolicyId !== null)
+        facets.paymentPolicyId = paymentPolicyId;
+    const returnPolicyId = facetDigits(facetRecord(profiles?.SellerReturnProfile)?.ReturnProfileID, 64);
+    if (returnPolicyId !== null)
+        facets.returnPolicyId = returnPolicyId;
+    return Object.freeze(facets);
+}
+/** Facets the bulk getOffers body already carries natively; keys only when valid. */
+function offerListingFacets(offer) {
+    const listingPolicies = facetRecord(offer.listingPolicies);
+    const facets = {};
+    const categoryId = facetDigits(offer.categoryId, 32);
+    if (categoryId !== null)
+        facets.categoryId = categoryId;
+    const fulfillmentPolicyId = facetDigits(listingPolicies?.fulfillmentPolicyId, 64);
+    if (fulfillmentPolicyId !== null)
+        facets.fulfillmentPolicyId = fulfillmentPolicyId;
+    const paymentPolicyId = facetDigits(listingPolicies?.paymentPolicyId, 64);
+    if (paymentPolicyId !== null)
+        facets.paymentPolicyId = paymentPolicyId;
+    const returnPolicyId = facetDigits(listingPolicies?.returnPolicyId, 64);
+    if (returnPolicyId !== null)
+        facets.returnPolicyId = returnPolicyId;
+    const merchantLocationKey = facetText(offer.merchantLocationKey, 256);
+    if (merchantLocationKey !== null)
+        facets.merchantLocationKey = merchantLocationKey;
+    return Object.freeze(facets);
+}
 function activeSkuRecords(item, listingId) {
     const records = [];
+    const facets = tradingListingFacets(item);
     if (typeof item.SKU === 'string' && item.SKU.length <= 128 && item.SKU.length > 0) {
-        records.push(Object.freeze({ listingId, sku: item.SKU }));
+        records.push(Object.freeze({ listingId, sku: item.SKU, ...facets }));
     }
     for (const raw of asArray(item.Variations?.Variation)) {
         const variation = asRecord(raw);
         if (typeof variation.SKU === 'string' && variation.SKU.length <= 128 && variation.SKU.length > 0) {
-            records.push(Object.freeze({ listingId, sku: variation.SKU }));
+            records.push(Object.freeze({ listingId, sku: variation.SKU, ...facets }));
         }
     }
     if (records.length === 0)
-        records.push(Object.freeze({ listingId, sku: '' }));
+        records.push(Object.freeze({ listingId, sku: '', ...facets }));
     return records;
 }
 async function captureTrading(accessToken) {
@@ -507,6 +576,7 @@ async function captureInventory(accessToken) {
                     status: optionalText(offer.status, 64),
                     listingId: optionalText(listing?.listingId, 32),
                     listingStatus: optionalText(listing?.listingStatus, 64),
+                    ...offerListingFacets(offer),
                 }));
                 collected += 1;
             }
@@ -645,5 +715,7 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
     tradingCall,
     captureTrading,
     captureInventory,
+    tradingListingFacets,
+    offerListingFacets,
     LIVE_CATALOG_REFRESH_INTERVAL_MS,
 });

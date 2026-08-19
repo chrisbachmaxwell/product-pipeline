@@ -4,10 +4,12 @@ import { migrationStatusHandler } from './migration.js';
 import { projectLiveListingCatalogPage, } from '../live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, hasUnresolvedLiveListingRefreshFailure, } from '../live-listing-catalog-source.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from '../listing-workspace-reader.js';
+import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
 export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/migration/status',
     '/api/authoritative-listings',
     '/api/listing-workspace',
+    '/api/listing-editor-metadata',
     '/api/listings',
     '/api/capabilities',
 ]);
@@ -85,6 +87,25 @@ export function createShadowApiRouter(dependencies = {
                 return;
             }
             res.status(503).json({ error: 'Verified listing workspace is unavailable' });
+        }
+    });
+    /**
+     * GET /api/listing-editor-metadata — fixed condition table plus facet usage
+     * aggregated from the already-cached live catalog snapshot. Never performs a
+     * new provider request: when no successful snapshot is held yet, it fails
+     * closed instead of triggering a capture.
+     */
+    router.get('/api/listing-editor-metadata', async (_req, res) => {
+        try {
+            const status = dependencies.getSnapshotStatus?.();
+            if (status !== undefined && status.hasSuccessfulSnapshot !== true) {
+                res.status(503).json({ error: 'Listing editor metadata is unavailable' });
+                return;
+            }
+            res.json(buildListingEditorMetadata(await dependencies.getSnapshot()));
+        }
+        catch {
+            res.status(503).json({ error: 'Listing editor metadata is unavailable' });
         }
     });
     /** GET /api/listings — projected local observations only; no platform reader. */
@@ -171,6 +192,14 @@ export function createShadowApiRouter(dependencies = {
                     externalWrite: false,
                     evidenceKind: 'live_read',
                     editMode: 'read_only',
+                },
+                {
+                    id: 'listing-editor-metadata',
+                    method: 'GET',
+                    endpoint: '/api/listing-editor-metadata',
+                    remoteRead: false,
+                    externalWrite: false,
+                    evidenceKind: 'cached_snapshot_aggregate',
                 },
                 {
                     id: 'local-listings',

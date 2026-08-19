@@ -90,23 +90,9 @@ export const sanitizeListingHtml = (value: string): string => {
     .trim();
 };
 
-const HTML_TAG_PATTERN = /<\/?[a-z][^>]*>/giu;
-const ALLOWED_TAG_PATTERN = new RegExp(
-  '^(?:'
-  + '<\\/?(?:p|div|b|strong|i|em|u|ul|ol|li|h2|h3|span)>'
-  + '|<br ?\\/?>'
-  + '|<a href="https?:\\/\\/[^\\s"<>]+">'
-  + '|<\\/a>'
-  + ')$',
-  'u',
-);
-
 /**
  * DOM-free check that a stored description contains only allowlisted,
- * attribute-free markup (plain text always passes). Used by the draft
- * save/response validators, which must run outside a browser too.
+ * attribute-free markup (plain text always passes). Shared with the
+ * server-side draft-save validator so both sides enforce the same rule.
  */
-export const isAllowlistedListingHtml = (value: string): boolean => {
-  const tags = value.match(HTML_TAG_PATTERN) ?? [];
-  return tags.every((tag) => ALLOWED_TAG_PATTERN.test(tag));
-};
+export { isAllowlistedListingHtml } from '../shared/listing-html.js';
