@@ -13,7 +13,7 @@ const SCOPE = {
 };
 const VERIFIED = {
     status: 'verified',
-    schemaVersion: 1,
+    schemaVersion: 2,
     scope: { ...SCOPE, scopeKey: `sha256:${'1'.repeat(64)}` },
     access: {
         writable: false,
@@ -39,6 +39,7 @@ const VERIFIED = {
         attemptResolutions: 0,
         reconciliationRuns: 0,
         reconciliationExceptions: 0,
+        listingReviseObservations: 0,
         auditEvents: 1,
     },
     ownership: MIGRATION_RESPONSIBILITIES.map((responsibility) => ({

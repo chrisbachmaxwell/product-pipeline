@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { initializeSchema, verifySchema } from './schema.js';
+import { CURRENT_SCHEMA_VERSION, initializeSchema, upgradeSchemaToCurrent, verifiedStoredSchemaVersion, verifySchema, } from './schema.js';
 import { INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY, MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, } from './types.js';
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const GENESIS_HASH = 'GENESIS';
@@ -297,6 +297,47 @@ export function openMigrationStore(input) {
         verifyDatabaseIntegrity(database, scope.scopeKey);
         configureWritable(database);
         return new MigrationStoreImpl(database, databasePath, scope, true);
+    }
+    catch (error) {
+        database.close();
+        translateOpenError(error);
+    }
+}
+/**
+ * Explicit operator-run schema upgrade. Runtime code never calls this: a
+ * store at an older verified schema version fails every ordinary open until
+ * an operator deliberately upgrades it. The stored version is only trusted
+ * after its complete migration history and catalog digest verify, and the
+ * pending migrations apply inside one immediate transaction followed by a
+ * full current-version verification.
+ */
+export function upgradeMigrationStore(input) {
+    const databasePath = normalizeExactPath(input.databasePath, true);
+    const applied = timestamp(input.appliedAtUtc, 'appliedAtUtc');
+    const preflight = new Database(databasePath, { readonly: true, fileMustExist: true });
+    try {
+        configureReadOnly(preflight);
+        const storedVersion = verifiedStoredSchemaVersion(preflight);
+        const scope = verifyExpectedScope(preflight, input.expectedScope);
+        verifyDatabaseIntegrity(preflight, scope.scopeKey);
+        if (storedVersion === CURRENT_SCHEMA_VERSION) {
+            return { fromVersion: storedVersion, toVersion: CURRENT_SCHEMA_VERSION };
+        }
+    }
+    catch (error) {
+        preflight.close();
+        translateOpenError(error);
+    }
+    preflight.close();
+    const database = new Database(databasePath, { fileMustExist: true });
+    try {
+        configureWritable(database);
+        const scope = verifyExpectedScope(database, input.expectedScope);
+        const result = upgradeSchemaToCurrent(database, applied.utc);
+        verifySchema(database);
+        verifyDatabaseIntegrity(database, scope.scopeKey);
+        database.close();
+        return result;
     }
     catch (error) {
         database.close();
@@ -702,8 +743,17 @@ class MigrationStoreImpl {
         if (input.version !== (current?.version ?? 0) + 1) {
             throw new MigrationStoreError('CONFLICT', 'Ownership version must advance exactly once');
         }
-        if (!current && (input.version !== 1 || input.owner !== 'marketplace_connect')) {
-            throw new MigrationStoreError('OWNERSHIP_DENIED', 'The first ownership version must record the Marketplace Connect baseline');
+        // listingRevise has no verified Marketplace Connect incumbent: its truthful
+        // genesis is the quarantined 'paused' state, and it may never record a
+        // Marketplace Connect owner at any version.
+        if (input.responsibility === 'listingRevise' && input.owner === 'marketplace_connect') {
+            throw new MigrationStoreError('OWNERSHIP_DENIED', 'listingRevise has no verified Marketplace Connect owner to record');
+        }
+        const validGenesis = input.responsibility === 'listingRevise'
+            ? input.owner === 'paused'
+            : input.owner === 'marketplace_connect';
+        if (!current && (input.version !== 1 || !validGenesis)) {
+            throw new MigrationStoreError('OWNERSHIP_DENIED', 'The first ownership version must record the verified incumbent baseline');
         }
         if (current) {
             const transitionAllowed = (current.owner === 'marketplace_connect' && input.owner === 'paused')
@@ -714,10 +764,14 @@ class MigrationStoreImpl {
                 throw new MigrationStoreError('OWNERSHIP_DENIED', 'Ownership transition is not staged safely');
             }
         }
-        if (this.scope.ebayEnvironment === 'production'
-            && (input.version !== 1
-                || input.owner !== 'marketplace_connect'
-                || !['orderImport', 'price', 'inventory'].includes(input.responsibility))) {
+        const productionAllowed = (input.version === 1
+            && input.owner === 'marketplace_connect'
+            && ['orderImport', 'price', 'inventory'].includes(input.responsibility))
+            // The reviewed listing-revise slice: paused genesis plus staged
+            // paused <-> product_pipeline transitions only, never Marketplace
+            // Connect, and no other responsibility.
+            || input.responsibility === 'listingRevise';
+        if (this.scope.ebayEnvironment === 'production' && !productionAllowed) {
             throw new MigrationStoreError('OWNERSHIP_DENIED', 'Production ownership transfer is disabled in this unwired foundation');
         }
         const ownershipId = identifier(`${input.responsibility}:v${input.version}`, 'ownershipId');
@@ -759,7 +813,7 @@ class MigrationStoreImpl {
             : null;
     }
     createIdempotencyIntent(input) {
-        if (this.scope.ebayEnvironment === 'production') {
+        if (this.scope.ebayEnvironment === 'production' && input.action !== 'revise_ebay_listing') {
             throw new MigrationStoreError('OWNERSHIP_DENIED', 'Production writer intents are disabled in this unwired foundation');
         }
         if (!INTENT_ACTIONS.includes(input.action)) {
@@ -1136,8 +1190,8 @@ class MigrationStoreImpl {
         }
         this.immediate('unknown attempt resolution', () => {
             const job = this.requireJob(jobId);
-            if (job.responsibility !== 'orderImport') {
-                throw new MigrationStoreError('CONFLICT', 'This foundation resolves only orderImport uncertainty');
+            if (!['orderImport', 'listingRevise'].includes(job.responsibility)) {
+                throw new MigrationStoreError('CONFLICT', 'This foundation resolves only orderImport and listingRevise uncertainty');
             }
             const intent = this.requireIntent(job.intent_key);
             const attempt = this.database
@@ -1170,8 +1224,23 @@ class MigrationStoreImpl {
                 || reconciled.epochMs < run.completed_epoch_ms) {
                 throw new MigrationStoreError('CONFLICT', 'Unknown outcome requires an exact passed authoritative target reconciliation');
             }
+            if (job.responsibility === 'listingRevise') {
+                if (input.shopifyOrderIdentityKey != null || input.orderLinkId != null) {
+                    throw new MigrationStoreError('INVALID_INPUT', 'A listing revise resolution cannot include a Shopify order link');
+                }
+                const recordedObservation = this.database
+                    .prepare(`SELECT effect FROM listing_revise_observations
+             WHERE run_id = ? AND intent_key = ?`)
+                    .get(run.run_id, intent.intent_key);
+                const expectedEffect = input.resolution === 'resolved_existing'
+                    ? 'revised_state_observed'
+                    : 'revised_state_absent';
+                if (!recordedObservation || recordedObservation.effect !== expectedEffect) {
+                    throw new MigrationStoreError('CONFLICT', 'A listing revise resolution requires the exact recorded target observation');
+                }
+            }
             let orderLinkId = null;
-            if (input.resolution === 'resolved_existing') {
+            if (job.responsibility === 'orderImport' && input.resolution === 'resolved_existing') {
                 orderLinkId = identifier(input.orderLinkId ?? '', 'orderLinkId');
                 const shopifyOrder = this.requireIdentity(input.shopifyOrderIdentityKey ?? '', 'Shopify order identity');
                 if (shopifyOrder.platform !== 'shopify' || shopifyOrder.resource_kind !== 'order') {
@@ -1425,8 +1494,13 @@ class MigrationStoreImpl {
         });
     }
     recordReconciliationRun(input) {
-        if (this.scope.ebayEnvironment === 'production'
-            && (input.mode !== 'shadow' || input.authoritative || input.externalWritesObserved !== 0)) {
+        const productionRunAllowed = (input.mode === 'shadow' && !input.authoritative && input.externalWritesObserved === 0)
+            // The reviewed listing-revise slice: an exact-target post-dispatch
+            // production canary reconciliation that itself performs zero writes.
+            || (input.mode === 'production_canary'
+                && input.responsibility === 'listingRevise'
+                && input.externalWritesObserved === 0);
+        if (this.scope.ebayEnvironment === 'production' && !productionRunAllowed) {
             throw new MigrationStoreError('OWNERSHIP_DENIED', 'Production reconciliation is shadow-only, non-authoritative, and zero-write');
         }
         const runId = identifier(input.runId, 'runId');
@@ -1458,6 +1532,21 @@ class MigrationStoreImpl {
         const completed = timestamp(input.completedAtUtc, 'completedAtUtc');
         if (completed.epochMs < started.epochMs || input.audit.occurredAtUtc !== completed.utc) {
             throw new MigrationStoreError('INVALID_INPUT', 'reconciliation timestamps are invalid');
+        }
+        const observationInput = input.listingReviseObservation ?? null;
+        if (observationInput !== null
+            && (input.responsibility !== 'listingRevise' || input.mode === 'shadow')) {
+            throw new MigrationStoreError('INVALID_INPUT', 'A listing revise observation requires a non-shadow listingRevise run');
+        }
+        const observation = observationInput === null ? null : {
+            observationId: identifier(observationInput.observationId, 'observationId'),
+            intentKey: assertDigest(observationInput.intentKey, 'observation intentKey'),
+            effect: observationInput.effect,
+            observedDigest: assertDigest(observationInput.observedDigest, 'observedDigest'),
+        };
+        if (observation !== null
+            && !['revised_state_observed', 'revised_state_absent'].includes(observation.effect)) {
+            throw new MigrationStoreError('INVALID_INPUT', 'listing revise effect is invalid');
         }
         const seenExceptions = new Set();
         const exceptions = input.exceptions.map((exception) => {
@@ -1497,6 +1586,14 @@ class MigrationStoreImpl {
             for (const exception of exceptions) {
                 insertException.run(exception.exceptionId, runId, exception.code, exception.severity, exception.subjectIdentityKey, exception.detailsDigest, completed.utc, completed.epochMs);
             }
+            if (observation !== null) {
+                this.database
+                    .prepare(`INSERT INTO listing_revise_observations (
+              observation_id, run_id, intent_key, target_identity_key,
+              effect, observed_digest, created_at_utc, created_epoch_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+                    .run(observation.observationId, runId, observation.intentKey, targetIdentityKey, observation.effect, observation.observedDigest, completed.utc, completed.epochMs);
+            }
             appendAuditRow(this.database, this.scopeKey, input.audit, 'reconciliation.recorded', {
                 runId,
                 responsibility: input.responsibility,
@@ -1510,6 +1607,12 @@ class MigrationStoreImpl {
                 authorityEvidenceDigest,
                 externalWritesObserved: input.externalWritesObserved,
                 exceptionIds: exceptions.map((exception) => exception.exceptionId).sort(),
+                listingReviseObservation: observation === null ? null : {
+                    observationId: observation.observationId,
+                    intentKey: observation.intentKey,
+                    effect: observation.effect,
+                    observedDigest: observation.observedDigest,
+                },
             });
             return runId;
         });
@@ -1537,12 +1640,47 @@ class MigrationStoreImpl {
             'attempt_resolutions',
             'reconciliation_runs',
             'reconciliation_exceptions',
+            'listing_revise_observations',
             'audit_events',
         ];
         return Object.fromEntries(tableNames.map((tableName) => {
             const row = this.database.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get();
             return [tableName, row.count];
         }));
+    }
+    /**
+     * Counts every execution-authority row (intent, approval, consumption, job,
+     * event, attempt, resolution) whose responsibility is not the given one.
+     * The read-only projection uses this to prove a production store's
+     * execution state is scoped exclusively to the reviewed slice.
+     */
+    countExecutionRowsOutsideResponsibility(responsibility) {
+        this.assertOpen();
+        if (!MIGRATION_RESPONSIBILITIES.includes(responsibility)) {
+            throw new MigrationStoreError('INVALID_INPUT', 'responsibility is invalid');
+        }
+        const row = this.database
+            .prepare(`SELECT
+          (SELECT COUNT(*) FROM idempotency_intents WHERE responsibility != ?)
+          + (SELECT COUNT(*) FROM action_approvals WHERE responsibility != ?)
+          + (SELECT COUNT(*) FROM approval_consumptions consumption
+             JOIN action_approvals approval
+               ON approval.approval_digest = consumption.approval_digest
+             WHERE approval.responsibility != ?)
+          + (SELECT COUNT(*) FROM execution_jobs WHERE responsibility != ?)
+          + (SELECT COUNT(*) FROM job_events event
+             JOIN execution_jobs job ON job.job_id = event.job_id
+             WHERE job.responsibility != ?)
+          + (SELECT COUNT(*) FROM intent_attempts attempt
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             WHERE job.responsibility != ?)
+          + (SELECT COUNT(*) FROM attempt_resolutions resolution
+             JOIN intent_attempts attempt ON attempt.attempt_id = resolution.attempt_id
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             WHERE job.responsibility != ?)
+          AS foreign_rows`)
+            .get(responsibility, responsibility, responsibility, responsibility, responsibility, responsibility, responsibility);
+        return row.foreign_rows;
     }
     assertShopifyScope(input) {
         if (input.storeDomain.toLowerCase() !== this.scope.shopifyStoreDomain) {

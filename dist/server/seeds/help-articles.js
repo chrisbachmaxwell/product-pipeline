@@ -224,6 +224,16 @@ Saving does not change eBay. Apply, approval, and publishing are not available i
 Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
     },
     {
+        question: 'How does a saved draft reach eBay?',
+        category: 'eBay',
+        sort_order: 5,
+        answer: `Saving a draft in the Listings workspace never changes eBay. Taking one approved draft revision live is a separate operator ceremony that runs outside this app, through the isolated \`listing-revise-admin\` command-line tool.
+
+The operator first runs a preflight that prints exactly which fields would change and a manifest digest, then dispatches by naming the exact SKU, listing, offer, draft revision, and that manifest digest in one command — a one-action, exact-target approval. Every dispatch is recorded durably with idempotency (the same manifest can never dispatch twice), and the tool immediately re-reads the live listing to verify the result.
+
+This applies only to Inventory-managed listings, and only to content fields (title, description, images, category, condition description, policies, location). **Price and quantity are never changed** — Marketplace Connect remains their owner — and there is no bulk action, automatic retry, or in-app Publish button.`,
+    },
+    {
         question: 'How does eBay order sync work?',
         category: 'eBay',
         sort_order: 4,

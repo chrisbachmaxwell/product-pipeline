@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import {
   createMigrationStore,
+  upgradeMigrationStore,
   type MigrationStore,
 } from '../migration-store/index.js';
 import {
@@ -38,8 +39,9 @@ type SafeScopeSummary = {
 };
 
 export type MigrationAdminResult = {
-  command: 'init' | 'verify';
-  status: 'preview' | 'initialized-inert' | 'verified';
+  command: 'init' | 'verify' | 'upgrade';
+  status: 'preview' | 'initialized-inert' | 'verified' | 'upgraded' | 'already-current';
+  schemaUpgrade?: { fromVersion: number; toVersion: number };
   scope: SafeScopeSummary;
   databaseRelativePath: string;
   projection: MigrationStoreProjection | null;
@@ -127,6 +129,7 @@ function safeProjection(projection: MigrationStoreProjection): MigrationStorePro
         attemptResolutions: projection.counts.attemptResolutions,
         reconciliationRuns: projection.counts.reconciliationRuns,
         reconciliationExceptions: projection.counts.reconciliationExceptions,
+        listingReviseObservations: projection.counts.listingReviseObservations,
         auditEvents: projection.counts.auditEvents,
       }
     : null;
@@ -245,6 +248,44 @@ export function initializeMigrationStore(input: {
   };
 }
 
+export function upgradeMigrationStoreSchema(input: {
+  repoRoot: string;
+  configPath: string;
+  appliedAtUtc: string;
+  confirmScope: string;
+  now?: number;
+}): MigrationAdminResult {
+  const loaded = loadMigrationAdminConfig({
+    repoRoot: input.repoRoot,
+    requestedConfigPath: input.configPath,
+  });
+  requireCanonicalCreationTime(input.appliedAtUtc, input.now);
+  if (input.confirmScope !== loaded.scopeDigest) {
+    throw new MigrationAdminConfigError(['scope confirmation digest does not match']);
+  }
+  const upgrade = upgradeMigrationStore({
+    databasePath: loaded.databaseAbsolutePath,
+    expectedScope: loaded.config.scope,
+    appliedAtUtc: input.appliedAtUtc,
+  });
+  const projection = inspectMigrationStoreReadOnly({
+    databasePath: loaded.databaseAbsolutePath,
+    expectedScope: loaded.config.scope,
+  });
+  if (projection.status !== 'verified') {
+    throw new MigrationAdminPostconditionError();
+  }
+  return {
+    command: 'upgrade',
+    status: upgrade.fromVersion === upgrade.toVersion ? 'already-current' : 'upgraded',
+    schemaUpgrade: upgrade,
+    scope: scopeSummary(loaded),
+    databaseRelativePath: loaded.config.databasePath,
+    projection: safeProjection(projection),
+    safety: safetySummary(),
+  };
+}
+
 export function verifyMigrationStore(input: {
   repoRoot: string;
   configPath: string;
@@ -349,6 +390,42 @@ export function buildMigrationAdminProgram(io: MigrationAdminIo = defaultIo): Co
         io.stderr(
           options.json
             ? JSON.stringify({ command: 'init', status: 'denied', error: message })
+            : message,
+        );
+        io.setExitCode(1);
+      }
+    });
+
+  program
+    .command('upgrade')
+    .description(
+      'Upgrade one existing verified migration-state database to the current reviewed schema version',
+    )
+    .requiredOption('--config <path>', 'Strict nonsecret repository-local configuration')
+    .requiredOption('--applied-at <utc>', 'Canonical UTC upgrade instant')
+    .requiredOption('--confirm-scope <sha256>', 'Exact scope digest confirming the one store to upgrade')
+    .option('--repo-root <path>', 'ProductPipeline repository root', '.')
+    .option('--json', 'Emit one JSON object')
+    .action((options: {
+      config: string;
+      appliedAt: string;
+      confirmScope: string;
+      repoRoot: string;
+      json?: boolean;
+    }) => {
+      try {
+        const result = upgradeMigrationStoreSchema({
+          repoRoot: options.repoRoot,
+          configPath: options.config,
+          appliedAtUtc: options.appliedAt,
+          confirmScope: options.confirmScope,
+        });
+        printResult(result, Boolean(options.json), io);
+      } catch (error) {
+        const message = safeError(error);
+        io.stderr(
+          options.json
+            ? JSON.stringify({ command: 'upgrade', status: 'denied', error: message })
             : message,
         );
         io.setExitCode(1);

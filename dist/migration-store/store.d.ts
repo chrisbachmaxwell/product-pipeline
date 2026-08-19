@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
+import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ListingReviseObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
 type Sqlite = InstanceType<typeof Database>;
 type IntentRow = {
     intent_key: string;
@@ -26,6 +26,22 @@ export declare function openMigrationStore(input: {
     databasePath: string;
     expectedScope: IntegrationScope;
 }): MigrationStore;
+/**
+ * Explicit operator-run schema upgrade. Runtime code never calls this: a
+ * store at an older verified schema version fails every ordinary open until
+ * an operator deliberately upgrades it. The stored version is only trusted
+ * after its complete migration history and catalog digest verify, and the
+ * pending migrations apply inside one immediate transaction followed by a
+ * full current-version verification.
+ */
+export declare function upgradeMigrationStore(input: {
+    databasePath: string;
+    expectedScope: IntegrationScope;
+    appliedAtUtc: string;
+}): {
+    fromVersion: number;
+    toVersion: number;
+};
 export declare function openMigrationStoreReadOnly(input: {
     databasePath: string;
     expectedScope: IntegrationScope;
@@ -211,10 +227,18 @@ declare class MigrationStoreImpl {
         startedAtUtc: string;
         completedAtUtc: string;
         exceptions: ReconciliationExceptionInput[];
+        listingReviseObservation?: ListingReviseObservationInput | null;
         audit: AuditContext;
     }): string;
     verifyAuditChain(): AuditVerification;
     getCounts(): Record<string, number>;
+    /**
+     * Counts every execution-authority row (intent, approval, consumption, job,
+     * event, attempt, resolution) whose responsibility is not the given one.
+     * The read-only projection uses this to prove a production store's
+     * execution state is scoped exclusively to the reviewed slice.
+     */
+    countExecutionRowsOutsideResponsibility(responsibility: Responsibility): number;
     private assertShopifyScope;
     private assertEbayScope;
     private validateShopifyGid;

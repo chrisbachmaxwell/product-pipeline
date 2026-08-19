@@ -103,6 +103,7 @@ describe('migration-store filesystem and production boundary regressions', () =>
         expect(migrationAdminIndex).toMatch(/buildMigrationAdminProgram/);
         expect(migrationAdminProgram.match(/\.command\(['"]([^'"]+)['"]\)/g)).toEqual([
             ".command('init')",
+            ".command('upgrade')",
             ".command('verify')",
         ]);
         expect(migrationAdminProgram).not.toMatch(/\.command\(['"](?:live|write|force|reset|migrate|watermark|import|job|sync|publish)['"]\)/);
