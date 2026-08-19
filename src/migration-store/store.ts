@@ -25,6 +25,7 @@ import {
   type IntentAction,
   type OwnershipOwner,
   type ListingReviseObservationInput,
+  type TargetEffectObservationInput,
   type ReconciliationExceptionInput,
   type ReconciliationMode,
   type ReconciliationStatus,
@@ -35,6 +36,60 @@ import {
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const GENESIS_HASH = 'GENESIS';
 const MAX_APPROVAL_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * The no-backfill clamp: a production order watermark's exclusive boundary
+ * may be at most one hour before the moment it is established, so it can
+ * never reach into order history. Mirrored by the schema-v3 SQL trigger.
+ */
+const NO_BACKFILL_CLAMP_MS = 60 * 60 * 1000;
+
+/** The exact schema-v3 production writer intent actions; all others stay denied. */
+const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
+  'revise_ebay_listing',
+  'create_ebay_listing',
+  'end_or_relist_ebay_listing',
+  'update_ebay_price',
+  'update_ebay_inventory',
+  'import_shopify_order',
+];
+
+/**
+ * Class A — no verified Marketplace Connect incumbent exists. The truthful
+ * genesis is the quarantined 'paused' state, and a marketplace_connect owner
+ * is permanently rejected in every environment.
+ */
+const NO_INCUMBENT_RESPONSIBILITIES: readonly Responsibility[] = [
+  'listingCreate',
+  'listingRevise',
+  'listingEndRelist',
+];
+
+/**
+ * Class B — Marketplace Connect is the verified incumbent. Genesis stays the
+ * v1 marketplace_connect baseline; production additionally permits only the
+ * staged transitions marketplace_connect->paused, paused->product_pipeline,
+ * and product_pipeline->paused.
+ */
+const VERIFIED_INCUMBENT_RESPONSIBILITIES: readonly Responsibility[] = [
+  'orderImport',
+  'price',
+  'inventory',
+];
+
+/** The six writer responsibilities enabled by the schema-v3 production slice. */
+export const PRODUCTION_ENABLED_RESPONSIBILITIES: readonly Responsibility[] = [
+  ...VERIFIED_INCUMBENT_RESPONSIBILITIES,
+  ...NO_INCUMBENT_RESPONSIBILITIES,
+];
+
+/** Responsibilities whose attempt resolution binds to target_effect_observations. */
+const TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES: readonly Responsibility[] = [
+  'listingCreate',
+  'listingEndRelist',
+  'price',
+  'inventory',
+];
 
 type Sqlite = InstanceType<typeof Database>;
 
@@ -905,16 +960,19 @@ class MigrationStoreImpl {
     createdAtUtc: string;
     audit: AuditContext;
   }): { watermarkKey: Digest; eventField: 'creationDate'; boundaryExclusiveUtc: string } {
-    if (this.scope.ebayEnvironment === 'production') {
-      throw new MigrationStoreError(
-        'OWNERSHIP_DENIED',
-        'Production watermark establishment is disabled in this unwired foundation',
-      );
-    }
+    const production = this.scope.ebayEnvironment === 'production';
     const boundary = timestamp(input.boundaryExclusiveUtc, 'boundaryExclusiveUtc');
     const created = timestamp(input.createdAtUtc, 'createdAtUtc');
     if (boundary.epochMs > created.epochMs) {
       throw new MigrationStoreError('INVALID_INPUT', 'Order watermark cannot be in the future');
+    }
+    // The no-backfill clamp: a production boundary may be at most one hour
+    // before establishment time, so it can never reach into order history.
+    if (production && boundary.epochMs < created.epochMs - NO_BACKFILL_CLAMP_MS) {
+      throw new MigrationStoreError(
+        'INVALID_INPUT',
+        'Production watermark boundary violates the one-hour no-backfill clamp',
+      );
     }
     if (input.audit.occurredAtUtc !== input.createdAtUtc) {
       throw new MigrationStoreError('INVALID_INPUT', 'Watermark audit time must equal creation time');
@@ -927,17 +985,24 @@ class MigrationStoreImpl {
       input.acceptedEvidenceDigest,
       'acceptedEvidenceDigest',
     );
+    // A production watermark requires the operator-recorded evidence chain
+    // that ProductPipeline is the current verified single writer (Marketplace
+    // Connect disabled); every other environment keeps the v1 requirement of
+    // the exact accepted Marketplace Connect incumbent baseline.
+    const requiredOwner = production ? 'product_pipeline' : 'marketplace_connect';
     const ownership = this.getCurrentOwnership('orderImport');
     if (
       !ownership
       || ownership.version !== input.ownershipVersion
-      || ownership.owner !== 'marketplace_connect'
+      || ownership.owner !== requiredOwner
       || !ownership.singleWriterVerified
       || ownership.evidenceDigest !== ownershipEvidenceDigest
     ) {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
-        'Watermark requires the exact accepted Marketplace Connect ownership baseline',
+        production
+          ? 'Production watermark requires current ProductPipeline single-writer orderImport ownership'
+          : 'Watermark requires the exact accepted Marketplace Connect ownership baseline',
       );
     }
     const watermarkKey = sha256Digest({
@@ -1059,16 +1124,17 @@ class MigrationStoreImpl {
     if (input.version !== (current?.version ?? 0) + 1) {
       throw new MigrationStoreError('CONFLICT', 'Ownership version must advance exactly once');
     }
-    // listingRevise has no verified Marketplace Connect incumbent: its truthful
-    // genesis is the quarantined 'paused' state, and it may never record a
-    // Marketplace Connect owner at any version.
-    if (input.responsibility === 'listingRevise' && input.owner === 'marketplace_connect') {
+    // Class A responsibilities have no verified Marketplace Connect
+    // incumbent: their truthful genesis is the quarantined 'paused' state,
+    // and they may never record a Marketplace Connect owner at any version.
+    const noIncumbent = NO_INCUMBENT_RESPONSIBILITIES.includes(input.responsibility);
+    if (noIncumbent && input.owner === 'marketplace_connect') {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
-        'listingRevise has no verified Marketplace Connect owner to record',
+        'This responsibility has no verified Marketplace Connect owner to record',
       );
     }
-    const validGenesis = input.responsibility === 'listingRevise'
+    const validGenesis = noIncumbent
       ? input.owner === 'paused'
       : input.owner === 'marketplace_connect';
     if (!current && (input.version !== 1 || !validGenesis)) {
@@ -1091,12 +1157,25 @@ class MigrationStoreImpl {
       (
         input.version === 1
         && input.owner === 'marketplace_connect'
-        && ['orderImport', 'price', 'inventory'].includes(input.responsibility)
+        && VERIFIED_INCUMBENT_RESPONSIBILITIES.includes(input.responsibility)
       )
-      // The reviewed listing-revise slice: paused genesis plus staged
+      // Class A (no verified incumbent): paused genesis plus staged
       // paused <-> product_pipeline transitions only, never Marketplace
-      // Connect, and no other responsibility.
-      || input.responsibility === 'listingRevise';
+      // Connect (already rejected above in every environment).
+      || noIncumbent
+      // Class B (verified Marketplace Connect incumbent): exactly the staged
+      // production transitions marketplace_connect -> paused,
+      // paused -> product_pipeline, product_pipeline -> paused. A production
+      // rollback to marketplace_connect stays denied in this slice.
+      || (
+        VERIFIED_INCUMBENT_RESPONSIBILITIES.includes(input.responsibility)
+        && current !== null
+        && (
+          (current.owner === 'marketplace_connect' && input.owner === 'paused')
+          || (current.owner === 'paused' && input.owner === 'product_pipeline')
+          || (current.owner === 'product_pipeline' && input.owner === 'paused')
+        )
+      );
     if (this.scope.ebayEnvironment === 'production' && !productionAllowed) {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
@@ -1182,7 +1261,10 @@ class MigrationStoreImpl {
     createdAtUtc: string;
     audit: AuditContext;
   }): Digest {
-    if (this.scope.ebayEnvironment === 'production' && input.action !== 'revise_ebay_listing') {
+    if (
+      this.scope.ebayEnvironment === 'production'
+      && !PRODUCTION_INTENT_ACTIONS.includes(input.action)
+    ) {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
         'Production writer intents are disabled in this unwired foundation',
@@ -1783,10 +1865,10 @@ class MigrationStoreImpl {
     }
     this.immediate('unknown attempt resolution', () => {
       const job = this.requireJob(jobId);
-      if (!['orderImport', 'listingRevise'].includes(job.responsibility)) {
+      if (!PRODUCTION_ENABLED_RESPONSIBILITIES.includes(job.responsibility)) {
         throw new MigrationStoreError(
           'CONFLICT',
-          'This foundation resolves only orderImport and listingRevise uncertainty',
+          'This foundation resolves only the enabled writer responsibilities',
         );
       }
       const intent = this.requireIntent(job.intent_key);
@@ -1859,6 +1941,31 @@ class MigrationStoreImpl {
           throw new MigrationStoreError(
             'CONFLICT',
             'A listing revise resolution requires the exact recorded target observation',
+          );
+        }
+      }
+      if (TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES.includes(job.responsibility)) {
+        if (input.shopifyOrderIdentityKey != null || input.orderLinkId != null) {
+          throw new MigrationStoreError(
+            'INVALID_INPUT',
+            'This resolution cannot include a Shopify order link',
+          );
+        }
+        const recordedEffect = this.database
+          .prepare(
+            `SELECT effect FROM target_effect_observations
+             WHERE run_id = ? AND intent_key = ? AND responsibility = ?`,
+          )
+          .get(run.run_id, intent.intent_key, job.responsibility) as
+          | { effect: string }
+          | undefined;
+        const expectedEffect = input.resolution === 'resolved_existing'
+          ? 'effect_observed'
+          : 'effect_absent';
+        if (!recordedEffect || recordedEffect.effect !== expectedEffect) {
+          throw new MigrationStoreError(
+            'CONFLICT',
+            'This resolution requires the exact recorded target effect observation',
           );
         }
       }
@@ -2295,15 +2402,17 @@ class MigrationStoreImpl {
     completedAtUtc: string;
     exceptions: ReconciliationExceptionInput[];
     listingReviseObservation?: ListingReviseObservationInput | null;
+    targetEffectObservation?: TargetEffectObservationInput | null;
     audit: AuditContext;
   }): string {
     const productionRunAllowed =
       (input.mode === 'shadow' && !input.authoritative && input.externalWritesObserved === 0)
-      // The reviewed listing-revise slice: an exact-target post-dispatch
-      // production canary reconciliation that itself performs zero writes.
+      // The reviewed replacement slice: an exact-target post-dispatch
+      // production canary reconciliation, for one of the six enabled writer
+      // responsibilities, that itself performs zero writes.
       || (
         input.mode === 'production_canary'
-        && input.responsibility === 'listingRevise'
+        && PRODUCTION_ENABLED_RESPONSIBILITIES.includes(input.responsibility)
         && input.externalWritesObserved === 0
       );
     if (this.scope.ebayEnvironment === 'production' && !productionRunAllowed) {
@@ -2372,6 +2481,35 @@ class MigrationStoreImpl {
     if (observation !== null
       && !['revised_state_observed', 'revised_state_absent'].includes(observation.effect)) {
       throw new MigrationStoreError('INVALID_INPUT', 'listing revise effect is invalid');
+    }
+    const targetEffectInput = input.targetEffectObservation ?? null;
+    if (targetEffectInput !== null
+      && (
+        !TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES.includes(input.responsibility)
+        || input.responsibility !== targetEffectInput.responsibility
+        || input.mode === 'shadow'
+      )) {
+      throw new MigrationStoreError(
+        'INVALID_INPUT',
+        'A target effect observation requires a matching non-shadow writer run',
+      );
+    }
+    if (targetEffectInput !== null && observation !== null) {
+      throw new MigrationStoreError(
+        'INVALID_INPUT',
+        'A run records at most one durable target observation',
+      );
+    }
+    const targetEffectObservation = targetEffectInput === null ? null : {
+      observationId: identifier(targetEffectInput.observationId, 'observationId'),
+      intentKey: assertDigest(targetEffectInput.intentKey, 'observation intentKey'),
+      responsibility: targetEffectInput.responsibility,
+      effect: targetEffectInput.effect,
+      observedDigest: assertDigest(targetEffectInput.observedDigest, 'observedDigest'),
+    };
+    if (targetEffectObservation !== null
+      && !['effect_observed', 'effect_absent'].includes(targetEffectObservation.effect)) {
+      throw new MigrationStoreError('INVALID_INPUT', 'target effect is invalid');
     }
     const seenExceptions = new Set<string>();
     const exceptions = input.exceptions.map((exception) => {
@@ -2461,6 +2599,26 @@ class MigrationStoreImpl {
             completed.epochMs,
           );
       }
+      if (targetEffectObservation !== null) {
+        this.database
+          .prepare(
+            `INSERT INTO target_effect_observations (
+              observation_id, run_id, intent_key, target_identity_key,
+              responsibility, effect, observed_digest, created_at_utc, created_epoch_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            targetEffectObservation.observationId,
+            runId,
+            targetEffectObservation.intentKey,
+            targetIdentityKey,
+            targetEffectObservation.responsibility,
+            targetEffectObservation.effect,
+            targetEffectObservation.observedDigest,
+            completed.utc,
+            completed.epochMs,
+          );
+      }
       appendAuditRow(this.database, this.scopeKey, input.audit, 'reconciliation.recorded', {
         runId,
         responsibility: input.responsibility,
@@ -2479,6 +2637,13 @@ class MigrationStoreImpl {
           intentKey: observation.intentKey,
           effect: observation.effect,
           observedDigest: observation.observedDigest,
+        },
+        targetEffectObservation: targetEffectObservation === null ? null : {
+          observationId: targetEffectObservation.observationId,
+          intentKey: targetEffectObservation.intentKey,
+          responsibility: targetEffectObservation.responsibility,
+          effect: targetEffectObservation.effect,
+          observedDigest: targetEffectObservation.observedDigest,
         },
       });
       return runId;
@@ -2510,6 +2675,7 @@ class MigrationStoreImpl {
       'reconciliation_runs',
       'reconciliation_exceptions',
       'listing_revise_observations',
+      'target_effect_observations',
       'audit_events',
     ] as const;
     return Object.fromEntries(
@@ -2525,44 +2691,59 @@ class MigrationStoreImpl {
   /**
    * Counts every execution-authority row (intent, approval, consumption, job,
    * event, attempt, resolution) whose responsibility is not the given one.
-   * The read-only projection uses this to prove a production store's
-   * execution state is scoped exclusively to the reviewed slice.
+   * Kept as a convenience wrapper over the set-based counter.
    */
   countExecutionRowsOutsideResponsibility(responsibility: Responsibility): number {
+    return this.countExecutionRowsOutsideResponsibilities([responsibility]);
+  }
+
+  /**
+   * Counts every execution-authority row (intent, approval, consumption, job,
+   * event, attempt, resolution) whose responsibility is outside the given
+   * set. The read-only projection uses this to prove a production store's
+   * execution state is scoped exclusively to the reviewed enabled slice.
+   */
+  countExecutionRowsOutsideResponsibilities(
+    responsibilities: readonly Responsibility[],
+  ): number {
     this.assertOpen();
-    if (!MIGRATION_RESPONSIBILITIES.includes(responsibility)) {
+    if (
+      responsibilities.length === 0
+      || responsibilities.some(
+        (responsibility) => !MIGRATION_RESPONSIBILITIES.includes(responsibility),
+      )
+    ) {
       throw new MigrationStoreError('INVALID_INPUT', 'responsibility is invalid');
     }
+    const unique = [...new Set(responsibilities)];
+    const placeholders = unique.map(() => '?').join(', ');
     const row = this.database
       .prepare(
         `SELECT
-          (SELECT COUNT(*) FROM idempotency_intents WHERE responsibility != ?)
-          + (SELECT COUNT(*) FROM action_approvals WHERE responsibility != ?)
+          (SELECT COUNT(*) FROM idempotency_intents
+             WHERE responsibility NOT IN (${placeholders}))
+          + (SELECT COUNT(*) FROM action_approvals
+             WHERE responsibility NOT IN (${placeholders}))
           + (SELECT COUNT(*) FROM approval_consumptions consumption
              JOIN action_approvals approval
                ON approval.approval_digest = consumption.approval_digest
-             WHERE approval.responsibility != ?)
-          + (SELECT COUNT(*) FROM execution_jobs WHERE responsibility != ?)
+             WHERE approval.responsibility NOT IN (${placeholders}))
+          + (SELECT COUNT(*) FROM execution_jobs
+             WHERE responsibility NOT IN (${placeholders}))
           + (SELECT COUNT(*) FROM job_events event
              JOIN execution_jobs job ON job.job_id = event.job_id
-             WHERE job.responsibility != ?)
+             WHERE job.responsibility NOT IN (${placeholders}))
           + (SELECT COUNT(*) FROM intent_attempts attempt
              JOIN execution_jobs job ON job.job_id = attempt.job_id
-             WHERE job.responsibility != ?)
+             WHERE job.responsibility NOT IN (${placeholders}))
           + (SELECT COUNT(*) FROM attempt_resolutions resolution
              JOIN intent_attempts attempt ON attempt.attempt_id = resolution.attempt_id
              JOIN execution_jobs job ON job.job_id = attempt.job_id
-             WHERE job.responsibility != ?)
+             WHERE job.responsibility NOT IN (${placeholders}))
           AS foreign_rows`,
       )
       .get(
-        responsibility,
-        responsibility,
-        responsibility,
-        responsibility,
-        responsibility,
-        responsibility,
-        responsibility,
+        ...unique, ...unique, ...unique, ...unique, ...unique, ...unique, ...unique,
       ) as { foreign_rows: number };
     return row.foreign_rows;
   }
