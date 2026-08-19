@@ -472,7 +472,7 @@ describe('migration-admin strict local boundary', () => {
         expect(JSON.parse(stdout[0])).toMatchObject({
             command: 'upgrade',
             status: 'already-current',
-            schemaUpgrade: { fromVersion: 2, toVersion: 2 },
+            schemaUpgrade: { fromVersion: 3, toVersion: 3 },
         });
     });
     it('keeps migration-admin isolated from network, credentials, runtime, and legacy CLIs', () => {

@@ -9,10 +9,11 @@
  * (`assertFreshBasisMatchesRevision`) that fails closed when the remote
  * listing drifted from the revision's observed base.
  *
- * Slice boundary (goal G4): only `inventory_api`-managed listings, only the
- * reviewed dispatchable fields, and byte-exact preservation of price and
- * quantity. Legacy Trading-managed listings are structurally rejected — see
- * docs/LISTING_MANAGEMENT_MODEL_STRATEGY.md.
+ * Slice boundary: fully-bound `inventory_api`-managed listings and
+ * fully-bound `trading_api`-managed listings (the goal-G5 Stage 2 extension),
+ * each with its own reviewed dispatchable field set, and byte-exact
+ * preservation of price and quantity for both models. See
+ * docs/LISTING_MANAGEMENT_MODEL_STRATEGY.md and docs/LISTING_REVISE_DISPATCH.md.
  */
 import { type Digest, type ListingFieldName, type ListingIdentity, type ListingRevision } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
@@ -22,13 +23,23 @@ export declare class ListingReviseManifestError extends Error {
     constructor(code: 'REVISE_TARGET_NOT_INVENTORY_MANAGED' | 'REVISE_IDENTITY_MISMATCH' | 'REVISE_BASE_STALE' | 'REVISE_NO_CHANGES' | 'REVISE_UNSUPPORTED_FIELD' | 'REVISE_PRESERVED_FIELD_MISSING');
 }
 /**
- * Fields this slice may dispatch. `condition` is deliberately excluded until
- * the numeric-condition-to-Inventory-enum mapping passes its own review;
+ * Fields this slice may dispatch for an `inventory_api`-managed target.
+ * `condition` is deliberately excluded until the
+ * numeric-condition-to-Inventory-enum mapping passes its own review;
  * `price`, `quantity`, `item_specifics`, and `identifiers` are never
  * dispatchable (the first two belong to Marketplace Connect, the last two are
  * comparison-only in the draft model).
  */
 export declare const DISPATCHABLE_FIELDS: readonly ["title", "condition_description", "description", "images", "category", "fulfillment_policy", "payment_policy", "return_policy", "merchant_location"];
+/**
+ * Fields this slice may dispatch for a legacy `trading_api`-managed target
+ * via `ReviseFixedPriceItem`. The policy fields map to the Seller Business
+ * Policy profile ids the workspace observed on the Trading item
+ * (`SellerProfiles`). `merchant_location` has no Trading revise mapping and
+ * is not dispatchable; `condition` stays excluded for both models, and
+ * price/quantity remain never-dispatchable.
+ */
+export declare const TRADING_DISPATCHABLE_FIELDS: readonly ["title", "condition_description", "description", "images", "category", "fulfillment_policy", "payment_policy", "return_policy"];
 export type ListingReviseChange = Readonly<{
     field: ListingFieldName;
     before: string | null;
@@ -54,8 +65,9 @@ export type DerivedListingReviseManifest = Readonly<{
 }>;
 /**
  * Derive the deterministic dispatch manifest from one stored draft revision,
- * failing closed unless the target is a fully-bound inventory_api listing, at
- * least one override exists, every override is a dispatchable field, and the
+ * failing closed unless the target is a fully-bound inventory_api listing or
+ * a fully-bound trading_api listing, at least one override exists, every
+ * override is dispatchable for the target's management model, and the
  * revision observed the preserved price and quantity values.
  */
 export declare function deriveListingReviseManifest(revision: ListingRevision): DerivedListingReviseManifest;

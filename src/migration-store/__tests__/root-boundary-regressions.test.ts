@@ -126,7 +126,10 @@ describe('migration-store filesystem and production boundary regressions', () =>
     ) as { scripts?: Record<string, string> };
 
     expect(store).toMatch(/externalWritesSupported = false/);
-    expect(store).toMatch(/Production watermark establishment is disabled/);
+    expect(store).toMatch(
+      /Production watermark requires current ProductPipeline single-writer orderImport ownership/,
+    );
+    expect(store).toMatch(/one-hour no-backfill clamp/);
     expect(store).toMatch(/Production reconciliation is shadow-only/);
     expect(store).toMatch(/journal_mode = DELETE/);
     expect(store).not.toMatch(/\bfetch\s*\(|process\.env|token-manager/);

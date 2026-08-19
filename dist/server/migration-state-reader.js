@@ -64,6 +64,7 @@ const COUNT_KEYS = [
     'reconciliationRuns',
     'reconciliationExceptions',
     'listingReviseObservations',
+    'targetEffectObservations',
     'auditEvents',
 ];
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -104,7 +105,18 @@ function normalizeVerifiedProjection(projection) {
     const watermarkValid = orders.watermarkUtc === null || (typeof orders.watermarkUtc === 'string' &&
         isExactUtc(orders.watermarkUtc));
     const blockersValid = readiness.blockers.every((blocker) => typeof blocker === 'string' && BLOCKER.test(blocker));
-    const contractValid = projection.schemaVersion === 2 &&
+    // A production watermark is acceptable only when the same projection shows
+    // current ProductPipeline single-writer orderImport ownership — the
+    // operator-recorded Marketplace Connect disable evidence chain. Any other
+    // production watermark is invalid.
+    const orderImportOwnership = ownership.find((entry) => entry.responsibility === 'orderImport');
+    const productionWatermarkValid = scope?.ebayEnvironment !== 'production'
+        || orders.watermarkUtc === null
+        || (orderImportOwnership !== undefined
+            && orderImportOwnership.configured === true
+            && orderImportOwnership.owner === 'product_pipeline'
+            && orderImportOwnership.singleWriterVerified === true);
+    const contractValid = projection.schemaVersion === 3 &&
         scope !== null &&
         DIGEST.test(scope.scopeKey) &&
         SHOPIFY_DOMAIN.test(scope.shopifyStoreDomain) &&
@@ -123,8 +135,7 @@ function normalizeVerifiedProjection(projection) {
         orders.historicalBackfillAllowed === false &&
         orders.watermarkEstablished === (orders.watermarkUtc !== null) &&
         watermarkValid &&
-        (scope.ebayEnvironment !== 'production'
-            || (orders.watermarkUtc === null && counts.orderWatermarks === 0)) &&
+        productionWatermarkValid &&
         audit.valid === true &&
         Number.isSafeInteger(audit.recordCount) &&
         audit.recordCount > 0 &&
@@ -136,16 +147,21 @@ function normalizeVerifiedProjection(projection) {
     const productionOwnershipValid = scope?.ebayEnvironment !== 'production' || ownership.every((entry) => {
         if (!entry.configured)
             return true;
-        // The reviewed listing-revise slice permits a paused/product_pipeline
-        // listingRevise chain; Marketplace Connect is never a valid
-        // listingRevise owner.
-        if (entry.responsibility === 'listingRevise') {
+        // Class A (no verified incumbent): listingCreate, listingRevise, and
+        // listingEndRelist permit a paused/product_pipeline chain; Marketplace
+        // Connect is never a valid owner for them.
+        if (['listingCreate', 'listingRevise', 'listingEndRelist'].includes(entry.responsibility)) {
             return entry.owner !== 'marketplace_connect'
                 && entry.singleWriterVerified === true;
         }
+        // Class B (verified incumbent): orderImport, price, and inventory may
+        // sit anywhere on the staged chain — the v1 Marketplace Connect
+        // baseline remains valid — always with verified single-writer
+        // evidence. mapping/fulfillment/feedback configured rows stay invalid.
         const baselineResponsibility = ['orderImport', 'price', 'inventory'].includes(entry.responsibility);
-        return baselineResponsibility && entry.version === 1
-            && entry.owner === 'marketplace_connect'
+        return baselineResponsibility
+            && entry.owner !== null
+            && ['marketplace_connect', 'paused', 'product_pipeline'].includes(entry.owner)
             && entry.singleWriterVerified === true;
     });
     if (!contractValid ||
@@ -157,7 +173,7 @@ function normalizeVerifiedProjection(projection) {
     }
     return {
         status: 'verified',
-        schemaVersion: 2,
+        schemaVersion: 3,
         scope: {
             scopeKey: scope.scopeKey,
             shopifyStoreDomain: scope.shopifyStoreDomain,

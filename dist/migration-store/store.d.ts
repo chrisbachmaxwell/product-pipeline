@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3';
-import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ListingReviseObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
+import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ListingReviseObservationInput, type TargetEffectObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
+/** The six writer responsibilities enabled by the schema-v3 production slice. */
+export declare const PRODUCTION_ENABLED_RESPONSIBILITIES: readonly Responsibility[];
 type Sqlite = InstanceType<typeof Database>;
 type IntentRow = {
     intent_key: string;
@@ -228,6 +230,7 @@ declare class MigrationStoreImpl {
         completedAtUtc: string;
         exceptions: ReconciliationExceptionInput[];
         listingReviseObservation?: ListingReviseObservationInput | null;
+        targetEffectObservation?: TargetEffectObservationInput | null;
         audit: AuditContext;
     }): string;
     verifyAuditChain(): AuditVerification;
@@ -235,10 +238,16 @@ declare class MigrationStoreImpl {
     /**
      * Counts every execution-authority row (intent, approval, consumption, job,
      * event, attempt, resolution) whose responsibility is not the given one.
-     * The read-only projection uses this to prove a production store's
-     * execution state is scoped exclusively to the reviewed slice.
+     * Kept as a convenience wrapper over the set-based counter.
      */
     countExecutionRowsOutsideResponsibility(responsibility: Responsibility): number;
+    /**
+     * Counts every execution-authority row (intent, approval, consumption, job,
+     * event, attempt, resolution) whose responsibility is outside the given
+     * set. The read-only projection uses this to prove a production store's
+     * execution state is scoped exclusively to the reviewed enabled slice.
+     */
+    countExecutionRowsOutsideResponsibilities(responsibilities: readonly Responsibility[]): number;
     private assertShopifyScope;
     private assertEbayScope;
     private validateShopifyGid;
