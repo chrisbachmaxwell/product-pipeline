@@ -3,7 +3,8 @@
  *
  * It is never imported or mounted by the server. One `dispatch` invocation is
  * the one-action, exact-target operator approval: the operator must name the
- * exact catalog row, SKU, listing id, offer id, draft revision digest, AND
+ * exact catalog row, SKU, listing id, offer id (the literal `none` for a
+ * Trading-model target, which has no offer), draft revision digest, AND
  * the manifest digest previously printed by `preflight`. Any mismatch, stale
  * remote state, missing ownership, consumed approval, or foreign target
  * fails closed before a provider write. Every intent, approval, job,
@@ -50,6 +51,11 @@ import {
   ListingReviseDispatchError,
   type ListingReviseDispatchAdapter,
 } from './dispatch-adapter.js';
+import {
+  createTradingDispatchAdapter,
+  TradingDispatchError,
+  type TradingDispatchAdapter,
+} from './trading-dispatch-adapter.js';
 
 const APPROVAL_TTL_MS = 10 * 60_000;
 const VALUE_PREVIEW_LENGTH = 120;
@@ -74,6 +80,7 @@ export type ListingReviseAdminDependencies = Readonly<{
   openDraftStoreReadOnly?: typeof openListingControlStoreReadOnly;
   openMigration?: typeof openMigrationStore;
   createAdapter?: () => ListingReviseDispatchAdapter;
+  createTradingAdapter?: () => TradingDispatchAdapter;
   now?: () => Date;
   uuid?: () => string;
   io?: ListingReviseAdminIo;
@@ -102,6 +109,7 @@ function safeErrorCode(error: unknown): string {
   if (error instanceof ListingReviseManifestError) return error.code;
   if (error instanceof ListingRevisePayloadError) return error.code;
   if (error instanceof ListingReviseDispatchError) return error.code;
+  if (error instanceof TradingDispatchError) return error.code;
   if (error instanceof MigrationStoreError) return `MIGRATION_STORE_${error.code}`;
   return 'LISTING_REVISE_DENIED';
 }
@@ -130,6 +138,16 @@ type DerivedTarget = {
   derived: DerivedListingReviseManifest;
 };
 
+/**
+ * Exact-target offer-id acceptance: an inventory-model target must be named
+ * by its exact offer id, while a Trading-model target (which has no offer)
+ * must be named with the literal `none` — any other combination is a
+ * mismatch, so `none` can never select an inventory-managed listing.
+ */
+function exactOfferIdMatches(ebayOfferId: string | null, optionValue: string): boolean {
+  return ebayOfferId === null ? optionValue === 'none' : ebayOfferId === optionValue;
+}
+
 function createMonotonicClock(now: () => Date): () => string {
   let lastMs = 0;
   return () => {
@@ -149,7 +167,7 @@ async function deriveExactTarget(
   const identity = basis.identity;
   if (identity.rawSku !== options.sku
     || identity.ebayListingId !== options.listingId
-    || identity.ebayOfferId !== options.offerId) {
+    || !exactOfferIdMatches(identity.ebayOfferId, options.offerId)) {
     deny('REVISE_EXACT_TARGET_MISMATCH');
   }
   const draftPath = dependencies.draftDatabasePath();
@@ -348,6 +366,10 @@ export function buildListingReviseAdminProgram(
     createListingReviseDispatchAdapter({
       getAccessToken: createProductionDispatchTokenProvider(),
     }));
+  const createTradingAdapter = dependencies.createTradingAdapter ?? (() =>
+    createTradingDispatchAdapter({
+      getAccessToken: createProductionDispatchTokenProvider(),
+    }));
   const now = dependencies.now ?? (() => new Date());
   const uuid = dependencies.uuid ?? randomUUID;
   const targetDependencies = { readWorkspace, draftDatabasePath, openDraftStoreReadOnly };
@@ -364,7 +386,10 @@ export function buildListingReviseAdminProgram(
     .requiredOption('--catalog-id <id>', 'Exact listings catalog row id')
     .requiredOption('--sku <sku>', 'Exact raw SKU of the one target')
     .requiredOption('--listing-id <id>', 'Exact eBay listing id of the one target')
-    .requiredOption('--offer-id <id>', 'Exact eBay offer id of the one target')
+    .requiredOption(
+      '--offer-id <id>',
+      'Exact eBay offer id of the one target, or the literal "none" for a Trading-model target',
+    )
     .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest');
 
   withTargetOptions(program
@@ -545,41 +570,68 @@ export function buildListingReviseAdminProgram(
             audit: { eventId: `job:${jobId}:reserved`, occurredAtUtc: reservedAtUtc },
           });
 
-          // Round-trip the raw provider resources and derive the exact
-          // payloads before the dispatch boundary; any binding or
-          // preservation failure stops the job while it is still reserved.
-          const adapter = createAdapter();
-          const sku = target.basis.identity.ebayInventorySku as string;
-          const offerId = target.basis.identity.ebayOfferId as string;
-          const rawInventoryItem = await adapter.getInventoryItem(sku);
-          const rawOffer = await adapter.getOffer(offerId);
-          const payloads = buildListingRevisePayloads({
-            manifest: target.derived.manifest,
-            rawInventoryItem,
-            rawOffer,
-          });
-
-          const dispatchAtUtc = clock();
-          store.markDispatchingOutcomeUnknown({
-            jobId,
-            attemptId,
-            approvalToken,
-            approvalEvidenceDigest: target.derived.manifestDigest,
-            occurredAtUtc: dispatchAtUtc,
-            evidenceDigest: target.derived.manifestDigest,
-            audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
-          });
+          const markDispatching = (): void => {
+            const dispatchAtUtc = clock();
+            store.markDispatchingOutcomeUnknown({
+              jobId,
+              attemptId,
+              approvalToken,
+              approvalEvidenceDigest: target.derived.manifestDigest,
+              occurredAtUtc: dispatchAtUtc,
+              evidenceDigest: target.derived.manifestDigest,
+              audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
+            });
+          };
 
           let dispatchFailed = false;
-          try {
-            if (payloads.inventoryItemChanged) {
-              await adapter.putInventoryItem(sku, payloads.inventoryItemPayload);
+          let externalCommerceWritesAttempted = 0;
+          if (target.derived.manifest.identity.managementModel === 'inventory_api') {
+            // Round-trip the raw provider resources and derive the exact
+            // payloads before the dispatch boundary; any binding or
+            // preservation failure stops the job while it is still reserved.
+            const adapter = createAdapter();
+            const sku = target.basis.identity.ebayInventorySku as string;
+            const offerId = target.basis.identity.ebayOfferId as string;
+            const rawInventoryItem = await adapter.getInventoryItem(sku);
+            const rawOffer = await adapter.getOffer(offerId);
+            const payloads = buildListingRevisePayloads({
+              manifest: target.derived.manifest,
+              rawInventoryItem,
+              rawOffer,
+            });
+
+            markDispatching();
+            externalCommerceWritesAttempted =
+              Number(payloads.inventoryItemChanged) + Number(payloads.offerChanged);
+            try {
+              if (payloads.inventoryItemChanged) {
+                await adapter.putInventoryItem(sku, payloads.inventoryItemPayload);
+              }
+              if (payloads.offerChanged) {
+                await adapter.putOffer(offerId, payloads.offerPayload);
+              }
+            } catch {
+              dispatchFailed = true;
             }
-            if (payloads.offerChanged) {
-              await adapter.putOffer(offerId, payloads.offerPayload);
+          } else {
+            // Trading-model dispatch: the fresh workspace read above already
+            // verified the current remote state against the revision's
+            // observed base, so there is no raw resource round-trip — exactly
+            // one bounded ReviseFixedPriceItem POST carries only the
+            // manifest's changed fields, and omission preserves price and
+            // quantity structurally (the adapter asserts no such element is
+            // ever serialized).
+            const tradingAdapter = createTradingAdapter();
+            markDispatching();
+            externalCommerceWritesAttempted = 1;
+            try {
+              await tradingAdapter.reviseFixedPriceItem({
+                listingId: target.basis.identity.ebayListingId as string,
+                changes: target.derived.manifest.changes,
+              });
+            } catch {
+              dispatchFailed = true;
             }
-          } catch {
-            dispatchFailed = true;
           }
 
           const requiredAtUtc = clock();
@@ -617,8 +669,7 @@ export function buildListingReviseAdminProgram(
             effect: reconciliation.effect,
             resolution: reconciliation.resolution,
             reconciliationRunId: reconciliation.runId,
-            externalCommerceWritesAttempted:
-              Number(payloads.inventoryItemChanged) + Number(payloads.offerChanged),
+            externalCommerceWritesAttempted,
           }));
           if (reconciliation.resolution !== 'resolved_existing') io.setExitCode(1);
         } finally {
@@ -655,7 +706,7 @@ export function buildListingReviseAdminProgram(
         const freshBasis = deriveListingDraftBasis(workspaceDto);
         if (freshBasis.identity.rawSku !== options.sku
           || freshBasis.identity.ebayListingId !== options.listingId
-          || freshBasis.identity.ebayOfferId !== options.offerId) {
+          || !exactOfferIdMatches(freshBasis.identity.ebayOfferId, options.offerId)) {
           deny('REVISE_EXACT_TARGET_MISMATCH');
         }
         const draftPath = draftDatabasePath();
