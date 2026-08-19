@@ -126,7 +126,10 @@ describe('migration-store filesystem and production boundary regressions', () =>
     ) as { scripts?: Record<string, string> };
 
     expect(store).toMatch(/externalWritesSupported = false/);
-    expect(store).toMatch(/Production watermark establishment is disabled/);
+    expect(store).toMatch(
+      /Production watermark requires current ProductPipeline single-writer orderImport ownership/,
+    );
+    expect(store).toMatch(/one-hour no-backfill clamp/);
     expect(store).toMatch(/Production reconciliation is shadow-only/);
     expect(store).toMatch(/journal_mode = DELETE/);
     expect(store).not.toMatch(/\bfetch\s*\(|process\.env|token-manager/);
@@ -244,6 +247,8 @@ describe('migration-store filesystem and production boundary regressions', () =>
       audit: { eventId: 'production-order-baseline', occurredAtUtc: '2026-08-11T20:00:01.000Z' },
     });
 
+    // Class A (no verified incumbent): a Marketplace Connect owner is
+    // permanently impossible, while the truthful paused genesis is allowed.
     expect(() => store.recordOwnershipVersion({
       responsibility: 'listingCreate',
       version: 1,
@@ -253,8 +258,20 @@ describe('migration-store filesystem and production boundary regressions', () =>
       effectiveAtUtc: '2026-08-11T20:00:02.000Z',
       recordedAtUtc: '2026-08-11T20:00:02.000Z',
       audit: { eventId: 'unsupported-production-baseline', occurredAtUtc: '2026-08-11T20:00:02.000Z' },
-    })).toThrow(/Production ownership transfer is disabled/);
+    })).toThrow(/no verified Marketplace Connect owner/);
+    store.recordOwnershipVersion({
+      responsibility: 'listingCreate',
+      version: 1,
+      owner: 'paused',
+      singleWriterVerified: true,
+      evidenceDigest: sha256Digest('listing-create-quarantine-genesis'),
+      effectiveAtUtc: '2026-08-11T20:00:02.500Z',
+      recordedAtUtc: '2026-08-11T20:00:02.500Z',
+      audit: { eventId: 'listing-create-paused-genesis', occurredAtUtc: '2026-08-11T20:00:02.500Z' },
+    });
 
+    // A production watermark stays denied while Marketplace Connect (not
+    // ProductPipeline) owns orderImport — the incumbent is still importing.
     expect(() => store.establishOrderWatermark({
       boundaryExclusiveUtc: '2026-08-11T20:00:00.000Z',
       ownershipVersion: 1,
@@ -262,21 +279,50 @@ describe('migration-store filesystem and production boundary regressions', () =>
       acceptedEvidenceDigest: acceptedEvidence,
       createdAtUtc: '2026-08-11T20:00:03.000Z',
       audit: { eventId: 'production-watermark-denied', occurredAtUtc: '2026-08-11T20:00:03.000Z' },
-    })).toThrow(/Production watermark establishment is disabled/);
+    })).toThrow(/Production watermark requires current ProductPipeline single-writer orderImport ownership/);
 
-    expect(() => store.recordOwnershipVersion({
+    // mapping, fulfillment, and feedback remain fully denied in production.
+    for (const responsibility of ['mapping', 'fulfillment', 'feedback'] as const) {
+      expect(() => store.recordOwnershipVersion({
+        responsibility,
+        version: 1,
+        owner: 'marketplace_connect',
+        singleWriterVerified: true,
+        evidenceDigest: acceptedEvidence,
+        effectiveAtUtc: '2026-08-11T20:00:04.000Z',
+        recordedAtUtc: '2026-08-11T20:00:04.000Z',
+        audit: {
+          eventId: `production-${responsibility}-denied`,
+          occurredAtUtc: '2026-08-11T20:00:04.000Z',
+        },
+      })).toThrow(/Production ownership transfer is disabled/);
+    }
+
+    // Class B staged pause is now a reviewed production transition, but the
+    // production rollback paused -> marketplace_connect stays denied.
+    store.recordOwnershipVersion({
       responsibility: 'orderImport',
       version: 2,
       owner: 'paused',
       singleWriterVerified: true,
       evidenceDigest: sha256Digest('paused-production-owner'),
-      effectiveAtUtc: '2026-08-11T20:00:04.000Z',
-      recordedAtUtc: '2026-08-11T20:00:04.000Z',
-      audit: { eventId: 'production-transfer-denied', occurredAtUtc: '2026-08-11T20:00:04.000Z' },
+      effectiveAtUtc: '2026-08-11T20:00:05.000Z',
+      recordedAtUtc: '2026-08-11T20:00:05.000Z',
+      audit: { eventId: 'production-order-import-paused', occurredAtUtc: '2026-08-11T20:00:05.000Z' },
+    });
+    expect(() => store.recordOwnershipVersion({
+      responsibility: 'orderImport',
+      version: 3,
+      owner: 'marketplace_connect',
+      singleWriterVerified: true,
+      evidenceDigest: sha256Digest('production-rollback-denied'),
+      effectiveAtUtc: '2026-08-11T20:00:06.000Z',
+      recordedAtUtc: '2026-08-11T20:00:06.000Z',
+      audit: { eventId: 'production-rollback-denied', occurredAtUtc: '2026-08-11T20:00:06.000Z' },
     })).toThrow(/Production ownership transfer is disabled/);
 
     expect(store.getCounts()).toMatchObject({
-      ownership_versions: 1,
+      ownership_versions: 3,
       order_watermarks: 0,
       idempotency_intents: 0,
       approval_consumptions: 0,

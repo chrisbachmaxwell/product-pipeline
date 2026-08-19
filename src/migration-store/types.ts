@@ -110,6 +110,30 @@ export type ListingReviseObservationInput = {
   observedDigest: string;
 };
 
+/**
+ * Responsibilities whose post-dispatch reconciliation records a durable
+ * target-effect observation in the schema-v3 slice. orderImport binds to
+ * order_links and listingRevise to listing_revise_observations instead.
+ */
+export const TARGET_EFFECT_RESPONSIBILITIES = [
+  'listingCreate',
+  'listingEndRelist',
+  'price',
+  'inventory',
+] as const;
+
+export type TargetEffectResponsibility = (typeof TARGET_EFFECT_RESPONSIBILITIES)[number];
+
+export type TargetEffect = 'effect_observed' | 'effect_absent';
+
+export type TargetEffectObservationInput = {
+  observationId: string;
+  intentKey: string;
+  responsibility: TargetEffectResponsibility;
+  effect: TargetEffect;
+  observedDigest: string;
+};
+
 export type AuditVerification = {
   valid: boolean;
   recordCount: number;

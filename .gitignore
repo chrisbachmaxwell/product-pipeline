@@ -11,3 +11,4 @@ config/evidence-capture.json
 image-service/training-data/originals/
 image-service/training-data/processed/
 image-service/test_output/
+.claude/

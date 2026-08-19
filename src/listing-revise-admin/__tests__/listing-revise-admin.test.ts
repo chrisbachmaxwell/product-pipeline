@@ -397,6 +397,17 @@ describe('listing-revise operator CLI', () => {
     ]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_EXACT_TARGET_MISMATCH' });
 
+    // The literal offer id "none" is reserved for Trading-model targets and
+    // never selects an inventory-managed listing.
+    await world.run(['preflight',
+      '--catalog-id', CATALOG_ID,
+      '--sku', SKU,
+      '--listing-id', LISTING_ID,
+      '--offer-id', 'none',
+      '--revision-digest', world.revision.revisionDigest,
+    ]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_EXACT_TARGET_MISMATCH' });
+
     // Remote drift after the draft was saved.
     world.setWorkspace(workspace({ ebayTitle: 'Changed Remotely' }));
     await world.run(['preflight', ...targetArguments(world.revision.revisionDigest)]);
@@ -493,13 +504,15 @@ describe('listing-revise operator CLI', () => {
     const program = fs.readFileSync(path.join(sourceRoot, 'listing-revise-admin/program.ts'), 'utf8');
     const adapterSource = fs.readFileSync(
       path.join(sourceRoot, 'listing-revise-admin/dispatch-adapter.ts'), 'utf8');
+    const tradingAdapterSource = fs.readFileSync(
+      path.join(sourceRoot, 'listing-revise-admin/trading-dispatch-adapter.ts'), 'utf8');
     const manifestSource = fs.readFileSync(
       path.join(sourceRoot, 'listing-revise-admin/manifest.ts'), 'utf8');
     const serverIndex = fs.readFileSync(path.join(sourceRoot, 'server/index.ts'), 'utf8');
     // The server never mounts or imports the dispatch slice.
     expect(serverIndex).not.toMatch(/listing-revise-admin/);
     // The slice never touches legacy sync writers or order paths.
-    expect(`${program}\n${adapterSource}\n${manifestSource}`).not.toMatch(
+    expect(`${program}\n${adapterSource}\n${tradingAdapterSource}\n${manifestSource}`).not.toMatch(
       /from ['"][^'"]*(?:\/sync\/|order-sync|product-sync|inventory-sync|price-sync|token-manager)[^'"]*['"]/,
     );
     // Provider writes exist only in the adapter's two exact PUT paths.

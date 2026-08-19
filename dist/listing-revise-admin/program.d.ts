@@ -3,6 +3,7 @@ import { openMigrationStore } from '../migration-store/index.js';
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 import { type ListingReviseDispatchAdapter } from './dispatch-adapter.js';
+import { type TradingDispatchAdapter } from './trading-dispatch-adapter.js';
 export type ListingReviseAdminIo = {
     stdout: (message: string) => void;
     stderr: (message: string) => void;
@@ -14,6 +15,7 @@ export type ListingReviseAdminDependencies = Readonly<{
     openDraftStoreReadOnly?: typeof openListingControlStoreReadOnly;
     openMigration?: typeof openMigrationStore;
     createAdapter?: () => ListingReviseDispatchAdapter;
+    createTradingAdapter?: () => TradingDispatchAdapter;
     now?: () => Date;
     uuid?: () => string;
     io?: ListingReviseAdminIo;

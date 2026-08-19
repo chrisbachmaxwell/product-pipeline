@@ -8,26 +8,30 @@ observation window, and a defined rollback path.
 
 **Building this slice authorizes no dispatch.** Every actual dispatch is a
 separate operator decision executed through the ceremony below. The slice
-covers `inventory_offer`-managed listings only; legacy Trading-managed
-listings are structurally rejected (see
-`docs/LISTING_MANAGEMENT_MODEL_STRATEGY.md`). Price, quantity, order, and
-Marketplace Connect state are never written: price/quantity are preserved
-byte-for-byte and any drift in them makes the draft stale and denies
-dispatch.
+covers `inventory_offer`-managed listings and — since the Trading-model
+extension (the Stage 2 slice of
+`docs/LISTING_MANAGEMENT_MODEL_STRATEGY.md`) — legacy `legacy_trading`
+listings via exactly one bounded `ReviseFixedPriceItem` call; see
+"Trading-model dispatch" below. Price, quantity, order, and Marketplace
+Connect state are never written: price/quantity are preserved byte-for-byte
+and any drift in them makes the draft stale and denies dispatch.
 
 ## Boundary
 
 - The CLI is a standalone compiled entrypoint
   (`node dist/listing-revise-admin/index.js`). The server never imports or
   mounts it; the web workspace keeps `apply: false, publish: false`.
-- Provider writes exist only in the bounded dispatch adapter: exactly
+- Provider writes exist only in the two bounded dispatch adapters: exactly
   `PUT /sell/inventory/v1/inventory_item/{sku}` and
-  `PUT /sell/inventory/v1/offer/{offerId}` on `api.ebay.com`, dispatched only
+  `PUT /sell/inventory/v1/offer/{offerId}` for inventory-model targets, and
+  exactly one `POST https://api.ebay.com/ws/api.dll` with call name
+  `ReviseFixedPriceItem` for Trading-model targets — each dispatched only
   from inside a reserved migration-store job under a live approval.
-- Dispatchable fields: title, condition description, description, images,
-  category, fulfillment/payment/return policy, merchant location.
-  `condition` is excluded until its enum mapping passes review; price,
-  quantity, item specifics, and identifiers are never dispatchable.
+- Dispatchable fields (inventory model): title, condition description,
+  description, images, category, fulfillment/payment/return policy, merchant
+  location. `condition` is excluded until its enum mapping passes review;
+  price, quantity, item specifics, and identifiers are never dispatchable.
+  The Trading model dispatches a reduced set — see below.
 - The dispatch token is a transient in-memory user token minted from the
   existing eBay refresh grant with the same two scopes as the read path; it
   is never persisted, logged, or returned.
@@ -36,6 +40,50 @@ dispatch.
   at most 15 minutes, one job per intent, one dispatch attempt, and a
   resolution that must match a recorded post-dispatch target observation.
   See `docs/MIGRATION_STATE.md`.
+
+## Trading-model dispatch
+
+The Trading-model extension supersedes the original "`inventory_offer` only"
+boundary: a legacy `legacy_trading` listing (eBay listing id set, no
+Inventory item, no Offer — 107 of the 112 active listings at the 2026-08-13
+census) is now a dispatchable target. **Everything else is identical** — the
+same draft workspace, the same manifest digests, the same migration-store
+intent/approval/job/attempt ceremony (schema v2 already permits it; no
+schema change), the same freshness and exact-target gates, and the same
+post-dispatch reconciliation and observation policy. The differences:
+
+- **Reduced field set.** A Trading target may dispatch only: title,
+  condition description, description, images, category, and the
+  fulfillment/payment/return Seller Business Policy profile ids (observed on
+  the Trading item as `SellerProfiles`). `merchant_location` has no Trading
+  revise mapping and is denied as `REVISE_UNSUPPORTED_FIELD`; `condition`
+  stays excluded for both models; price and quantity remain never
+  dispatchable.
+- **`--offer-id none`.** A Trading target has no offer, so the exact-target
+  ceremony accepts the literal value `none` for `--offer-id` — and accepts it
+  *only* when the target really is Trading-managed (`ebayOfferId` null).
+  Passing `none` for an inventory-model target, or a numeric offer id for a
+  Trading target, is `REVISE_EXACT_TARGET_MISMATCH`.
+- **Preservation by omission.** `ReviseFixedPriceItem` changes only the
+  fields supplied in the request, so the adapter serializes exactly the
+  ItemID plus one element per changed manifest field and nothing else. It
+  structurally asserts the outgoing XML contains no `StartPrice` or
+  `Quantity` element, every text value is strictly XML-escaped, and the
+  transient IAF user token (the same minting path as the inventory adapter)
+  is never persisted, logged, or returned.
+- **No raw round-trip.** The inventory path GETs and PUTs whole provider
+  resources; the Trading path sends one delta-only POST, because the fresh
+  workspace read has already verified the current remote state against the
+  revision's observed base (`REVISE_BASE_STALE` otherwise). A response `Ack`
+  of `Success` or `Warning` is accepted; anything else is the redacted
+  `TRADING_DISPATCH_REJECTED` and the job resolves through the same
+  `confirmed_missing`/reconciliation rules as an inventory dispatch failure.
+  A Trading dispatch records `externalCommerceWritesAttempted: 1`.
+
+The two-writers hazard flagged in the strategy document remains real:
+Marketplace Connect still owns price/inventory on these listings, and this
+slice writes content fields only. Any drift it causes in price or quantity
+still stales the draft and denies dispatch.
 
 ## Prerequisites (once)
 
@@ -64,9 +112,10 @@ dispatch.
 
    It prints the field-level change set (before/after previews), the
    preserved price/quantity, and the **manifest digest**. It denies on any
-   identity mismatch, non-inventory management model, unsupported field,
-   or remote drift since the draft was saved (`REVISE_BASE_STALE` —
-   reopen and re-save the draft).
+   identity mismatch, unmanaged or partially-bound management model, field
+   unsupported for the target's model, or remote drift since the draft was
+   saved (`REVISE_BASE_STALE` — reopen and re-save the draft). For a
+   Trading-model target pass `--offer-id none`.
 
 2. **Dispatch** — the one action. Passing the exact target plus the manifest
    digest from preflight *is* the operator approval:
@@ -80,9 +129,11 @@ dispatch.
 
    One invocation performs: fresh re-preflight, intent creation (idempotent —
    the same manifest can never dispatch twice), approval issue + consume, job
-   reservation, raw resource round-trip with binding and price/quantity
-   preservation assertions, the dispatching/attempt record, at most two
-   bounded PUTs, the reconciliation-required record, an immediate
+   reservation, the model's provider step (inventory: raw resource round-trip
+   with binding and price/quantity preservation assertions then at most two
+   bounded PUTs; trading: one bounded delta-only `ReviseFixedPriceItem`
+   POST), the dispatching/attempt record, the reconciliation-required record,
+   an immediate
    post-action verification read, the reconciliation run + target
    observation, and (when the revised state is observed) the terminal
    resolution. The output includes the job id, attempt id, effect, and
@@ -128,6 +179,6 @@ dispatch.
 ## What this slice does not do
 
 No listing create/end/relist, no price or inventory write, no order path, no
-Marketplace Connect change, no Trading-model revise, no bulk or wildcard
-targets, no automatic retry, and no UI Apply/Publish. Each of those remains
-a separately gated future slice.
+Marketplace Connect change, no Trading-to-Inventory migration, no bulk or
+wildcard targets, no automatic retry, and no UI Apply/Publish. Each of those
+remains a separately gated future slice.

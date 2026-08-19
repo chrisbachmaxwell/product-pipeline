@@ -22,3 +22,14 @@ export const INTENT_ACTION_RESPONSIBILITY = {
     sync_fulfillment: 'fulfillment',
     sync_feedback: 'feedback',
 };
+/**
+ * Responsibilities whose post-dispatch reconciliation records a durable
+ * target-effect observation in the schema-v3 slice. orderImport binds to
+ * order_links and listingRevise to listing_revise_observations instead.
+ */
+export const TARGET_EFFECT_RESPONSIBILITIES = [
+    'listingCreate',
+    'listingEndRelist',
+    'price',
+    'inventory',
+];

@@ -13,7 +13,7 @@ const SCOPE = {
 };
 const VERIFIED = {
     status: 'verified',
-    schemaVersion: 2,
+    schemaVersion: 3,
     scope: { ...SCOPE, scopeKey: `sha256:${'1'.repeat(64)}` },
     access: {
         writable: false,
@@ -40,6 +40,7 @@ const VERIFIED = {
         reconciliationRuns: 0,
         reconciliationExceptions: 0,
         listingReviseObservations: 0,
+        targetEffectObservations: 0,
         auditEvents: 1,
     },
     ownership: MIGRATION_RESPONSIBILITIES.map((responsibility) => ({
@@ -189,6 +190,56 @@ describe('request-time durable migration-state reader', () => {
         expect(result).toMatchObject({
             status: 'invalid',
             orders: { watermarkUtc: null, watermarkEstablished: false, eligibleForCreation: 0 },
+            readiness: { canaryReady: false, cutoverReady: false },
+        });
+    });
+    it('accepts a production watermark only with ProductPipeline single-writer orderImport ownership', async () => {
+        const watermarked = (orderImportOwner) => ({
+            ...VERIFIED,
+            scope: { ...VERIFIED.scope, ebayEnvironment: 'production' },
+            counts: { ...VERIFIED.counts, orderWatermarks: 1, ownershipVersions: 3 },
+            ownership: VERIFIED.ownership.map((entry) => entry.responsibility === 'orderImport'
+                ? {
+                    ...entry,
+                    configured: true,
+                    version: 3,
+                    owner: orderImportOwner,
+                    singleWriterVerified: true,
+                }
+                : entry),
+            orders: {
+                ...VERIFIED.orders,
+                watermarkUtc: '2026-08-19T18:30:00.000Z',
+                watermarkEstablished: true,
+            },
+        });
+        const loadConfig = vi.fn(async () => ({
+            config: { scope: { ...SCOPE, ebayEnvironment: 'production' } },
+            databaseAbsolutePath: '/repo/.local/migration-state/product-pipeline-migration-v1.sqlite',
+        }));
+        const denied = await readConfiguredMigrationState({
+            environment: { MIGRATION_STATE_CONFIG_PATH: 'config/migration-state.json' },
+            loadConfig: loadConfig,
+            inspectStore: vi.fn(() => watermarked('marketplace_connect')),
+        });
+        expect(denied).toMatchObject({
+            status: 'invalid',
+            orders: { watermarkUtc: null, watermarkEstablished: false, eligibleForCreation: 0 },
+            readiness: { canaryReady: false, cutoverReady: false },
+        });
+        const accepted = await readConfiguredMigrationState({
+            environment: { MIGRATION_STATE_CONFIG_PATH: 'config/migration-state.json' },
+            loadConfig: loadConfig,
+            inspectStore: vi.fn(() => watermarked('product_pipeline')),
+        });
+        expect(accepted).toMatchObject({
+            status: 'verified',
+            orders: {
+                watermarkUtc: '2026-08-19T18:30:00.000Z',
+                watermarkEstablished: true,
+                eligibleForCreation: 0,
+                historicalBackfillAllowed: false,
+            },
             readiness: { canaryReady: false, cutoverReady: false },
         });
     });

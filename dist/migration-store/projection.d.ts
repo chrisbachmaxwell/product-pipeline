@@ -18,6 +18,7 @@ export type MigrationStoreProjectionCounts = {
     reconciliationRuns: number;
     reconciliationExceptions: number;
     listingReviseObservations: number;
+    targetEffectObservations: number;
     auditEvents: number;
 };
 export type MigrationStoreOwnershipProjection = {

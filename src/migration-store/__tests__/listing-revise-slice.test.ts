@@ -272,13 +272,12 @@ describe('production listing-revise execution slice', () => {
     expect(projection.readiness).toMatchObject({ canaryReady: false, cutoverReady: false });
   });
 
-  it('keeps every other production writer surface denied exactly as before', () => {
+  it('keeps every non-enabled production writer surface denied under schema v3', () => {
     const store = createProductionStore();
     const { variant, listing } = registerReviseIdentities(store);
 
-    // Every non-revise production intent action stays denied.
-    for (const action of ['create_ebay_listing', 'update_ebay_price', 'update_ebay_inventory',
-      'end_or_relist_ebay_listing', 'update_mapping', 'sync_fulfillment'] as const) {
+    // The mapping/fulfillment/feedback production intent actions stay denied.
+    for (const action of ['update_mapping', 'sync_fulfillment', 'sync_feedback'] as const) {
       expectMigrationError(() => store.createIdempotencyIntent({
         action,
         sourceIdentityKey: variant.identityKey,
@@ -289,17 +288,22 @@ describe('production listing-revise execution slice', () => {
       }), 'OWNERSHIP_DENIED');
     }
 
-    // Production ownership transfer stays denied for every other responsibility.
-    expectMigrationError(() => store.recordOwnershipVersion({
-      responsibility: 'listingCreate',
-      version: 1,
-      owner: 'paused',
-      singleWriterVerified: true,
-      evidenceDigest: digest('denied-listing-create-ownership'),
-      effectiveAtUtc: '2026-08-14T20:00:06.000Z',
-      recordedAtUtc: '2026-08-14T20:00:06.000Z',
-      audit: { eventId: 'ownership:denied:listing-create', occurredAtUtc: '2026-08-14T20:00:06.000Z' },
-    }), 'OWNERSHIP_DENIED');
+    // Production ownership stays denied for mapping/fulfillment/feedback.
+    for (const responsibility of ['mapping', 'fulfillment', 'feedback'] as const) {
+      expectMigrationError(() => store.recordOwnershipVersion({
+        responsibility,
+        version: 1,
+        owner: 'marketplace_connect',
+        singleWriterVerified: true,
+        evidenceDigest: digest(`denied-${responsibility}-ownership`),
+        effectiveAtUtc: '2026-08-14T20:00:06.000Z',
+        recordedAtUtc: '2026-08-14T20:00:06.000Z',
+        audit: {
+          eventId: `ownership:denied:${responsibility}`,
+          occurredAtUtc: '2026-08-14T20:00:06.000Z',
+        },
+      }), 'OWNERSHIP_DENIED');
+    }
 
     // listingRevise can never record a Marketplace Connect owner: its
     // ownership was never verified for the incumbent.
@@ -314,10 +318,11 @@ describe('production listing-revise execution slice', () => {
       audit: { eventId: 'ownership:denied:mc-revise', occurredAtUtc: '2026-08-14T20:00:07.000Z' },
     }), 'OWNERSHIP_DENIED');
 
-    // A production watermark stays impossible.
+    // A production watermark stays impossible without ProductPipeline
+    // single-writer orderImport ownership.
     recordReviseOwnershipChain(store);
     expectMigrationError(() => store.establishOrderWatermark({
-      boundaryExclusiveUtc: '2026-08-14T19:00:00.000Z',
+      boundaryExclusiveUtc: '2026-08-14T19:59:00.000Z',
       ownershipVersion: 1,
       ownershipEvidenceDigest: digest('denied-watermark-evidence'),
       acceptedEvidenceDigest: digest('denied-watermark-packet'),
@@ -345,7 +350,7 @@ describe('production listing-revise execution slice', () => {
     }), 'OWNERSHIP_DENIED');
     expectMigrationError(() => store.recordReconciliationRun({
       runId: 'reconciliation:denied-other-responsibility',
-      responsibility: 'orderImport',
+      responsibility: 'mapping',
       targetIdentityKey: listing.identityKey,
       mode: 'production_canary',
       status: 'passed',
@@ -361,6 +366,26 @@ describe('production listing-revise execution slice', () => {
       audit: {
         eventId: 'reconciliation:denied-other-responsibility',
         occurredAtUtc: '2026-08-14T20:00:12.000Z',
+      },
+    }), 'OWNERSHIP_DENIED');
+    expectMigrationError(() => store.recordReconciliationRun({
+      runId: 'reconciliation:denied-canary-writes',
+      responsibility: 'listingRevise',
+      targetIdentityKey: listing.identityKey,
+      mode: 'production_canary',
+      status: 'passed',
+      sourceSnapshotDigest: digest('denied-source-3'),
+      targetSnapshotDigest: digest('denied-target-3'),
+      resultDigest: digest('denied-result-3'),
+      authoritative: false,
+      authorityEvidenceDigest: digest('denied-authority-3'),
+      externalWritesObserved: 1,
+      startedAtUtc: '2026-08-14T20:00:13.000Z',
+      completedAtUtc: '2026-08-14T20:00:14.000Z',
+      exceptions: [],
+      audit: {
+        eventId: 'reconciliation:denied-canary-writes',
+        occurredAtUtc: '2026-08-14T20:00:14.000Z',
       },
     }), 'OWNERSHIP_DENIED');
   });
@@ -533,7 +558,7 @@ describe('migration store schema upgrade', () => {
     return databasePath;
   }
 
-  it('upgrades a verified v1 store to v2 and leaves it fully operable', () => {
+  it('upgrades a verified v1 store to the current version and leaves it fully operable', () => {
     const databasePath = createVersionOneStoreFile(
       PRODUCTION_SCOPE,
       '2026-08-14T19:00:00.000Z',
@@ -549,18 +574,22 @@ describe('migration store schema upgrade', () => {
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-14T20:00:00.000Z',
-    })).toEqual({ fromVersion: 1, toVersion: 2 });
+    })).toEqual({ fromVersion: 1, toVersion: 3 });
 
     // Upgrading again is an explicit no-op.
     expect(upgradeMigrationStore({
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-14T20:01:00.000Z',
-    })).toEqual({ fromVersion: 2, toVersion: 2 });
+    })).toEqual({ fromVersion: 3, toVersion: 3 });
 
     const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
     openStores.push(store);
-    expect(store.getCounts()).toMatchObject({ listing_revise_observations: 0, audit_events: 1 });
+    expect(store.getCounts()).toMatchObject({
+      listing_revise_observations: 0,
+      target_effect_observations: 0,
+      audit_events: 1,
+    });
     expect(store.verifyAuditChain()).toMatchObject({ valid: true, recordCount: 1 });
   });
 
