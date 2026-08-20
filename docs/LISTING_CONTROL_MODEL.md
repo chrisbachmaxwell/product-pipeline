@@ -86,6 +86,13 @@ The current editor intentionally stays smaller than Marketplace Connect. It can 
 
 Advanced audit may expose immutable IDs and timestamps. It must never expose access tokens, refresh tokens, raw provider bodies, buyer data, or credential-shaped errors.
 
+### Editor picker metadata
+
+Two read-only sources feed the editor's pickers:
+
+- **Used-facet enrichment sweep** (`GET /api/listing-editor-metadata`). The bulk Trading census omits `PrimaryCategory`/`SellerProfiles` for legacy listings, so a background sweep re-uses the exact per-listing workspace read (Trading `GetItem` plus inventory detail where applicable) to collect the category id and name, the three policy ids, and the merchant location actually in use. The first metadata request starts a sweep when the in-memory aggregate is empty or older than six hours; requests never wait on it — they merge whatever the sweep cache currently holds into the snapshot-derived facets, with sweep data winning on category names. At most 150 listings per sweep, at most 3 detail reads in flight, per-listing failures skipped, no sweep on boot, no idle timers, zero writes.
+- **Full category tree search** (`GET /api/ebay-category-search?q=...`). Type-ahead suggestions over eBay's entire EBAY_US category tree via the Taxonomy API (`get_default_category_tree_id` once, then `get_category_suggestions`), using only the already-minted `api_scope` read token. Queries are trimmed 2–100 safe characters (else 400); results are capped at 25 entries of `{ id, name, path, leaf }` with root-first paths; responses are cached in-process per normalized query for one hour (≤500 queries, coalesced in-flight); any failure is one generic 503.
+
 ## Field ownership
 
 Every field has exactly one writer at a time. “Two-way sync” is an outcome of coordinated directional flows, not two systems writing the same field.
