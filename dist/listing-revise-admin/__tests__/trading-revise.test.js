@@ -389,4 +389,26 @@ describe('trading-model listing-revise dispatch', () => {
                 { field: 'title', after: 'x' },
             ] })).toThrow(TradingDispatchError);
     });
+    it('serializes a templated branded description as bounded, escaped XML text', async () => {
+        const { renderListingDescription } = await import('../../server/listing-description-template.js');
+        const rendered = renderListingDescription({
+            templateVersion: 'ucg-branded-v1',
+            title: 'Nikon 50mm f/1.8 AI-s (#204) *USED*',
+            bodyHtml: '<p>Freshly serviced &amp; film tested.</p>',
+            conditionId: '3000',
+            conditionNote: 'Clean glass.',
+            imageUrls: ['https://i.ebayimg.com/images/g/abc/s-l1600.jpg'],
+            sku: SKU,
+        });
+        const xml = buildReviseFixedPriceItemXml({
+            listingId: LISTING_ID,
+            changes: [{ field: 'description', after: rendered }],
+        });
+        expect(xml).toContain('&lt;!-- template:ucg-branded-v1 --&gt;');
+        // The rendered HTML rides as escaped XML text: no raw HTML tag survives.
+        expect(xml).not.toContain('<style>');
+        expect(xml).not.toContain('<div');
+        expect(xml).not.toMatch(NO_PRICE_OR_QUANTITY);
+        expect(Buffer.byteLength(xml, 'utf8')).toBeLessThanOrEqual(2 * 1024 * 1024);
+    });
 });
