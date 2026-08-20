@@ -22,7 +22,7 @@ export type ListingEditorMetadataDto = Readonly<{
 export declare class ListingEditorMetadataError extends Error {
     constructor();
 }
-export declare function buildListingEditorMetadata(snapshot: LiveListingCatalogSnapshot): ListingEditorMetadataDto;
+export declare function buildListingEditorMetadata(snapshot: LiveListingCatalogSnapshot, sweepObservations?: readonly unknown[]): ListingEditorMetadataDto;
 export declare const LISTING_EDITOR_METADATA_TESTING: Readonly<{
     MAX_FACET_ENTRIES: 500;
     MAX_FACET_STRING_LENGTH: 256;
