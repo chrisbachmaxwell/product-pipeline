@@ -36,7 +36,6 @@ import {
   sanitizeListingHtml,
 } from '../listing-html';
 import { descriptionSummary } from '../operator-ui';
-import ListingDescriptionPreviewModal from './ListingDescriptionPreviewModal';
 import {
   CategoryPicker,
   ConditionSelect,
@@ -188,7 +187,6 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
     effectiveDraftImages(editBase.sections.content.images));
   const [imagesDirty, setImagesDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [descriptionPreviewOpen, setDescriptionPreviewOpen] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
   const metadataQuery = useListingEditorMetadata();
@@ -563,9 +561,6 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
         </BlockStack>
 
         <InlineStack align="end" gap="300">
-          <Button onClick={() => setDescriptionPreviewOpen(true)}>
-            Preview eBay description
-          </Button>
           <Button onClick={() => setPreviewOpen(true)}
             disabled={!hasChanges || invalidImage || !draftInputValid || saving}>
             Preview changes
@@ -615,13 +610,6 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
             </BlockStack>
           </Modal.Section>
         </Modal>
-
-        <ListingDescriptionPreviewModal
-          catalogId={editBase.catalogId}
-          open={descriptionPreviewOpen}
-          hasUnsavedChanges={hasChanges}
-          onClose={() => setDescriptionPreviewOpen(false)}
-        />
       </BlockStack>
     </Card>
   );
