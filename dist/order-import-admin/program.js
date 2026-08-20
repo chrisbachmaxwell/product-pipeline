@@ -17,6 +17,8 @@
  * logged, or digested into stored payloads.
  */
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import { deriveExternalIdentityKey, deriveIdempotencyKey, deriveScopeKey, openMigrationStore, MigrationStoreError, sha256Digest, } from '../migration-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
@@ -25,6 +27,7 @@ import { createShopifyOrderAdapter, createProductionShopifyOrderTokenProvider, S
 import { openOrderImportStateReader } from './store-reader.js';
 const APPROVAL_TTL_MS = 10 * 60_000;
 const MAX_POLL_ORDERS = 50;
+const MAX_SHADOW_LOOKBACK_HOURS = 168;
 const SAFE_ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const RAW_SHA256 = /^[a-f0-9]{64}$/;
 const defaultIo = {
@@ -269,7 +272,8 @@ export function buildOrderImportAdminProgram(dependencies = {}) {
     program
         .name('order-import-admin')
         .description('Isolated new-order-only eBay-to-Shopify order import: ownership, immutable watermark, '
-        + 'read-only poll, and one-order-per-invocation import with immediate reconciliation')
+        + 'read-only poll, zero-write shadow parity poll, and one-order-per-invocation import '
+        + 'with immediate reconciliation')
         .showHelpAfterError();
     program
         .command('establish-ownership')
@@ -609,6 +613,145 @@ export function buildOrderImportAdminProgram(dependencies = {}) {
         }
         catch (error) {
             fail('poll', error);
+        }
+    });
+    program
+        .command('shadow-poll')
+        .description('READ-ONLY shadow parity check for the period while Marketplace Connect still owns '
+        + 'order import: fetch eBay orders created in a bounded lookback window and check each '
+        + 'for a Shopify order tagged eBay-<orderId>. No migration-store access (the store is '
+        + 'never even opened), no eBay or Shopify write, no ceremony required, no PII. The only '
+        + 'write this command can ever perform is the optional operator-named local --report-file')
+        .requiredOption('--max-orders <n>', 'Maximum orders to fetch this run (1-50)')
+        .requiredOption('--lookback-hours <n>', 'Observe eBay orders created within the last N hours (1-168)')
+        .option('--report-file <path>', 'Absolute path for a JSON copy of the report (parent must exist, created 0600, '
+        + 'never overwrites, never follows a symlink)')
+        .action(async (options) => {
+        try {
+            const maxOrders = Number(options.maxOrders);
+            if (!Number.isInteger(maxOrders) || maxOrders < 1 || maxOrders > MAX_POLL_ORDERS) {
+                deny('SHADOW_POLL_MAX_ORDERS_INVALID');
+            }
+            const lookbackHours = Number(options.lookbackHours);
+            if (!Number.isInteger(lookbackHours) || lookbackHours < 1
+                || lookbackHours > MAX_SHADOW_LOOKBACK_HOURS) {
+                deny('SHADOW_POLL_LOOKBACK_INVALID');
+            }
+            // Report-target prechecks run BEFORE any provider read so an invalid
+            // destination never costs (or leaks the result of) a live fetch. The
+            // O_EXCL open below re-enforces every one of them at write time.
+            const reportFile = options.reportFile ?? null;
+            if (reportFile !== null) {
+                if (typeof reportFile !== 'string' || !path.isAbsolute(reportFile)) {
+                    deny('SHADOW_POLL_REPORT_PATH_INVALID');
+                }
+                let pathOccupied = true;
+                try {
+                    fs.lstatSync(reportFile);
+                }
+                catch {
+                    pathOccupied = false;
+                }
+                // lstat: an existing symlink (even dangling) counts as occupied.
+                if (pathOccupied)
+                    deny('SHADOW_POLL_REPORT_EXISTS');
+                let parentIsDirectory = false;
+                try {
+                    parentIsDirectory = fs.statSync(path.dirname(reportFile)).isDirectory();
+                }
+                catch {
+                    parentIsDirectory = false;
+                }
+                if (!parentIsDirectory)
+                    deny('SHADOW_POLL_REPORT_PARENT_MISSING');
+            }
+            // The lookback window replaces the watermark: this mode needs no
+            // ceremony because it records nothing durably anywhere.
+            const sinceUtc = new Date(now().getTime() - lookbackHours * 3_600_000).toISOString();
+            const ebay = createEbayAdapter();
+            let fetched;
+            try {
+                fetched = await ebay.listOrdersCreatedSince(sinceUtc, maxOrders);
+            }
+            catch {
+                return deny('SHADOW_POLL_EBAY_READ_FAILED');
+            }
+            const shopify = createShopifyAdapter();
+            const observed = [];
+            const unmatchedEbayOrderIds = [];
+            let matchedCount = 0;
+            for (const order of fetched) {
+                // Chosen partial-failure behavior: a failed per-order Shopify
+                // lookup is reported on that order as lookupFailed (and counted
+                // unmatched) instead of discarding the rest of the run.
+                let shopifyMatch;
+                try {
+                    const gids = await shopify.findOrderGidsByTag(orderTag(order.orderId));
+                    shopifyMatch = gids.length > 0
+                        ? { found: true, orderName: gids[0] }
+                        : { found: false, orderName: null };
+                }
+                catch {
+                    shopifyMatch = { found: false, orderName: null, lookupFailed: true };
+                }
+                if (shopifyMatch.found) {
+                    matchedCount += 1;
+                }
+                else {
+                    unmatchedEbayOrderIds.push(order.orderId);
+                }
+                // Allowed fields ONLY: order id, creation timestamp, line-item
+                // SKUs, match info. Nothing else from the provider payload — and
+                // never a buyer byte — reaches this object.
+                observed.push({
+                    ebayOrderId: order.orderId,
+                    createdAtUtc: order.creationDateUtc,
+                    lineItemSkus: order.lineItems.map((line) => line.sku),
+                    shopifyMatch,
+                });
+            }
+            const serialized = JSON.stringify({
+                command: 'shadow-poll',
+                mode: 'read-only-shadow',
+                windowHours: lookbackHours,
+                observed,
+                summary: {
+                    observedCount: observed.length,
+                    matchedCount,
+                    unmatchedCount: unmatchedEbayOrderIds.length,
+                    unmatchedEbayOrderIds,
+                },
+                externalWritesPerformed: 0,
+            });
+            if (reportFile !== null) {
+                // O_CREAT|O_EXCL ('wx'): fails on any existing path INCLUDING a
+                // symlink, so the report can neither overwrite nor be redirected.
+                let fd = -1;
+                try {
+                    fd = fs.openSync(reportFile, 'wx', 0o600);
+                }
+                catch (error) {
+                    const errno = error.code;
+                    deny(errno === 'EEXIST'
+                        ? 'SHADOW_POLL_REPORT_EXISTS'
+                        : errno === 'ENOENT'
+                            ? 'SHADOW_POLL_REPORT_PARENT_MISSING'
+                            : 'SHADOW_POLL_REPORT_WRITE_FAILED');
+                }
+                try {
+                    fs.writeFileSync(fd, `${serialized}\n`);
+                }
+                catch {
+                    deny('SHADOW_POLL_REPORT_WRITE_FAILED');
+                }
+                finally {
+                    fs.closeSync(fd);
+                }
+            }
+            io.stdout(serialized);
+        }
+        catch (error) {
+            fail('shadow-poll', error);
         }
     });
     program

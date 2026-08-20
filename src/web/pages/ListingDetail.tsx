@@ -14,6 +14,7 @@ import {
 } from '@shopify/polaris';
 import { useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
+import ListingDescriptionPreviewModal from '../components/ListingDescriptionPreviewModal';
 import {
   isListingDraftBoundToWorkspace,
   isListingDraftResponse,
@@ -68,6 +69,7 @@ const ListingDetail: React.FC = () => {
   const saveDraft = useSaveListingDraft(id);
   const [editing, setEditing] = useState(false);
   const [openingEditor, setOpeningEditor] = useState(false);
+  const [descriptionPreviewOpen, setDescriptionPreviewOpen] = useState(false);
   const currentWorkspace = isListingWorkspaceResponse(workspace.data, id)
     ? workspace.data
     : null;
@@ -218,6 +220,7 @@ const ListingDetail: React.FC = () => {
       } : undefined}
       secondaryActions={[
         ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
+        { content: 'Preview eBay description', onAction: () => setDescriptionPreviewOpen(true) },
         ...(shopifyUrl ? [{ content: 'View in Shopify', url: shopifyUrl, external: true }] : []),
       ]}
       fullWidth
@@ -228,6 +231,15 @@ const ListingDetail: React.FC = () => {
             {formatVerifiedAt(observedAt)} · refreshes every minute
           </Text>
         </InlineStack>
+
+        {id && (
+          <ListingDescriptionPreviewModal
+            catalogId={id}
+            open={descriptionPreviewOpen}
+            hasUnsavedChanges={editing}
+            onClose={() => setDescriptionPreviewOpen(false)}
+          />
+        )}
 
         {editing && canEdit && validDraft ? (
           <ListingDraftEditor
