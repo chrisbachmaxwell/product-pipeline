@@ -19,8 +19,8 @@ import { type Digest, type ListingFieldName, type ListingIdentity, type ListingR
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
 export declare class ListingReviseManifestError extends Error {
-    readonly code: 'REVISE_TARGET_NOT_INVENTORY_MANAGED' | 'REVISE_IDENTITY_MISMATCH' | 'REVISE_BASE_STALE' | 'REVISE_NO_CHANGES' | 'REVISE_UNSUPPORTED_FIELD' | 'REVISE_PRESERVED_FIELD_MISSING';
-    constructor(code: 'REVISE_TARGET_NOT_INVENTORY_MANAGED' | 'REVISE_IDENTITY_MISMATCH' | 'REVISE_BASE_STALE' | 'REVISE_NO_CHANGES' | 'REVISE_UNSUPPORTED_FIELD' | 'REVISE_PRESERVED_FIELD_MISSING');
+    readonly code: 'REVISE_TARGET_NOT_INVENTORY_MANAGED' | 'REVISE_IDENTITY_MISMATCH' | 'REVISE_BASE_STALE' | 'REVISE_NO_CHANGES' | 'REVISE_UNSUPPORTED_FIELD' | 'REVISE_PRESERVED_FIELD_MISSING' | 'REVISE_TEMPLATE_UNSUPPORTED' | 'REVISE_TEMPLATE_INPUT_INVALID' | 'REVISE_TEMPLATE_OUTPUT_TOO_LARGE';
+    constructor(code: 'REVISE_TARGET_NOT_INVENTORY_MANAGED' | 'REVISE_IDENTITY_MISMATCH' | 'REVISE_BASE_STALE' | 'REVISE_NO_CHANGES' | 'REVISE_UNSUPPORTED_FIELD' | 'REVISE_PRESERVED_FIELD_MISSING' | 'REVISE_TEMPLATE_UNSUPPORTED' | 'REVISE_TEMPLATE_INPUT_INVALID' | 'REVISE_TEMPLATE_OUTPUT_TOO_LARGE');
 }
 /**
  * Fields this slice may dispatch for an `inventory_api`-managed target.
@@ -71,6 +71,28 @@ export type DerivedListingReviseManifest = Readonly<{
  * revision observed the preserved price and quantity values.
  */
 export declare function deriveListingReviseManifest(revision: ListingRevision): DerivedListingReviseManifest;
+export type TemplatedListingReviseManifest = Readonly<{
+    manifest: ListingReviseManifest;
+    manifestDigest: Digest;
+    descriptionTemplateApplied: boolean;
+}>;
+/**
+ * Opt-in branded description templating: when the derived manifest carries a
+ * `description` change, replace its after-value with the deterministic
+ * `ucg-branded-v1` rendering built from the same stored revision the
+ * manifest derives from (title/condition/condition note/images use the
+ * revision's proposed values, which the freshness gate has already bound to
+ * the live remote state). The recomputed manifest digest therefore binds the
+ * exact templated HTML the operator approves. Only the literal version
+ * `ucg-branded-v1` is accepted; anything else is a fixed-code denial. With a
+ * manifest that carries no description change the manifest passes through
+ * byte-identically and `descriptionTemplateApplied` is false.
+ */
+export declare function applyListingDescriptionTemplate(input: {
+    derived: DerivedListingReviseManifest;
+    revision: ListingRevision;
+    templateVersion: string;
+}): TemplatedListingReviseManifest;
 /**
  * Pre-dispatch freshness gate: the live workspace identity must equal the
  * revision identity, and every field value the revision observed must still

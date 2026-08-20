@@ -24,6 +24,11 @@ import {
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
+import {
+  LISTING_DESCRIPTION_TEMPLATE_VERSION,
+  ListingDescriptionTemplateError,
+  renderListingDescription,
+} from '../server/listing-description-template.js';
 
 export class ListingReviseManifestError extends Error {
   constructor(readonly code:
@@ -32,7 +37,10 @@ export class ListingReviseManifestError extends Error {
     | 'REVISE_BASE_STALE'
     | 'REVISE_NO_CHANGES'
     | 'REVISE_UNSUPPORTED_FIELD'
-    | 'REVISE_PRESERVED_FIELD_MISSING') {
+    | 'REVISE_PRESERVED_FIELD_MISSING'
+    | 'REVISE_TEMPLATE_UNSUPPORTED'
+    | 'REVISE_TEMPLATE_INPUT_INVALID'
+    | 'REVISE_TEMPLATE_OUTPUT_TOO_LARGE') {
     super('Listing revise manifest derivation failed');
     this.name = 'ListingReviseManifestError';
   }
@@ -163,6 +171,82 @@ export function deriveListingReviseManifest(revision: ListingRevision): DerivedL
     preserved: Object.freeze({ price: preservedPrice, quantity: preservedQuantity }),
   });
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
+}
+
+export type TemplatedListingReviseManifest = Readonly<{
+  manifest: ListingReviseManifest;
+  manifestDigest: Digest;
+  descriptionTemplateApplied: boolean;
+}>;
+
+function templateFieldValue(revision: ListingRevision, field: ListingFieldName): string | null {
+  return revisionField(revision, field)?.proposedValue ?? null;
+}
+
+function templateImageUrls(revision: ListingRevision): unknown {
+  const serialized = templateFieldValue(revision, 'images');
+  if (serialized === null) return [];
+  try {
+    return JSON.parse(serialized) as unknown;
+  } catch {
+    return deny('REVISE_TEMPLATE_INPUT_INVALID');
+  }
+}
+
+/**
+ * Opt-in branded description templating: when the derived manifest carries a
+ * `description` change, replace its after-value with the deterministic
+ * `ucg-branded-v1` rendering built from the same stored revision the
+ * manifest derives from (title/condition/condition note/images use the
+ * revision's proposed values, which the freshness gate has already bound to
+ * the live remote state). The recomputed manifest digest therefore binds the
+ * exact templated HTML the operator approves. Only the literal version
+ * `ucg-branded-v1` is accepted; anything else is a fixed-code denial. With a
+ * manifest that carries no description change the manifest passes through
+ * byte-identically and `descriptionTemplateApplied` is false.
+ */
+export function applyListingDescriptionTemplate(input: {
+  derived: DerivedListingReviseManifest;
+  revision: ListingRevision;
+  templateVersion: string;
+}): TemplatedListingReviseManifest {
+  if (input.templateVersion !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+    deny('REVISE_TEMPLATE_UNSUPPORTED');
+  }
+  const { manifest, manifestDigest } = input.derived;
+  if (!manifest.changes.some((change) => change.field === 'description')) {
+    return Object.freeze({ manifest, manifestDigest, descriptionTemplateApplied: false });
+  }
+  let rendered = '';
+  try {
+    rendered = renderListingDescription({
+      templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+      title: templateFieldValue(input.revision, 'title'),
+      bodyHtml: manifest.changes.find((change) => change.field === 'description')?.after,
+      conditionId: templateFieldValue(input.revision, 'condition'),
+      conditionNote: templateFieldValue(input.revision, 'condition_description'),
+      imageUrls: templateImageUrls(input.revision),
+      sku: input.revision.identity.rawSku,
+    });
+  } catch (error) {
+    if (error instanceof ListingDescriptionTemplateError) {
+      deny(error.code === 'OUTPUT_TOO_LARGE'
+        ? 'REVISE_TEMPLATE_OUTPUT_TOO_LARGE'
+        : 'REVISE_TEMPLATE_INPUT_INVALID');
+    }
+    throw error;
+  }
+  const templatedManifest: ListingReviseManifest = Object.freeze({
+    ...manifest,
+    changes: Object.freeze(manifest.changes.map((change) => change.field === 'description'
+      ? Object.freeze({ ...change, after: rendered })
+      : change)),
+  });
+  return Object.freeze({
+    manifest: templatedManifest,
+    manifestDigest: sha256Digest(templatedManifest),
+    descriptionTemplateApplied: true,
+  });
 }
 
 function identitiesMatch(left: ListingIdentity, right: ListingIdentity): boolean {

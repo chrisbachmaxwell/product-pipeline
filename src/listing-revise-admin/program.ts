@@ -37,6 +37,7 @@ import {
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 import {
+  applyListingDescriptionTemplate,
   assertFreshBasisMatchesRevision,
   buildListingRevisePayloads,
   compareDispatchedState,
@@ -45,6 +46,9 @@ import {
   ListingRevisePayloadError,
   type DerivedListingReviseManifest,
 } from './manifest.js';
+import {
+  LISTING_DESCRIPTION_TEMPLATE_VERSION,
+} from '../server/listing-description-template.js';
 import {
   createListingReviseDispatchAdapter,
   createProductionDispatchTokenProvider,
@@ -130,13 +134,51 @@ type ExactTargetOptions = {
   listingId: string;
   offerId: string;
   revisionDigest: string;
+  descriptionTemplate?: string;
 };
+
+type DescriptionTemplateNote = Readonly<{
+  templateVersion: typeof LISTING_DESCRIPTION_TEMPLATE_VERSION;
+  applied: boolean;
+}>;
 
 type DerivedTarget = {
   basis: ListingDraftBasis;
   revision: ListingRevision;
   derived: DerivedListingReviseManifest;
+  descriptionTemplate: DescriptionTemplateNote | null;
 };
+
+/**
+ * Opt-in branded description templating. The flag is fail-closed: absent
+ * means byte-identical legacy behavior, and any value other than the literal
+ * `ucg-branded-v1` is a fixed-code denial before any store or remote read.
+ */
+function assertDescriptionTemplateFlag(value: string | undefined): void {
+  if (value !== undefined && value !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+    deny('REVISE_TEMPLATE_UNSUPPORTED');
+  }
+}
+
+function applyTemplateOption(
+  derived: DerivedListingReviseManifest,
+  revision: ListingRevision,
+  descriptionTemplate: string | undefined,
+): { derived: DerivedListingReviseManifest; note: DescriptionTemplateNote | null } {
+  if (descriptionTemplate === undefined) return { derived, note: null };
+  const templated = applyListingDescriptionTemplate({
+    derived,
+    revision,
+    templateVersion: descriptionTemplate,
+  });
+  return {
+    derived: { manifest: templated.manifest, manifestDigest: templated.manifestDigest },
+    note: Object.freeze({
+      templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+      applied: templated.descriptionTemplateApplied,
+    }),
+  };
+}
 
 /**
  * Exact-target offer-id acceptance: an inventory-model target must be named
@@ -162,6 +204,7 @@ async function deriveExactTarget(
     'readWorkspace' | 'draftDatabasePath' | 'openDraftStoreReadOnly'>>,
   options: ExactTargetOptions,
 ): Promise<DerivedTarget> {
+  assertDescriptionTemplateFlag(options.descriptionTemplate);
   const workspaceDto = await dependencies.readWorkspace(options.catalogId);
   const basis = deriveListingDraftBasis(workspaceDto);
   const identity = basis.identity;
@@ -188,9 +231,17 @@ async function deriveExactTarget(
   if ((revision as ListingRevision).revisionDigest !== options.revisionDigest) {
     deny('REVISE_DRAFT_REVISION_MISMATCH');
   }
-  const derived = deriveListingReviseManifest(revision as ListingRevision);
+  const derivedBase = deriveListingReviseManifest(revision as ListingRevision);
   assertFreshBasisMatchesRevision({ revision: revision as ListingRevision, freshBasis: basis });
-  return { basis, revision: revision as ListingRevision, derived };
+  const templated = applyTemplateOption(
+    derivedBase, revision as ListingRevision, options.descriptionTemplate,
+  );
+  return {
+    basis,
+    revision: revision as ListingRevision,
+    derived: templated.derived,
+    descriptionTemplate: templated.note,
+  };
 }
 
 function ensureIdentity(
@@ -236,6 +287,9 @@ function reviseIdentityInputs(target: DerivedTarget): {
 function manifestSummary(target: DerivedTarget): Record<string, unknown> {
   const { manifest, manifestDigest } = target.derived;
   return {
+    ...(target.descriptionTemplate === null
+      ? {}
+      : { descriptionTemplate: target.descriptionTemplate }),
     manifestDigest,
     revisionId: manifest.revisionId,
     revisionNumber: manifest.revisionNumber,
@@ -390,7 +444,12 @@ export function buildListingReviseAdminProgram(
       '--offer-id <id>',
       'Exact eBay offer id of the one target, or the literal "none" for a Trading-model target',
     )
-    .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest');
+    .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest')
+    .option(
+      '--description-template <version>',
+      'Opt-in branded description templating; the only supported value is '
+      + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`,
+    );
 
   withTargetOptions(program
     .command('preflight')
@@ -661,6 +720,9 @@ export function buildListingReviseAdminProgram(
             status: reconciliation.resolution === 'resolved_existing'
               ? 'dispatched-and-reconciled'
               : 'dispatched-unresolved',
+            ...(target.descriptionTemplate === null
+              ? {}
+              : { descriptionTemplate: target.descriptionTemplate }),
             jobId,
             attemptId,
             intentKey,
@@ -702,6 +764,7 @@ export function buildListingReviseAdminProgram(
       acceptAbsent?: boolean;
     }) => {
       try {
+        assertDescriptionTemplateFlag(options.descriptionTemplate);
         const workspaceDto = await readWorkspace(options.catalogId);
         const freshBasis = deriveListingDraftBasis(workspaceDto);
         if (freshBasis.identity.rawSku !== options.sku
@@ -726,7 +789,11 @@ export function buildListingReviseAdminProgram(
         if (revision === null || revision.revisionDigest !== options.revisionDigest) {
           deny('REVISE_DRAFT_REVISION_MISMATCH');
         }
-        const derived = deriveListingReviseManifest(revision as ListingRevision);
+        const derivedBase = deriveListingReviseManifest(revision as ListingRevision);
+        const templated = applyTemplateOption(
+          derivedBase, revision as ListingRevision, options.descriptionTemplate,
+        );
+        const derived = templated.derived;
         const store = openMigration({
           databasePath: options.migrationStore,
           expectedScope: MIGRATION_SCOPE,
@@ -735,6 +802,7 @@ export function buildListingReviseAdminProgram(
         try {
           const identityInputs = reviseIdentityInputs({
             basis: freshBasis, revision: revision as ListingRevision, derived,
+            descriptionTemplate: templated.note,
           });
           const sourceIdentityKey = deriveExternalIdentityKey(identityInputs.source);
           const targetIdentityKey = deriveExternalIdentityKey(identityInputs.targetListing);
@@ -748,7 +816,10 @@ export function buildListingReviseAdminProgram(
           if (store.getIntent(intentKey) === null) deny('REVISE_INTENT_NOT_FOUND');
           const reconciliation = await runReconciliation({
             store,
-            target: { basis: freshBasis, revision: revision as ListingRevision, derived },
+            target: {
+              basis: freshBasis, revision: revision as ListingRevision, derived,
+              descriptionTemplate: templated.note,
+            },
             intentKey,
             targetIdentityKey,
             jobId: options.jobId,

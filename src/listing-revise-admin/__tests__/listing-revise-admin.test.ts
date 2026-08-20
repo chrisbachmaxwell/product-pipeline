@@ -26,6 +26,7 @@ import {
 } from '../../server/listing-draft-service.js';
 import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.js';
 import {
+  applyListingDescriptionTemplate,
   buildListingRevisePayloads,
   deriveListingReviseManifest,
   ListingReviseManifestError,
@@ -497,6 +498,122 @@ describe('listing-revise operator CLI', () => {
     expect(payloads.inventoryItemPayload.product).toMatchObject({ title: 'Operator Title' });
     expect(JSON.stringify(payloads.offerPayload.pricingSummary))
       .toBe(JSON.stringify(rawOffer().pricingSummary));
+  });
+
+  it('applies opt-in description templating with a manifest digest binding the exact HTML', async () => {
+    const world = await createWorld();
+
+    // Replace the title-only revision with a description-only revision.
+    const service = createListingDraftService({
+      readWorkspace: async () => world.currentWorkspace(),
+      databasePath: () => world.draftDatabasePath,
+      writerInstanceReady: () => true,
+    });
+    const opened = await service.get(CATALOG_ID, true);
+    await service.save(parseSaveListingDraftRequest({
+      schemaVersion: 1, action: 'save_local_draft', catalogId: CATALOG_ID,
+      expectedRevisionDigest: opened.revision!.revisionDigest,
+      base: { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest },
+      draft: { title: null, category: null, condition: null, conditionDescription: null,
+        description: '<p>Freshly serviced &amp; film tested.</p>', images: null,
+        fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
+        merchantLocation: null },
+    }), 'shopify-user:operator');
+    const draftStore = openListingControlStoreReadOnly({
+      databasePath: world.draftDatabasePath, expectedScope: LISTING_DRAFT_SCOPE,
+    });
+    const revision = draftStore.getLatestRevision(VARIANT_GID)!;
+    draftStore.close();
+
+    // Without the flag: byte-identical output on repeat runs, no template note.
+    await world.run(['preflight', ...targetArguments(revision.revisionDigest)]);
+    const plainLine = world.stdout.at(-1)!;
+    await world.run(['preflight', ...targetArguments(revision.revisionDigest)]);
+    expect(world.stdout.at(-1)).toBe(plainLine);
+    const plain = lastJson(world.stdout);
+    expect(Object.keys(plain)).not.toContain('descriptionTemplate');
+    const plainDigest = plain.manifestDigest as string;
+    expect(plainDigest).toBe(deriveListingReviseManifest(revision).manifestDigest);
+
+    // Anything but the exact supported version is a fixed-code denial.
+    await world.run(['preflight', ...targetArguments(revision.revisionDigest),
+      '--description-template', 'ucg-branded-v2']);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_TEMPLATE_UNSUPPORTED' });
+    await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
+      '--description-template', 'UCG-BRANDED-V1',
+      '--manifest-digest', plainDigest,
+      '--migration-store', world.migrationDatabasePath]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_TEMPLATE_UNSUPPORTED' });
+    expect(world.adapterCalls).toHaveLength(0);
+
+    // With the flag: the digest changes and the preflight notes the template.
+    await world.run(['preflight', ...targetArguments(revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1']);
+    const templated = lastJson(world.stdout);
+    expect(templated).toMatchObject({
+      command: 'preflight',
+      status: 'preview',
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+    });
+    const templatedDigest = templated.manifestDigest as string;
+    expect(templatedDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(templatedDigest).not.toBe(plainDigest);
+    const changes = templated.changes as Array<{ field: string; after: { preview: string } }>;
+    expect(changes.find((change) => change.field === 'description')!.after.preview)
+      .toContain('<!-- template:ucg-branded-v1 -->');
+
+    // The digest binds the templated HTML in both directions.
+    await world.run(['establish-ownership',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--evidence-digest', `sha256:${'a'.repeat(64)}`]);
+    await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+      '--manifest-digest', plainDigest,
+      '--migration-store', world.migrationDatabasePath]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_MANIFEST_DIGEST_MISMATCH' });
+    await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
+      '--manifest-digest', templatedDigest,
+      '--migration-store', world.migrationDatabasePath]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_MANIFEST_DIGEST_MISMATCH' });
+    expect(world.adapterCalls).toHaveLength(0);
+
+    // Approving the templated digest dispatches the exact rendered HTML.
+    await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+      '--manifest-digest', templatedDigest,
+      '--migration-store', world.migrationDatabasePath]);
+    const dispatched = lastJson(world.stdout);
+    expect(dispatched).toMatchObject({
+      command: 'dispatch',
+      providerDispatchReported: true,
+      manifestDigest: templatedDigest,
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      externalCommerceWritesAttempted: 1,
+    });
+    expect(world.adapterCalls).toEqual(['getInventoryItem', 'getOffer', 'putOffer']);
+    expect(world.putOfferPayloads).toHaveLength(1);
+    const dispatchedDescription = world.putOfferPayloads[0]!.listingDescription as string;
+    expect(dispatchedDescription.startsWith('<!-- template:ucg-branded-v1 -->')).toBe(true);
+    expect(dispatchedDescription).toContain('<p>Freshly serviced &amp; film tested.</p>');
+    expect(dispatchedDescription).toContain('<span class="ucg-condition">Used</span>');
+    expect(dispatchedDescription).toContain('SKU: CAN3570-U119');
+    expect(dispatchedDescription).not.toMatch(/<script|<iframe|<form|javascript:|@import|url\(/i);
+    expect(world.putItemPayloads).toHaveLength(0);
+  });
+
+  it('passes manifests without a description change through templating unchanged', async () => {
+    const world = await createWorld();
+    const derived = deriveListingReviseManifest(world.revision);
+    const untouched = applyListingDescriptionTemplate({
+      derived, revision: world.revision, templateVersion: 'ucg-branded-v1',
+    });
+    expect(untouched.descriptionTemplateApplied).toBe(false);
+    expect(untouched.manifestDigest).toBe(derived.manifestDigest);
+    expect(untouched.manifest).toBe(derived.manifest);
+    expect(() => applyListingDescriptionTemplate({
+      derived, revision: world.revision, templateVersion: 'ucg-branded-v1 ',
+    })).toThrow(ListingReviseManifestError);
   });
 
   it('keeps the CLI free of server-mount and legacy writer imports', () => {

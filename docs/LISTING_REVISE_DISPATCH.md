@@ -85,6 +85,42 @@ Marketplace Connect still owns price/inventory on these listings, and this
 slice writes content fields only. Any drift it causes in price or quantity
 still stales the draft and denies dispatch.
 
+## Branded description template
+
+An opt-in `--description-template ucg-branded-v1` flag on `preflight`,
+`dispatch`, and `reconcile` wraps the draft's allowlisted description in our
+own branded page (replacing the Marketplace Connect/Codisto shell):
+usedcameragear.com wordmark header, H1 title, condition badge, the draft's
+rich-text body, condition-note section, responsive https-only image gallery,
+generic shipping/returns/questions info blocks, and footer — one namespaced
+`<style>` block, mobile breakpoint, and zero active content (no scripts,
+iframes, forms, event handlers, `javascript:` urls, external styles, or
+`url(`/`@import`).
+
+- Rendering is `renderListingDescription` in
+  `src/server/listing-description-template.ts`: deterministic (byte-identical
+  output for identical input, `<!-- template:ucg-branded-v1 -->` marker),
+  fail-closed validated, and bounded to 400,000 bytes.
+- The template input derives from the same stored revision the manifest
+  derives from (title/condition/condition note/images use the revision's
+  proposed values; the body is the description override), so the recomputed
+  **manifest digest binds the exact templated HTML** — preflight prints a
+  `descriptionTemplate` note with the version and whether it applied, and
+  dispatch only accepts the templated digest when the flag is passed (and
+  only the untemplated digest when it is not).
+- Templating applies only when the manifest carries a `description` change;
+  otherwise the manifest passes through unchanged (`applied: false`).
+- Without the flag, behavior is byte-identical to the untemplated CLI. Any
+  flag value other than the literal `ucg-branded-v1` is denied as
+  `REVISE_TEMPLATE_UNSUPPORTED`. Both management models are supported — the
+  rendered page is simply a larger description string, still subject to the
+  adapters' existing payload bounds (oversized renders deny cleanly, never
+  truncate).
+- Read-only preview: `GET /api/listing-description-preview?id=<catalog row
+  id>` on the shadow API renders the same template from the live workspace
+  read plus the latest saved draft revision (observed values fill any
+  non-overridden field) and returns `{ templateVersion, html }`.
+
 ## Prerequisites (once)
 
 1. A verified schema-v2 migration store for the exact production scope
