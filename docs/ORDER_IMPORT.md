@@ -68,6 +68,9 @@ order-import-admin establish-watermark \
 
 order-import-admin poll --migration-store <path> --max-orders <n<=50>
 
+order-import-admin shadow-poll --max-orders <n<=50> --lookback-hours <h<=168> \
+  [--report-file /absolute/fresh/path/shadow-report.json]
+
 order-import-admin import --migration-store <path> \
   --order-id <exact eBay orderId> --confirm-lightspeed
 
@@ -97,6 +100,59 @@ order-import-admin reconcile --migration-store <path> \
   observations blocks new pages (`POLL_PREVIOUS_PAGE_UNRESOLVED`) — import or
   dedup-resolve those orders first; the next poll then advances the cursor.
 - No Shopify call, no write of any kind to either platform.
+
+### Shadow parity mode (run while Marketplace Connect still owns orders)
+
+`shadow-poll` is the one command in this slice that runs **before** any
+handover ceremony — while Marketplace Connect still owns order import — and
+it needs no ceremony precisely because it writes nothing:
+
+- **Zero writes anywhere.** No eBay mutation, no Shopify mutation, and no
+  migration-store access at all — the store is never even opened, so no
+  observation, identity, page, or audit row can exist afterwards. The only
+  write it can ever perform is the optional operator-named `--report-file`.
+- **What it does.** Fetches eBay orders created within the last
+  `--lookback-hours` hours (1-168) via the same bounded read adapter and
+  exact `api_scope + sell.fulfillment` transient token as `poll` (≤3 pages,
+  ≤50 orders, 2 MB / 20 s bounds), then checks each observed order for a
+  Shopify order carrying the durable `eBay-<orderId>` tag using the same
+  read-only Admin GraphQL tag lookup `import` uses for dedup. It prints one
+  JSON report: per-order `{ ebayOrderId, createdAtUtc, lineItemSkus,
+  shopifyMatch }` plus a `summary` with `observedCount`, `matchedCount`,
+  `unmatchedCount`, and `unmatchedEbayOrderIds`. When a match is found,
+  `shopifyMatch.orderName` carries the matched Shopify order GID (the
+  identifier the read-only dedup lookup returns).
+- **No PII, ever.** The report is constructed only from the allowed fields
+  (order id, creation timestamp, line-item SKUs, match info); buyer name,
+  email, address, phone, and payment data never reach stdout or the report
+  even though the provider response contains them.
+- **`--report-file`** must be an absolute path whose parent directory exists;
+  it is created with mode `0600`, never overwrites an existing file, and
+  never follows a symlink (refused with `SHADOW_POLL_REPORT_EXISTS`).
+- **Failures.** An eBay read failure fails the whole run with
+  `SHADOW_POLL_EBAY_READ_FAILED` (exit 1, no partial output). A failed
+  per-order Shopify lookup is reported on that order as
+  `shopifyMatch: { found: false, orderName: null, lookupFailed: true }` and
+  counted as unmatched, so one flaky lookup does not discard the run —
+  re-run before drawing conclusions from `lookupFailed` entries.
+
+**Suggested cadence:** run it daily during the shadow period (e.g. a daily
+operator invocation with `--lookback-hours 24` and a dated `--report-file`),
+plus once with a longer window such as `--lookback-hours 168` before the
+cutover decision.
+
+**Reading the summary:** `unmatchedCount: 0` means every eBay order in the
+window has a tagged Shopify counterpart — parity holds. `unmatchedCount > 0`
+is only meaningful after Marketplace Connect's normal import delay has
+passed for those orders; a very recent order may simply not be imported yet.
+If an order remains unmatched after that delay (e.g. still unmatched in the
+next day's run), **investigate before cutover** — it means MC missed,
+skipped, or differently-tagged that order, and the discrepancy must be
+understood before ProductPipeline takes ownership. Note that MC may tag its
+orders differently; a persistent 100% unmatched result more likely means the
+`eBay-<orderId>` tag convention does not hold for MC-created orders than
+that every order was missed — verify one known order in the Shopify admin
+first.
 
 ### `import` (exactly one order)
 
