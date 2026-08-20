@@ -5,6 +5,8 @@ import { projectLiveListingCatalogPage, } from '../live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, hasUnresolvedLiveListingRefreshFailure, } from '../live-listing-catalog-source.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from '../listing-workspace-reader.js';
 import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
+import { editorFacetSweep } from '../listing-editor-facet-sweep.js';
+import { EbayCategorySearchError, searchEbayCategories, } from '../ebay-category-search.js';
 import { createListingDraftService, ListingDraftServiceError, } from '../listing-draft-service.js';
 import { LISTING_DESCRIPTION_TEMPLATE_VERSION, renderListingDescription, } from '../listing-description-template.js';
 export const SHADOW_API_GET_PATHS = Object.freeze([
@@ -12,6 +14,7 @@ export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/authoritative-listings',
     '/api/listing-workspace',
     '/api/listing-editor-metadata',
+    '/api/ebay-category-search',
     '/api/listing-description-preview',
     '/api/listings',
     '/api/capabilities',
@@ -73,11 +76,14 @@ export function createShadowApiRouter(dependencies = {
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
     readWorkspace: readListingWorkspace,
+    facetSweep: editorFacetSweep,
+    searchEbayCategories,
 }) {
     const router = Router();
     const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
     const getListingDraft = dependencies.getListingDraft
         ?? ((catalogId) => createListingDraftService().get(catalogId));
+    const categorySearch = dependencies.searchEbayCategories ?? searchEbayCategories;
     function boundedInteger(value, fallback, minimum, maximum) {
         const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
         if (!Number.isFinite(parsed))
@@ -135,9 +141,13 @@ export function createShadowApiRouter(dependencies = {
     });
     /**
      * GET /api/listing-editor-metadata — fixed condition table plus facet usage
-     * aggregated from the already-cached live catalog snapshot. Never performs a
-     * new provider request: when no successful snapshot is held yet, it fails
-     * closed instead of triggering a capture.
+     * aggregated from the already-cached live catalog snapshot, merged with the
+     * background used-facet sweep's cached aggregate (sweep names win). The
+     * request itself never performs a new provider request and never waits on a
+     * sweep: it only reads what is cached now, while an empty or expired sweep
+     * cache starts one background refresh for later requests. When no
+     * successful snapshot is held yet, it fails closed instead of triggering a
+     * capture.
      */
     router.get('/api/listing-editor-metadata', async (_req, res) => {
         try {
@@ -146,10 +156,31 @@ export function createShadowApiRouter(dependencies = {
                 res.status(503).json({ error: 'Listing editor metadata is unavailable' });
                 return;
             }
-            res.json(buildListingEditorMetadata(await dependencies.getSnapshot()));
+            const sweepObservations = dependencies.facetSweep?.getObservations() ?? [];
+            res.json(buildListingEditorMetadata(await dependencies.getSnapshot(), sweepObservations));
         }
         catch {
             res.status(503).json({ error: 'Listing editor metadata is unavailable' });
+        }
+    });
+    /**
+     * GET /api/ebay-category-search — read-only eBay Taxonomy category
+     * suggestions for the full EBAY_US category tree (not just categories in
+     * use). Performs at most one bounded remote GET per uncached normalized
+     * query; results are cached in-process. Invalid queries are a 400; every
+     * other failure is one generic 503 with no upstream detail.
+     */
+    router.get('/api/ebay-category-search', async (req, res) => {
+        try {
+            const query = typeof req.query.q === 'string' ? req.query.q : '';
+            res.json(await categorySearch(query));
+        }
+        catch (error) {
+            if (error instanceof EbayCategorySearchError && error.code === 'INVALID_QUERY') {
+                res.status(400).json({ error: 'Invalid category search query' });
+                return;
+            }
+            res.status(503).json({ error: 'Category search is unavailable' });
         }
     });
     /**
@@ -265,6 +296,15 @@ export function createShadowApiRouter(dependencies = {
                     remoteRead: false,
                     externalWrite: false,
                     evidenceKind: 'cached_snapshot_aggregate',
+                    backgroundRemoteRefresh: true,
+                },
+                {
+                    id: 'ebay-category-search',
+                    method: 'GET',
+                    endpoint: '/api/ebay-category-search',
+                    remoteRead: true,
+                    externalWrite: false,
+                    evidenceKind: 'live_read',
                 },
                 {
                     id: 'listing-description-preview',

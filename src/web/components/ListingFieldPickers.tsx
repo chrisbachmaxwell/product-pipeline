@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BlockStack,
   Combobox,
@@ -12,6 +12,10 @@ import type {
   ListingEditorCondition,
   ListingEditorIdUsage,
 } from '../hooks/useListingEditorMetadata';
+import {
+  useEbayCategorySearch,
+  type EbayCategorySearchResult,
+} from '../hooks/useEbayCategorySearch';
 
 /**
  * Presentation-only pickers for the local draft editor. Each one edits a
@@ -107,12 +111,38 @@ export const categoryDisplayLabel = (
   return match ? categoryName(match) : id;
 };
 
+const searchResultLabel = (result: EbayCategorySearchResult): string =>
+  `${result.name} (${result.id})`;
+
 export const CategoryPicker: React.FC<CategoryPickerProps> = ({
   label, value, categories, currentSummary, disabled, error, onChange,
 }) => {
-  const [text, setText] = useState(() =>
-    value === null ? '' : categoryDisplayLabel(value, categories));
+  // Display labels for live-search results the merchant picked; keeps the
+  // committed value rendering as "Name (id)" even though the id is not in
+  // the used-category metadata.
+  const [pickedLabels, setPickedLabels] = useState<Record<string, string>>({});
+  const displayLabel = (id: string): string => {
+    const fromMetadata = categories.find((category) => category.id === id);
+    if (fromMetadata) return categoryName(fromMetadata);
+    return pickedLabels[id] ?? id;
+  };
+
+  const [text, setText] = useState(() => (value === null ? '' : displayLabel(value)));
   const trimmed = text.trim();
+  const numeric = /^\d+$/u.test(trimmed);
+  const committedLabel = value === null ? null : displayLabel(value);
+  const searching = trimmed !== '' && !numeric && text !== committedLabel;
+
+  // Once the live search has failed and there is no used-category metadata
+  // either, the combobox has nothing to offer: degrade to plain text entry
+  // for the rest of this mount (free numeric entry keeps working there).
+  const [searchEverFailed, setSearchEverFailed] = useState(false);
+  const degraded = categories.length === 0 && searchEverFailed;
+
+  const search = useEbayCategorySearch(degraded || disabled || !searching ? '' : trimmed);
+  useEffect(() => {
+    if (search.isError) setSearchEverFailed(true);
+  }, [search.isError]);
 
   const matches = useMemo(() => {
     if (trimmed === '') return categories;
@@ -123,6 +153,13 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
       || categoryName(category).toLowerCase().includes(query));
   }, [categories, trimmed]);
 
+  const shownMatches = matches.slice(0, 50);
+  // Hide live results that already appear in the "Your categories" section.
+  const searchResults = useMemo(() => {
+    const shownIds = new Set(shownMatches.map((category) => category.id));
+    return search.results.filter((result) => !shownIds.has(result.id));
+  }, [search.results, shownMatches]);
+
   const changeText = (next: string) => {
     setText(next);
     const candidate = next.trim();
@@ -130,23 +167,57 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
       onChange(null);
       return;
     }
-    // Free numeric entry: any category id can be set directly.
-    if (/^\d+$/u.test(candidate)) onChange(candidate);
+    // Free numeric entry: any category id can be set directly. In degraded
+    // plain-text mode everything commits, exactly like the plain field.
+    if (degraded || /^\d+$/u.test(candidate)) onChange(degraded ? next : candidate);
     // Anything else is a search query; the committed value is unchanged
     // until an option is picked.
   };
 
   const selectCategory = (id: string) => {
     onChange(id);
-    setText(categoryDisplayLabel(id, categories));
+    const fromSearch = search.results.find((result) => result.id === id);
+    if (fromSearch && !categories.some((category) => category.id === id)) {
+      const picked = searchResultLabel(fromSearch);
+      setPickedLabels((current) => ({ ...current, [id]: picked }));
+      setText(picked);
+      return;
+    }
+    setText(displayLabel(id));
   };
 
-  const committedLabel = value === null ? null : categoryDisplayLabel(value, categories);
-  const searching = trimmed !== '' && !/^\d+$/u.test(trimmed) && text !== committedLabel;
+  const helpText = helpStack([
+    ...(value !== null ? [`Draft: ${committedLabel ?? value}`] : []),
+    currentSummary,
+  ]);
+
+  if (degraded) {
+    return (
+      <TextField
+        label={label}
+        value={text}
+        onChange={changeText}
+        autoComplete="off"
+        placeholder="Enter a numeric eBay category ID"
+        disabled={disabled}
+        error={error}
+        helpText={helpText}
+      />
+    );
+  }
+
+  const showSearchSection = searching
+    && (searchResults.length > 0 || search.isSearching || search.isError);
+  const bothSectionsEmpty = searching
+    && shownMatches.length === 0
+    && searchResults.length === 0
+    && !search.isSearching;
   const inlineError = error
-    ?? (searching && matches.length === 0
+    ?? (bothSectionsEmpty
       ? 'No matching category — pick from the list or enter a numeric category ID (digits only)'
       : undefined);
+
+  const hasPopoverContent = shownMatches.length > 0 || showSearchSection || bothSectionsEmpty;
 
   return (
     <Combobox
@@ -159,24 +230,63 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
           placeholder="Search categories or enter a category ID"
           disabled={disabled}
           error={inlineError}
-          helpText={helpStack([
-            ...(value !== null ? [`Draft: ${committedLabel ?? value}`] : []),
-            currentSummary,
-          ])}
+          helpText={helpText}
         />
       )}
     >
-      {matches.length > 0 ? (
+      {hasPopoverContent ? (
         <Listbox onSelect={selectCategory} accessibilityLabel="Categories">
-          {matches.slice(0, 50).map((category) => (
-            <Listbox.Option
-              key={category.id}
-              value={category.id}
-              selected={category.id === value}
+          {shownMatches.length > 0 && (
+            <Listbox.Section title={<Listbox.Header>Your categories</Listbox.Header>}>
+              {shownMatches.map((category) => (
+                <Listbox.Option
+                  key={category.id}
+                  value={category.id}
+                  selected={category.id === value}
+                >
+                  {categoryOptionLabel(category)}
+                </Listbox.Option>
+              ))}
+            </Listbox.Section>
+          )}
+          {showSearchSection && (
+            <Listbox.Section
+              divider={shownMatches.length > 0}
+              title={<Listbox.Header>All eBay categories</Listbox.Header>}
             >
-              {categoryOptionLabel(category)}
+              {searchResults.map((result) => (
+                <Listbox.Option
+                  key={result.id}
+                  value={result.id}
+                  selected={result.id === value}
+                  accessibilityLabel={`${searchResultLabel(result)} — ${result.path}`}
+                >
+                  <BlockStack gap="050">
+                    <Text as="span">{searchResultLabel(result)}</Text>
+                    {result.path !== '' && (
+                      <Text as="span" variant="bodySm" tone="subdued">{result.path}</Text>
+                    )}
+                  </BlockStack>
+                </Listbox.Option>
+              ))}
+              {search.isSearching && (
+                <Listbox.Loading accessibilityLabel="Searching eBay categories" />
+              )}
+              {search.isError && !search.isSearching && (
+                <Listbox.Option value="__ebay-category-search-error__" disabled>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    eBay category search is unavailable right now — your categories
+                    and numeric ID entry still work.
+                  </Text>
+                </Listbox.Option>
+              )}
+            </Listbox.Section>
+          )}
+          {bothSectionsEmpty && (
+            <Listbox.Option value="__ebay-category-no-matches__" disabled>
+              <Text as="span" variant="bodySm" tone="subdued">No matches</Text>
             </Listbox.Option>
-          ))}
+          )}
         </Listbox>
       ) : null}
     </Combobox>

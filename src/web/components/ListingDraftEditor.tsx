@@ -386,25 +386,18 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
             onChange={(value) => set('title', value)}
           />
           <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-            {metadata.categories.length > 0 ? (
-              <CategoryPicker
-                label={<FieldLabel text="Category" changed={changedFor('category', categoryField)} />}
-                value={values.category}
-                categories={metadata.categories}
-                currentSummary={currentLabel(categoryField)}
-                disabled={!categoryField.editable}
-                error={categoryError}
-                onChange={(next) => setValue('category', next)}
-              />
-            ) : (
-              <DraftTextField
-                label={<FieldLabel text="Category" changed={changedFor('category', categoryField)} />}
-                field={categoryField}
-                value={draftFieldValue({ ...categoryField, draft: values.category })}
-                error={categoryError}
-                onChange={(value) => set('category', value)}
-              />
-            )}
+            {/* CategoryPicker searches the full eBay tree even without
+                used-category metadata, and degrades to plain text entry
+                itself when metadata is empty and live search fails. */}
+            <CategoryPicker
+              label={<FieldLabel text="Category" changed={changedFor('category', categoryField)} />}
+              value={values.category}
+              categories={metadata.categories}
+              currentSummary={currentLabel(categoryField)}
+              disabled={!categoryField.editable}
+              error={categoryError}
+              onChange={(next) => setValue('category', next)}
+            />
             {metadata.conditions.length > 0 ? (
               <ConditionSelect
                 label={<FieldLabel text="Condition" changed={changedFor('condition', conditionField)} />}
