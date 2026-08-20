@@ -19,7 +19,8 @@ import { openListingControlStoreReadOnly, } from '../listing-control-store/index
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import { deriveListingDraftBasis, } from '../server/listing-draft-service.js';
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
-import { assertFreshBasisMatchesRevision, buildListingRevisePayloads, compareDispatchedState, deriveListingReviseManifest, ListingReviseManifestError, ListingRevisePayloadError, } from './manifest.js';
+import { applyListingDescriptionTemplate, assertFreshBasisMatchesRevision, buildListingRevisePayloads, compareDispatchedState, deriveListingReviseManifest, ListingReviseManifestError, ListingRevisePayloadError, } from './manifest.js';
+import { LISTING_DESCRIPTION_TEMPLATE_VERSION, } from '../server/listing-description-template.js';
 import { createListingReviseDispatchAdapter, createProductionDispatchTokenProvider, ListingReviseDispatchError, } from './dispatch-adapter.js';
 import { createTradingDispatchAdapter, TradingDispatchError, } from './trading-dispatch-adapter.js';
 const APPROVAL_TTL_MS = 10 * 60_000;
@@ -74,6 +75,32 @@ function preview(value) {
     };
 }
 /**
+ * Opt-in branded description templating. The flag is fail-closed: absent
+ * means byte-identical legacy behavior, and any value other than the literal
+ * `ucg-branded-v1` is a fixed-code denial before any store or remote read.
+ */
+function assertDescriptionTemplateFlag(value) {
+    if (value !== undefined && value !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+        deny('REVISE_TEMPLATE_UNSUPPORTED');
+    }
+}
+function applyTemplateOption(derived, revision, descriptionTemplate) {
+    if (descriptionTemplate === undefined)
+        return { derived, note: null };
+    const templated = applyListingDescriptionTemplate({
+        derived,
+        revision,
+        templateVersion: descriptionTemplate,
+    });
+    return {
+        derived: { manifest: templated.manifest, manifestDigest: templated.manifestDigest },
+        note: Object.freeze({
+            templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+            applied: templated.descriptionTemplateApplied,
+        }),
+    };
+}
+/**
  * Exact-target offer-id acceptance: an inventory-model target must be named
  * by its exact offer id, while a Trading-model target (which has no offer)
  * must be named with the literal `none` — any other combination is a
@@ -91,6 +118,7 @@ function createMonotonicClock(now) {
     };
 }
 async function deriveExactTarget(dependencies, options) {
+    assertDescriptionTemplateFlag(options.descriptionTemplate);
     const workspaceDto = await dependencies.readWorkspace(options.catalogId);
     const basis = deriveListingDraftBasis(workspaceDto);
     const identity = basis.identity;
@@ -119,9 +147,15 @@ async function deriveExactTarget(dependencies, options) {
     if (revision.revisionDigest !== options.revisionDigest) {
         deny('REVISE_DRAFT_REVISION_MISMATCH');
     }
-    const derived = deriveListingReviseManifest(revision);
+    const derivedBase = deriveListingReviseManifest(revision);
     assertFreshBasisMatchesRevision({ revision: revision, freshBasis: basis });
-    return { basis, revision: revision, derived };
+    const templated = applyTemplateOption(derivedBase, revision, options.descriptionTemplate);
+    return {
+        basis,
+        revision: revision,
+        derived: templated.derived,
+        descriptionTemplate: templated.note,
+    };
 }
 function ensureIdentity(store, input, occurredAtUtc) {
     const identityKey = deriveExternalIdentityKey(input);
@@ -158,6 +192,9 @@ function reviseIdentityInputs(target) {
 function manifestSummary(target) {
     const { manifest, manifestDigest } = target.derived;
     return {
+        ...(target.descriptionTemplate === null
+            ? {}
+            : { descriptionTemplate: target.descriptionTemplate }),
         manifestDigest,
         revisionId: manifest.revisionId,
         revisionNumber: manifest.revisionNumber,
@@ -280,7 +317,9 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
         .requiredOption('--sku <sku>', 'Exact raw SKU of the one target')
         .requiredOption('--listing-id <id>', 'Exact eBay listing id of the one target')
         .requiredOption('--offer-id <id>', 'Exact eBay offer id of the one target, or the literal "none" for a Trading-model target')
-        .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest');
+        .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest')
+        .option('--description-template <version>', 'Opt-in branded description templating; the only supported value is '
+        + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`);
     withTargetOptions(program
         .command('preflight')
         .description('Derive and print the exact dispatch manifest without any store or provider write'))
@@ -538,6 +577,9 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
                     status: reconciliation.resolution === 'resolved_existing'
                         ? 'dispatched-and-reconciled'
                         : 'dispatched-unresolved',
+                    ...(target.descriptionTemplate === null
+                        ? {}
+                        : { descriptionTemplate: target.descriptionTemplate }),
                     jobId,
                     attemptId,
                     intentKey,
@@ -571,6 +613,7 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
         .option('--accept-absent', 'Explicitly accept a still-absent revise effect as the terminal confirmed_missing outcome')
         .action(async (options) => {
         try {
+            assertDescriptionTemplateFlag(options.descriptionTemplate);
             const workspaceDto = await readWorkspace(options.catalogId);
             const freshBasis = deriveListingDraftBasis(workspaceDto);
             if (freshBasis.identity.rawSku !== options.sku
@@ -596,7 +639,9 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
             if (revision === null || revision.revisionDigest !== options.revisionDigest) {
                 deny('REVISE_DRAFT_REVISION_MISMATCH');
             }
-            const derived = deriveListingReviseManifest(revision);
+            const derivedBase = deriveListingReviseManifest(revision);
+            const templated = applyTemplateOption(derivedBase, revision, options.descriptionTemplate);
+            const derived = templated.derived;
             const store = openMigration({
                 databasePath: options.migrationStore,
                 expectedScope: MIGRATION_SCOPE,
@@ -605,6 +650,7 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
             try {
                 const identityInputs = reviseIdentityInputs({
                     basis: freshBasis, revision: revision, derived,
+                    descriptionTemplate: templated.note,
                 });
                 const sourceIdentityKey = deriveExternalIdentityKey(identityInputs.source);
                 const targetIdentityKey = deriveExternalIdentityKey(identityInputs.targetListing);
@@ -619,7 +665,10 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
                     deny('REVISE_INTENT_NOT_FOUND');
                 const reconciliation = await runReconciliation({
                     store,
-                    target: { basis: freshBasis, revision: revision, derived },
+                    target: {
+                        basis: freshBasis, revision: revision, derived,
+                        descriptionTemplate: templated.note,
+                    },
                     intentKey,
                     targetIdentityKey,
                     jobId: options.jobId,

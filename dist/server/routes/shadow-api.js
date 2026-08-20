@@ -5,11 +5,14 @@ import { projectLiveListingCatalogPage, } from '../live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, hasUnresolvedLiveListingRefreshFailure, } from '../live-listing-catalog-source.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from '../listing-workspace-reader.js';
 import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
+import { createListingDraftService, ListingDraftServiceError, } from '../listing-draft-service.js';
+import { LISTING_DESCRIPTION_TEMPLATE_VERSION, renderListingDescription, } from '../listing-description-template.js';
 export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/migration/status',
     '/api/authoritative-listings',
     '/api/listing-workspace',
     '/api/listing-editor-metadata',
+    '/api/listing-description-preview',
     '/api/listings',
     '/api/capabilities',
 ]);
@@ -27,6 +30,45 @@ export function projectLocalListing(row) {
         updated_at: row.updated_at,
     };
 }
+function escapeDescriptionText(value) {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+/**
+ * Build the deterministic branded-template input for one listing draft DTO:
+ * the saved draft override wins per field, then the live observed value.
+ * When no draft description exists, the observed plain-text description
+ * (already derived through the workspace's HTML→plain-text path) is escaped
+ * into one paragraph, so the renderer's allowlist always holds. Images come
+ * from the current observed listing images.
+ */
+export function buildListingDescriptionPreviewInput(dto) {
+    const { listing, content } = dto.sections;
+    const title = listing.title.draft ?? listing.title.ebay ?? listing.title.shopify;
+    const draftDescription = content.description.draft;
+    const observedDescription = content.description.ebay;
+    const bodyHtml = draftDescription
+        ?? (observedDescription === null
+            ? ''
+            : `<p>${escapeDescriptionText(observedDescription)}</p>`);
+    const serializedImages = content.images.ebay;
+    const imageUrls = serializedImages === null
+        ? []
+        : JSON.parse(serializedImages);
+    return {
+        templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+        title,
+        bodyHtml,
+        conditionId: listing.condition.draft ?? listing.condition.ebay,
+        conditionNote: listing.conditionDescription.draft ?? listing.conditionDescription.ebay,
+        imageUrls,
+        sku: dto.identity.rawSku,
+    };
+}
 export function createShadowApiRouter(dependencies = {
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
@@ -34,6 +76,8 @@ export function createShadowApiRouter(dependencies = {
 }) {
     const router = Router();
     const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
+    const getListingDraft = dependencies.getListingDraft
+        ?? ((catalogId) => createListingDraftService().get(catalogId));
     function boundedInteger(value, fallback, minimum, maximum) {
         const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
         if (!Number.isFinite(parsed))
@@ -106,6 +150,27 @@ export function createShadowApiRouter(dependencies = {
         }
         catch {
             res.status(503).json({ error: 'Listing editor metadata is unavailable' });
+        }
+    });
+    /**
+     * GET /api/listing-description-preview — render the branded description
+     * template for one catalog row from the live workspace read plus the latest
+     * saved local draft revision. Read-only: no store write, no provider write.
+     * Unknown rows are a 404; every other failure is one generic 503.
+     */
+    router.get('/api/listing-description-preview', async (req, res) => {
+        const rowId = typeof req.query.id === 'string' ? req.query.id : '';
+        try {
+            const dto = await getListingDraft(rowId);
+            const html = renderListingDescription(buildListingDescriptionPreviewInput(dto));
+            res.json({ templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION, html });
+        }
+        catch (error) {
+            if (error instanceof ListingDraftServiceError && error.code === 'LISTING_DRAFT_NOT_FOUND') {
+                res.status(404).json({ error: 'Listing was not found' });
+                return;
+            }
+            res.status(503).json({ error: 'Description preview is unavailable' });
         }
     });
     /** GET /api/listings — projected local observations only; no platform reader. */
@@ -200,6 +265,15 @@ export function createShadowApiRouter(dependencies = {
                     remoteRead: false,
                     externalWrite: false,
                     evidenceKind: 'cached_snapshot_aggregate',
+                },
+                {
+                    id: 'listing-description-preview',
+                    method: 'GET',
+                    endpoint: '/api/listing-description-preview',
+                    remoteRead: true,
+                    externalWrite: false,
+                    evidenceKind: 'live_read',
+                    editMode: 'read_only',
                 },
                 {
                     id: 'local-listings',
