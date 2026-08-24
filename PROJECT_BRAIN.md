@@ -549,3 +549,48 @@ This board is the coordinator-facing work queue. The user directs an agent to ex
 **Goal-status changes:** G4 is done and extended (revise for both models, create, end/relist all built and deployed; zero dispatches executed). G7's writer slices and G8's order-writer foundation are **built** — their remaining substance is activation evidence and operator ceremonies, not code. G6 (live parity evidence packet) remains blocked on user-supplied read authority and is now the main remaining verification gap rather than a build gap.
 
 **Single activation entry point:** `docs/ACTIVATION_RUNBOOK.md` — the ordered operator sequence (store init/upgrade to v3, G3 one-click signed-in save, listing ceremonies, MC toggle-off evidence → price/inventory takeovers, `write_orders` app version + MC order-import-off → clamped watermark → per-order import) and the checklist of user-only steps. This container holds no provider credentials; every ceremony runs on the Railway box.
+
+## 15. Brain Index — Task Router (read this, not everything)
+
+Every agent starts with the Section 12 protocol (read `AGENTS.md`, this file's Sections 1–2 and 12, `PROJECT.md` changelog head, and `git log --oneline -20`). After that, read ONLY what your task needs:
+
+| Task area | Read | Code |
+| --- | --- | --- |
+| Any provider write / activation step | `docs/ACTIVATION_RUNBOOK.md` (master operator sequence) | — |
+| Listing revise dispatch (both models) | `docs/LISTING_REVISE_DISPATCH.md` (incl. branded template section) | `src/listing-revise-admin/` |
+| Listing create / end / relist | `docs/LISTING_LIFECYCLE_DISPATCH.md` | `src/listing-lifecycle-admin/` |
+| Price / inventory sync takeover | `docs/PRICE_INVENTORY_DISPATCH.md` | `src/price-inventory-admin/` |
+| Orders (poll, shadow parity, import, cutover) | `docs/ORDER_IMPORT.md` — ABSOLUTE: never import historical orders (L11) | `src/order-import-admin/` |
+| Migration-state store / schema / ceremonies | `docs/MIGRATION_STATE.md`, `docs/MIGRATION_ADMIN.md` | `src/migration-store/`, `src/migration-admin/` |
+| Draft editor UI / workspace / drafts | `docs/LISTING_CONTROL_MODEL.md` (incl. "Editor picker metadata"), `docs/LISTING_CONTROL_ADMIN.md` | `src/web/`, `src/server/listing-draft-service.ts`, `src/server/routes/shadow-api.ts` |
+| eBay description template | template section of `docs/LISTING_REVISE_DISPATCH.md` | `src/server/listing-description-template.ts` |
+| Live listing census / read paths | `docs/AUTHORITATIVE_READ_CAPTURE.md`, `docs/READ_ONLY_PARITY.md` | `src/server/live-listing-catalog*.ts`, `src/server/enriched-listing-detail.ts` |
+| Credentials / auth / 401s | `docs/SHOPIFY_CREDENTIAL_ROTATION.md`, `docs/RELEASE_MAINTENANCE_INCIDENTS.md`, Learnings L1/L8 | `src/shopify/request-verification.ts`, `src/config/credentials.ts` |
+| Deploy / ops / "is it live" | Section 16, `docs/ACTIVATION_RUNBOOK.md` §0–1, Learnings L2/L10 | — |
+| Goals / what to work on | Section 14 + its updates, Section 16 | — |
+| Writer-quarantine invariants | `docs/WRITER_QUARANTINE.md` | `src/server/middleware/` |
+
+**Self-building duty (mandatory):** before finishing any merged work an agent MUST (1) update the Section 14 goal statuses (or append a dated update subsection) if goal state changed, (2) append numbered entries to the Section 17 Learnings Log for anything a future agent would otherwise rediscover the hard way, (3) add a `PROJECT.md` changelog entry, and (4) touch the per-agent entry files (`AGENTS.md`, `CLAUDE.md`, `GROK.md`, `.cursorrules`) only if a safety absolute changed. Learnings are append-only; never rewrite or delete an existing entry.
+
+## 16. State of the System — 2026-08-20
+
+- **Deployed:** Railway auto-deploys `main` (state at writing: `18a39e0`); domain `ebay-sync-app-production.up.railway.app`; volume `/data`; health endpoint reports `buildCommit`. All Marketplace Connect replacement capability is BUILT and DEPLOYED: listing revise (Inventory + Trading models), create, end/relist, price sync, inventory sync, new-order-only import — each behind execution-time operator ceremonies (nothing dispatches on its own; zero ProductPipeline provider dispatches have ever executed).
+- **Activated so far (2026-08-19/20):** production migration store at schema v3 on `/data/migration-state/product-pipeline-migration-v1.sqlite` (durable across deploys); listingRevise ownership established (`product_pipeline`, version 2); draft-save ACK set; embedded-app auth repaired (see L1). Marketplace Connect still owns price, inventory, and orders.
+- **Editor (rebuilt 2026-08-19/20):** metadata-driven pickers (condition dropdown, full-eBay-tree category search with used-categories section, policy/location dropdowns fed by a background facet sweep), sanitized rich-text description (shared allowlist `src/shared/listing-html.ts`), 80-char title counter, header-level "Preview eBay description" (branded template `ucg-branded-v1`, digest-bound at dispatch via `--description-template`).
+- **Order shadow phase (current):** `order-import-admin shadow-poll` compares observed eBay orders against Marketplace Connect's Shopify imports (tag `eBay-<id>`), read-only, no ceremony needed. Cutover checklist when parity holds: Shopify app release with `write_orders` → MC order import OFF (evidence) → ownership → watermark within one hour → per-order imports.
+- **Remaining user-only steps:** first live revise dispatch test; MC toggle-offs for price and inventory; order cutover above; open incident G1 (Shopify credential rotation, Section 14 G1) — the 2026-08-20 auth repair (L1) is evidence toward it but the provider-side rotation never completed.
+- **Deferred/scheduled:** eBay Business Policy management slice (view/edit policies, bulk reassignment; needs `sell.account` scope) — reminder scheduled 2026-09-01.
+
+## 17. Learnings Log (append-only)
+
+- **L1 (2026-08-20, auth):** Shopify signs App Bridge session tokens with the app's CURRENT client secret. The stalled rotation left Railway's `SHOPIFY_CLIENT_SECRET` holding a staged-new value Shopify never adopted → every API call 401'd app-wide. Fix: `SHOPIFY_CLIENT_SECRET` must hold the secret Shopify actually signs with; `SHOPIFY_PREVIOUS_CLIENT_SECRET` requires its `_EXPIRES_AT_UTC` pair (≤1h window) or must not exist — a half-set pair fails ALL verification. Diagnose by HMAC-checking a real session token against every env var (never print values).
+- **L2 (2026-08-19, ops):** The Railway container filesystem is wiped every deploy; only `/data` persists. Durable state (migration store, reports) must use absolute `/data/...` paths. The deployed image lacks `.git`; `mkdir -p .git` in the app root satisfies the repo-root marker (package-name check is the real identity gate).
+- **L3 (2026-08-20, eBay data):** Bulk census calls (GetMyeBaySelling ActiveList, offer pages) omit per-item category names and policy data for legacy Trading listings; per-item `GetItem` carries them. Pattern: bounded background enrichment sweep (≤150 listings, concurrency ≤3, 6h cache, never blocks a request) merged over snapshot facets.
+- **L4 (2026-08-20, eBay rules):** eBay listing descriptions ban active content (no scripts/iframes/forms) and require https images. Any generated description must be deterministic so the dispatch manifest digest binds the exact bytes the operator approved.
+- **L5 (orders):** Marketplace Connect/Codisto tags imported Shopify orders `eBay-<orderid>` — this is the dedup and shadow-parity join key.
+- **L6 (tests):** The 11 `src/credential-admin` test failures are environmental to containers (uid/filesystem-permission assertions) and reproduce on clean bases — never "fix" them, never count them as regressions.
+- **L7 (agents):** Parallel worktree agents may be cut from stale bases. Every agent brief must start with `git fetch origin main` + reset-if-behind, and the integrator must check `git merge-base` before merging; hand-graft small diffs when a branch predates a rebuild of the same file.
+- **L8 (eBay auth):** Runtime eBay user tokens are minted transiently from the stored refresh grant with exact-scope-echo verification. Taxonomy APIs need only `api_scope` (already held). `sell.account` is NOT held — policy names/contents are unavailable until that scope is added (deferred policy slice). Order polling needs its own exchange with exactly `api_scope + sell.fulfillment`.
+- **L9 (contracts):** The server draft validator and the web editor must share one HTML allowlist (`src/shared/listing-html.ts`). Any divergence (e.g. editor emits HTML the server rejects) breaks saves with 400s; change both sides through the shared module only.
+- **L10 (ops):** When a merged feature "isn't there", check the Railway dashboard banner (platform incidents queue deploys) and compare `/health` `buildCommit` against the merge SHA before debugging code.
+- **L11 (orders, ABSOLUTE):** Never import or backfill historical orders (user's one absolute prohibition; incident 2026-02-11). Enforced structurally: production watermark valid only within one hour of establishment (SQL trigger + TS guard), strictly-greater eligibility, one watermark per scope forever, per-order idempotency intents, `eBay-<id>` tag dedup. Do not weaken any of these layers.

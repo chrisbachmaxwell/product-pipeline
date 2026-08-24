@@ -8,9 +8,10 @@
 ## 0. Read First
 
 1. Read this file — safety rules, code conventions, what NOT to do
-2. Read `PROJECT_BRAIN.md` — canonical direction, source-of-truth rules, verified state, unknowns, and handoff protocol
-3. Read `PROJECT.md` — historical architecture, feature status, decision log, and changelog
+2. Read `PROJECT_BRAIN.md` Sections 1–2, 12, and 15 — canonical direction, the handoff protocol, and the **task router**. Use the Section 15 router to read only what your task needs (Section 16 = current system state, Section 17 = learnings log); do NOT read the whole brain or the whole codebase for a scoped task
+3. Read the head of `PROJECT.md` — recent changelog entries
 4. Check `git log --oneline -20` to understand recent changes
+5. Before finishing merged work, perform the Section 15 self-building duty (goal statuses, append-only learnings, changelog)
 5. If touching order sync: re-read the entire **Order Sync Safety** section below
 
 When historical documentation conflicts with `PROJECT_BRAIN.md`, follow the brain and verify the current code. The authorized target is a safe, simple replacement for Marketplace Connect's Used Camera Gear eBay integration. Marketplace Connect remains the incumbent writer during migration; ProductPipeline must stay read-only/shadow for each responsibility until its documented parity, idempotency, canary, reconciliation, approval, and rollback gates pass. AI/product-enrichment is legacy scope for staged removal. No historical order backfill is permitted.
