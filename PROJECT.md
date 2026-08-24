@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-08-19. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-08-20. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,12 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-20: Project Brain v2 — Task Router, State Snapshot, Learnings Log, Per-Agent Entry Files
+
+- `PROJECT_BRAIN.md` gained Section 15 (task router index — agents read only what a task needs, plus the mandatory self-building duty), Section 16 (state of the system as of 2026-08-20), and Section 17 (append-only learnings log L1–L11: auth-secret rotation trap, Railway volume/ephemerality, census facet gaps, eBay active-content rules, `eBay-<id>` dedup key, environmental test failures, agent worktree base-drift, token scopes, shared HTML allowlist, deploy-queue diagnosis, and the structural no-historical-orders guarantee).
+- New thin entry files pointing every coding agent into the brain: `CLAUDE.md` (Claude), `GROK.md` (Grok), `.cursorrules` (Cursor); `AGENTS.md` (OpenAI convention) §0 now routes through Section 15 and carries the self-building duty. Identical substance: protocol pointer, four safety absolutes, conventions, self-building rule.
+- Documentation-only change; no runtime behavior touched.
 
 ### 2026-08-19: Marketplace Connect Replacement Waves 1–2 — Schema v3, Full Writer-Slice Build-Out, Activation Runbook
 
