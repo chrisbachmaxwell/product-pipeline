@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-08-20. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-08-24. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,12 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-24: Goal Board Refresh — G10–G15 Added, Stale Statuses Corrected
+
+- `PROJECT_BRAIN.md` Section 14 gained the 2026-08-24 update: G3/G4 marked done (production save exercised, slices deployed), G7/G8 folded into the new activation goals, G1 re-confirmed open with the 2026-08-20 auth-repair evidence noted.
+- New directed goals with statuses and authorization boundaries: **G10** first production listing-revise dispatch (ready, operator-gated), **G11** price takeover (ready, user-gated), **G12** inventory takeover (ready, user-gated), **G13** order takeover — shadow phase active, cutover sequence defined, L11 absolute governs, **G14** eBay Business Policy slice (deferred to 2026-09-01, reminder scheduled), **G15** branded description rollout (per-dispatch adoption; versioned template immutability rule).
+- Priority order recorded: G10 → G11 → G12 → G13-cutover, G1 when the user can participate. Documentation-only change.
 
 ### 2026-08-20: Project Brain v2 — Task Router, State Snapshot, Learnings Log, Per-Agent Entry Files
 
