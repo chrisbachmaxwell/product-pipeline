@@ -556,6 +556,7 @@ Every agent starts with the Section 12 protocol (read `AGENTS.md`, this file's S
 
 | Task area | Read | Code |
 | --- | --- | --- |
+| Full-replacement path / what is next overall | `docs/REPLACEMENT_ROADMAP.md` (phases, exit checks, order) | — |
 | Any provider write / activation step | `docs/ACTIVATION_RUNBOOK.md` (master operator sequence) | — |
 | Listing revise dispatch (both models) | `docs/LISTING_REVISE_DISPATCH.md` (incl. branded template section) | `src/listing-revise-admin/` |
 | Listing create / end / relist | `docs/LISTING_LIFECYCLE_DISPATCH.md` | `src/listing-lifecycle-admin/` |
@@ -612,3 +613,21 @@ Every agent starts with the Section 12 protocol (read `AGENTS.md`, this file's S
 **G15 — Branded description rollout.** Status: template built and previewable (`ucg-branded-v1`, header-level preview on every listing page); adoption is per-dispatch via `--description-template` (G10 onward). Possible future sub-slice, separately gated: deterministic cross-sell strip (snapshot-at-preflight) and any template revisions (new version string, never mutate `ucg-branded-v1`). Authorization boundary: template output is bound into the approved manifest digest; no independent write path.
 
 **Current priority order (2026-08-24):** G10 → G11 → G12 → G13-cutover (after its shadow evidence), with G1 whenever the user can participate; G14 on its scheduled date; G2/G6/G9 background. Section 16 holds the matching system-state snapshot.
+
+### Update 2026-08-24b — Full-replacement gap audit: G16–G21 added, G6 folded
+
+Audit question: what does Marketplace Connect do that the board did not yet cover? Answers became goals. The ordered master plan with phase gates and checklists lives in **`docs/REPLACEMENT_ROADMAP.md`** — that document, not this list, is the execution order.
+
+**G16 — First production listing-create and end/relist dispatches.** Status: ready after G10; operator-gated. One new SKU created end-to-end through `listing-lifecycle-admin` (item → offer → publish, branded template) and one deliberate end/relist exercise, each with post-dispatch verification. Proves the full lifecycle beyond revise. Authorization boundary: one exact SKU per ceremony; the create target must not already exist on eBay.
+
+**G17 — Fulfillment/tracking sync slice (Shopify → eBay).** Status: NOT BUILT — required before Marketplace Connect can be removed. When an order ships in Shopify, the tracking number and carrier must reach the eBay order (MC does this today; fulfillment is currently a denied responsibility). Scope: schema allowance widening for exactly `fulfillment` (Class B: MC-genesis staged transitions with MC-disabled evidence), a bounded ceremony CLI in the established pattern (eBay createShippingFulfillment via `sell.fulfillment`, already-held scope), observations + reconciliation, then G18 automation eligibility. Authorization boundary: nothing dispatches until the slice is reviewed, MC's fulfillment behavior is recorded off, and ownership is ceremonially established.
+
+**G18 — Steady-state automation with guardrails.** Status: policy decision pending; deliberately AFTER per-responsibility ceremonies have proven themselves. Replacing MC's continuous sync requires relaxing "one operator action per write" for routine operations — a change that must be explicitly authorized per responsibility, never assumed. Scope when authorized: scheduled bounded workers for (a) quantity alignment, (b) price alignment, (c) order poll+import, (d) fulfillment/tracking push — each: delta-only against verified state, per-run caps, rate limits, structural target restrictions identical to the ceremonies, a single kill switch (env flag + quarantine layer stays), full run journaling to the migration store, and daily digest reporting (G19). The no-historical-orders clamp (L11) binds automation exactly as it binds ceremonies. Authorization boundary: build behind disabled flags at will; ENABLING each worker requires its own recorded user approval.
+
+**G19 — Operational monitoring and daily digest.** Status: not built. Failure visibility for steady state: worker/ceremony failures, reconciliation exceptions, unmatched shadow orders, auth breakage (L1 class) surfaced to the operator (email or dashboard page + health endpoint counters) instead of silent logs; daily digest of writes performed/skipped/failed. Read-only over the migration store and app state; no provider calls.
+
+**G20 — Data protection: backups and restore rehearsal.** Status: partial (a listing-control baseline backup exists from 2026-08-14). Scheduled snapshots of `/data` (app DB, listing-control store, migration store, shadow reports) to a location that survives the volume, plus one documented restore rehearsal. The migration store's hash-chained audit makes tamper evident; backups make loss recoverable.
+
+**G21 — Marketplace Connect decommission.** Status: last, gated on all of G10–G13 + G16–G20 complete. Preconditions checklist in the roadmap: every responsibility owned by ProductPipeline with evidence, ≥14 clean days of automated operation with green digests, fulfillment verified on real shipments. Then: export/archive MC settings for records, uninstall the Marketplace Connect app, record the uninstall evidence here, close the board, and document the explicit NON-GOALS that remain manual in eBay itself (refunds/cancellations handling, buyer messages, feedback, promoted listings). Authorization boundary: the uninstall click is the user's alone.
+
+**G6 folded (2026-08-24):** the formal signed evidence-packet machinery is superseded in practice — parity evidence now accrues per responsibility from operational artifacts (G13 shadow-poll reports, G11/G12 drift manifests, post-dispatch observations and reconciliation records in the migration store). The evidence-capture CLI remains available for extra rigor but is no longer on the critical path.

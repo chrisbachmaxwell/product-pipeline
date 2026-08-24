@@ -343,6 +343,11 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-24: Replacement Roadmap and Gap-Audit Goals G16–G21
+
+- Audited the goal board against Marketplace Connect's full behavior; three unscoped gaps became goals: **G17 fulfillment/tracking sync** (Shopify shipment → eBay tracking; not built; hard prerequisite for MC removal), **G18 steady-state automation with guardrails** (the explicit policy decision to relax ceremony-per-write for routine ops, per-responsibility user approval, kill switch), and **G16 first production create + end/relist dispatches**. Also added **G19 monitoring/daily digest**, **G20 backups/restore rehearsal**, **G21 MC decommission with preconditions and explicit non-goals**; **G6** folded (parity evidence now accrues from operational artifacts).
+- New `docs/REPLACEMENT_ROADMAP.md`: the ordered six-phase master path (listing proof → price/inventory takeover → order shadow/cutover → fulfillment → automation/ops → uninstall MC) with per-phase exit checks and USER/AGENT ownership labels; router entry added. Documentation-only change.
+
 ### 2026-08-24: Goal Board Refresh — G10–G15 Added, Stale Statuses Corrected
 
 - `PROJECT_BRAIN.md` Section 14 gained the 2026-08-24 update: G3/G4 marked done (production save exercised, slices deployed), G7/G8 folded into the new activation goals, G1 re-confirmed open with the 2026-08-20 auth-repair evidence noted.
