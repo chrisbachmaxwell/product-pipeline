@@ -94,6 +94,7 @@ async function deriveTarget(shopify, ebay, options, allowAlreadyRecorded = false
         shopify: shopifyOrder,
         ebay: ebayOrder,
         expectedShopifyOrderGid: options.shopifyOrderGid,
+        expectedShopifyFulfillmentGid: options.shopifyFulfillmentGid,
         expectedEbayOrderId: options.ebayOrderId,
         allowAlreadyRecorded,
     });
@@ -180,6 +181,7 @@ export function buildFulfillmentTrackingAdminProgram(dependencies = {}) {
         .showHelpAfterError();
     const withTarget = (command) => command
         .requiredOption('--shopify-order-gid <gid>', 'Exact Shopify order GID')
+        .requiredOption('--shopify-fulfillment-gid <gid>', 'Exact Shopify fulfillment GID')
         .requiredOption('--ebay-order-id <id>', 'Exact eBay order ID');
     program.command('establish-ownership')
         .description('Record MC incumbent -> paused -> ProductPipeline fulfillment ownership')
@@ -459,7 +461,6 @@ export function buildFulfillmentTrackingAdminProgram(dependencies = {}) {
     });
     withTarget(program.command('reconcile')
         .description('Re-read eBay for one outstanding job; never writes to either provider')
-        .requiredOption('--shopify-fulfillment-gid <gid>', 'Exact Shopify fulfillment GID printed by preflight')
         .requiredOption('--manifest-digest <sha256>', 'Exact digest printed by preflight')
         .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
         .option('--accept-absent', 'Explicitly terminalize a still-absent effect as confirmed_missing'))

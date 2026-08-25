@@ -65,6 +65,7 @@ export declare function deriveFulfillmentManifest(input: {
     shopify: ShopifyFulfillmentOrder;
     ebay: EbayFulfillmentOrder;
     expectedShopifyOrderGid: string;
+    expectedShopifyFulfillmentGid: string;
     expectedEbayOrderId: string;
     allowAlreadyRecorded?: boolean;
 }): DerivedFulfillmentManifest;

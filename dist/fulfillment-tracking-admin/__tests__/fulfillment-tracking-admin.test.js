@@ -12,6 +12,7 @@ const SCOPE = {
     ebayMarketplaceId: 'EBAY_US',
 };
 const SHOPIFY_ORDER_GID = 'gid://shopify/Order/1000000001';
+const SHOPIFY_FULFILLMENT_GID = 'gid://shopify/Fulfillment/9001';
 const EBAY_ORDER_ID = '12-34567-89012';
 const TRACKING = '1Z999AA10123456784';
 const roots = [];
@@ -37,7 +38,7 @@ function shopifyFixture(partial = false) {
             { lineItemGid: 'gid://shopify/LineItem/2', quantity: 2 },
         ],
         fulfillments: [{
-                fulfillmentGid: 'gid://shopify/Fulfillment/9001',
+                fulfillmentGid: SHOPIFY_FULFILLMENT_GID,
                 status: 'SUCCESS',
                 createdAtUtc: '2026-08-25T18:00:00.000Z',
                 tracking: [{ company: 'UPS', number: TRACKING }],
@@ -159,6 +160,7 @@ async function preflight(world) {
     await world.run([
         'preflight',
         '--shopify-order-gid', SHOPIFY_ORDER_GID,
+        '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
         '--ebay-order-id', EBAY_ORDER_ID,
     ]);
     const output = JSON.parse(world.stdout.at(-1) ?? '{}');
@@ -175,6 +177,7 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'dispatch',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
             '--manifest-digest', manifestDigest,
             '--migration-store', world.databasePath,
@@ -220,10 +223,22 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'preflight',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
         ]);
         expect(world.writes).toHaveLength(0);
         expect(world.stderr.at(-1)).toContain('FULFILLMENT_PARTIAL_DENIED');
+    });
+    it('denies a mismatched exact Shopify fulfillment GID', async () => {
+        const world = createWorld();
+        await world.run([
+            'preflight',
+            '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', 'gid://shopify/Fulfillment/other',
+            '--ebay-order-id', EBAY_ORDER_ID,
+        ]);
+        expect(world.writes).toHaveLength(0);
+        expect(world.stderr.at(-1)).toContain('FULFILLMENT_ORDER_ID_MISMATCH');
     });
     it('denies dispatch before MC-off ownership evidence is established', async () => {
         const world = createWorld();
@@ -231,6 +246,7 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'dispatch',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
             '--manifest-digest', manifestDigest,
             '--migration-store', world.databasePath,
@@ -251,6 +267,7 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'dispatch',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
             '--manifest-digest', manifestDigest,
             '--migration-store', world.databasePath,
@@ -265,6 +282,7 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'dispatch',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
             '--manifest-digest', firstDigest,
             '--migration-store', world.databasePath,
@@ -281,6 +299,7 @@ describe('fulfillment tracking ceremony', () => {
         await world.run([
             'dispatch',
             '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--shopify-fulfillment-gid', SHOPIFY_FULFILLMENT_GID,
             '--ebay-order-id', EBAY_ORDER_ID,
             '--manifest-digest', secondDigest,
             '--migration-store', world.databasePath,

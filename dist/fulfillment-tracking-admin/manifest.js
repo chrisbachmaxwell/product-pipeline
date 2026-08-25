@@ -51,6 +51,7 @@ function mapsEqual(left, right) {
 }
 export function deriveFulfillmentManifest(input) {
     if (!ORDER_GID.test(input.expectedShopifyOrderGid)
+        || !FULFILLMENT_GID.test(input.expectedShopifyFulfillmentGid)
         || !SAFE_EBAY_ID.test(input.expectedEbayOrderId)) {
         deny('FULFILLMENT_TARGET_INVALID');
     }
@@ -67,6 +68,9 @@ export function deriveFulfillmentManifest(input) {
     const fulfillment = successful[0];
     if (!FULFILLMENT_GID.test(fulfillment.fulfillmentGid)) {
         deny('FULFILLMENT_SOURCE_INVALID');
+    }
+    if (fulfillment.fulfillmentGid !== input.expectedShopifyFulfillmentGid) {
+        deny('FULFILLMENT_ORDER_ID_MISMATCH');
     }
     if (!mapsEqual(quantityMap(input.shopify.lineItems), quantityMap(fulfillment.lineItems))) {
         deny('FULFILLMENT_PARTIAL_DENIED');
