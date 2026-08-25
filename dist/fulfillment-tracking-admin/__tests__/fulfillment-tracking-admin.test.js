@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CURRENT_SCHEMA_VERSION, SCHEMA_MIGRATIONS, createMigrationStore, deriveScopeKey, sha256Digest, } from '../../migration-store/index.js';
+import { CURRENT_SCHEMA_VERSION, SCHEMA_MIGRATIONS, createMigrationStore, deriveScopeKey, openMigrationStore, sha256Digest, } from '../../migration-store/index.js';
 import { buildFulfillmentTrackingAdminProgram } from '../program.js';
 import { buildShippingFulfillmentBody, createEbayFulfillmentAdapter, } from '../ebay-fulfillment-adapter.js';
 const SCOPE = {
@@ -96,6 +96,8 @@ function createWorld(input = {}) {
                         fulfillmentId: 'fulfillment-1',
                         trackingNumber: manifest.trackingNumber,
                         shippingCarrierCode: manifest.shippingCarrierCode,
+                        shippedDate: manifest.shippedDate,
+                        lineItems: manifest.lineItems,
                     }],
             };
         },
@@ -119,6 +121,32 @@ function createWorld(input = {}) {
     return world;
 }
 async function establishOwnership(world) {
+    const store = openMigrationStore({ databasePath: world.databasePath, expectedScope: SCOPE });
+    const shopifyOrder = store.registerIdentity({
+        platform: 'shopify',
+        kind: 'order',
+        bindingKey: `shopify-order:${SHOPIFY_ORDER_GID}`,
+        storeDomain: SCOPE.shopifyStoreDomain,
+        externalGid: SHOPIFY_ORDER_GID,
+    }, { eventId: 'identity:shopify-order', occurredAtUtc: '2026-08-25T17:59:59.000Z' });
+    const ebayOrder = store.registerIdentity({
+        platform: 'ebay',
+        kind: 'order',
+        bindingKey: `ebay-order:${EBAY_ORDER_ID}`,
+        environment: SCOPE.ebayEnvironment,
+        sellerId: SCOPE.ebaySellerId,
+        marketplaceId: SCOPE.ebayMarketplaceId,
+        externalId: EBAY_ORDER_ID,
+    }, { eventId: 'identity:ebay-order', occurredAtUtc: '2026-08-25T17:59:59.001Z' });
+    store.linkObservedExistingOrder({
+        linkId: 'order-link:fixture',
+        ebayOrderIdentityKey: ebayOrder.identityKey,
+        shopifyOrderIdentityKey: shopifyOrder.identityKey,
+        evidenceDigest: digest('exact-order-link-evidence'),
+        linkedAtUtc: '2026-08-25T17:59:59.002Z',
+        audit: { eventId: 'order-link:fixture', occurredAtUtc: '2026-08-25T17:59:59.002Z' },
+    });
+    store.close();
     await world.run([
         'establish-ownership',
         '--migration-store', world.databasePath,
@@ -209,6 +237,56 @@ describe('fulfillment tracking ceremony', () => {
         ]);
         expect(world.writes).toHaveLength(0);
         expect(world.stderr.at(-1)).toContain('FULFILLMENT_OWNERSHIP_NOT_ESTABLISHED');
+    });
+    it('denies an arbitrary individually valid order pair without its durable link', async () => {
+        const world = createWorld();
+        await world.run([
+            'establish-ownership',
+            '--migration-store', world.databasePath,
+            '--confirm-scope', deriveScopeKey(SCOPE),
+            '--baseline-evidence', digest('mc-fulfillment-baseline'),
+            '--mc-disabled-evidence', digest('mc-fulfillment-disabled'),
+        ]);
+        const manifestDigest = await preflight(world);
+        await world.run([
+            'dispatch',
+            '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--ebay-order-id', EBAY_ORDER_ID,
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.databasePath,
+        ]);
+        expect(world.writes).toHaveLength(0);
+        expect(world.stderr.at(-1)).toContain('FULFILLMENT_ORDER_LINK_REQUIRED');
+    });
+    it('permits only one fulfillment intent for an exact linked order pair', async () => {
+        const world = createWorld();
+        await establishOwnership(world);
+        const firstDigest = await preflight(world);
+        await world.run([
+            'dispatch',
+            '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--ebay-order-id', EBAY_ORDER_ID,
+            '--manifest-digest', firstDigest,
+            '--migration-store', world.databasePath,
+        ]);
+        world.shopify = {
+            ...world.shopify,
+            fulfillments: [{
+                    ...world.shopify.fulfillments[0],
+                    tracking: [{ company: 'UPS', number: '1Z999AA10123456785' }],
+                }],
+        };
+        world.ebay = { ...world.ebay, fulfillmentStatus: 'NOT_STARTED', shippingFulfillments: [] };
+        const secondDigest = await preflight(world);
+        await world.run([
+            'dispatch',
+            '--shopify-order-gid', SHOPIFY_ORDER_GID,
+            '--ebay-order-id', EBAY_ORDER_ID,
+            '--manifest-digest', secondDigest,
+            '--migration-store', world.databasePath,
+        ]);
+        expect(world.writes).toHaveLength(1);
+        expect(world.stderr.at(-1)).toContain('MIGRATION_STORE_CONFLICT');
     });
     it('keeps tracking out of output and builds only the bounded eBay payload', () => {
         const manifest = {

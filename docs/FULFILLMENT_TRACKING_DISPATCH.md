@@ -115,9 +115,7 @@ node dist/fulfillment-tracking-admin/index.js reconcile \
   --shopify-fulfillment-gid gid://shopify/Fulfillment/<id> \
   --ebay-order-id <id> \
   --manifest-digest sha256:<digest> \
-  --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite \
-  --job-id <job-id> \
-  --attempt-id <attempt-id>
+  --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite
 ```
 
 This performs an eBay provider read only and can recover a job left at the
@@ -129,6 +127,10 @@ is not yet visible, the job stays `reconciliation_required`. Use
 `--accept-absent` only
 after the documented observation window and direct eBay review; it terminalizes
 the attempt as `confirmed_missing` but does not retry.
+
+Job and attempt IDs are deterministic from the linked order pair and approved
+manifest. The reconcile command reconstructs them, so a crash before dispatch
+output cannot make an outcome-unknown attempt undiscoverable.
 
 ## Rollback and pause
 

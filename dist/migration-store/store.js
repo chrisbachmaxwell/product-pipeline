@@ -902,6 +902,14 @@ class MigrationStoreImpl {
             throw new MigrationStoreError('INVALID_INPUT', 'Intent audit time must equal creation time');
         }
         this.assertActionIdentityShape(input.action, source, target);
+        if (input.action === 'sync_fulfillment'
+            && this.database.prepare(`SELECT 1 FROM order_links
+         WHERE scope_key = ?
+           AND shopify_order_identity_key = ?
+           AND ebay_order_identity_key = ?
+         LIMIT 1`).get(this.scopeKey, source.identity_key, target?.identity_key ?? '') === undefined) {
+            throw new MigrationStoreError('OWNERSHIP_DENIED', 'Fulfillment intent requires the exact durable Shopify/eBay order link');
+        }
         const intentKey = deriveIdempotencyKey({
             scopeKey: this.scopeKey,
             action: input.action,
@@ -955,6 +963,17 @@ class MigrationStoreImpl {
             target_identity_key, approval_target_identity_key, desired_state_digest
            FROM idempotency_intents WHERE intent_key = ? AND scope_key = ?`)
             .get(key, this.scopeKey) ?? null);
+    }
+    hasExactOrderLink(input) {
+        this.assertOpen();
+        const shopifyOrderIdentityKey = assertDigest(input.shopifyOrderIdentityKey, 'shopifyOrderIdentityKey');
+        const ebayOrderIdentityKey = assertDigest(input.ebayOrderIdentityKey, 'ebayOrderIdentityKey');
+        return this.database.prepare(`SELECT 1
+       FROM order_links
+       WHERE scope_key = ?
+         AND shopify_order_identity_key = ?
+         AND ebay_order_identity_key = ?
+       LIMIT 1`).get(this.scopeKey, shopifyOrderIdentityKey, ebayOrderIdentityKey) !== undefined;
     }
     getJobStatus(jobIdInput) {
         this.assertOpen();

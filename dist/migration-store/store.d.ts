@@ -117,6 +117,10 @@ declare class MigrationStoreImpl {
         audit: AuditContext;
     }): Digest;
     getIntent(intentKey: string): IntentRow | null;
+    hasExactOrderLink(input: {
+        shopifyOrderIdentityKey: string;
+        ebayOrderIdentityKey: string;
+    }): boolean;
     getJobStatus(jobIdInput: string): {
         jobId: string;
         intentKey: Digest;

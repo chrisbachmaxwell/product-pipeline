@@ -452,8 +452,12 @@ export function buildFulfillmentTrackingAdminProgram(
             evidenceDigest: expectedDigest,
             audit: { eventId: `approval:${uuid()}`, occurredAtUtc: issuedAtUtc },
           });
-          const jobId = `fulfillment-job:${uuid()}`;
-          const attemptId = `fulfillment-attempt:${uuid()}`;
+          // Deterministic IDs make an outcome-unknown dispatch discoverable
+          // from the exact order pair and approved manifest even if the
+          // process exits before it can print them.
+          const intentSuffix = intentKey.slice(7, 47);
+          const jobId = `fulfillment-job:${intentSuffix}`;
+          const attemptId = `fulfillment-attempt:${intentSuffix}`;
           const reservedAtUtc = clock();
           store.reserveExecutionJob({
             jobId,
@@ -543,14 +547,10 @@ export function buildFulfillmentTrackingAdminProgram(
     )
     .requiredOption('--manifest-digest <sha256>', 'Exact digest printed by preflight')
     .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
-    .requiredOption('--job-id <id>', 'Exact job ID printed by dispatch')
-    .requiredOption('--attempt-id <id>', 'Exact attempt ID printed by dispatch')
     .option('--accept-absent', 'Explicitly terminalize a still-absent effect as confirmed_missing'))
     .action(async (options: TargetOptions & {
       manifestDigest: string;
       migrationStore: string;
-      jobId: string;
-      attemptId: string;
       shopifyFulfillmentGid: string;
       acceptAbsent?: boolean;
     }) => {
@@ -576,7 +576,10 @@ export function buildFulfillmentTrackingAdminProgram(
         const clock = clockFrom(now);
         try {
           if (store.getIntent(intentKey) === null) deny('FULFILLMENT_INTENT_NOT_FOUND');
-          const job = store.getJobStatus(options.jobId);
+          const intentSuffix = intentKey.slice(7, 47);
+          const jobId = `fulfillment-job:${intentSuffix}`;
+          const attemptId = `fulfillment-attempt:${intentSuffix}`;
+          const job = store.getJobStatus(jobId);
           if (!job || job.intentKey !== intentKey || job.responsibility !== 'fulfillment') {
             deny('FULFILLMENT_JOB_MISMATCH');
           }
@@ -584,12 +587,12 @@ export function buildFulfillmentTrackingAdminProgram(
           if (activeJob.state === 'dispatching') {
             const requiredAtUtc = clock();
             store.requirePostDispatchReconciliation({
-              jobId: options.jobId,
-              attemptId: options.attemptId,
+              jobId,
+              attemptId,
               occurredAtUtc: requiredAtUtc,
               evidenceDigest: expectedDigest,
               audit: {
-                eventId: `job:${options.jobId}:reconciliation-required`,
+                eventId: `job:${jobId}:reconciliation-required`,
                 occurredAtUtc: requiredAtUtc,
               },
             });
@@ -604,8 +607,8 @@ export function buildFulfillmentTrackingAdminProgram(
             expectedManifestDigest: expectedDigest,
             intentKey,
             targetIdentityKey,
-            jobId: options.jobId,
-            attemptId: options.attemptId,
+            jobId,
+            attemptId,
             acceptAbsent: options.acceptAbsent === true,
             clock,
             uuid,
@@ -613,8 +616,8 @@ export function buildFulfillmentTrackingAdminProgram(
           io.stdout(JSON.stringify({
             command: 'reconcile',
             status: result.resolution === null ? 'unresolved' : 'reconciled',
-            jobId: options.jobId,
-            attemptId: options.attemptId,
+            jobId,
+            attemptId,
             effect: result.effect,
             resolution: result.resolution,
             reconciliationRunId: result.runId,

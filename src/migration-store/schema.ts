@@ -1738,6 +1738,18 @@ ON idempotency_intents (
 )
 WHERE action = 'sync_fulfillment';
 
+CREATE TRIGGER fulfillment_intents_require_exact_order_link
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'sync_fulfillment' AND NOT EXISTS (
+  SELECT 1 FROM order_links link
+  WHERE link.scope_key = NEW.scope_key
+    AND link.shopify_order_identity_key = NEW.source_identity_key
+    AND link.ebay_order_identity_key = NEW.target_identity_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'fulfillment intent requires exact durable order link');
+END;
+
 DROP TRIGGER ownership_versions_enforce_safe_transition;
 CREATE TRIGGER ownership_versions_enforce_safe_transition
 BEFORE INSERT ON ownership_versions

@@ -35,6 +35,11 @@ export type EbayFulfillmentOrder = Readonly<{
         fulfillmentId: string;
         trackingNumber: string | null;
         shippingCarrierCode: string | null;
+        shippedDate: string | null;
+        lineItems: readonly Readonly<{
+            lineItemId: string;
+            quantity: number;
+        }>[];
     }>[];
 }>;
 export type FulfillmentManifest = Readonly<{
@@ -64,6 +69,9 @@ export declare function deriveFulfillmentManifest(input: {
     allowAlreadyRecorded?: boolean;
 }): DerivedFulfillmentManifest;
 export declare function compareFulfillmentEffect(input: {
-    manifest: FulfillmentManifest;
+    expectedManifestDigest: Digest;
+    shopifyOrderGid: string;
+    ebayOrderId: string;
+    shopifyFulfillmentGid: string;
     ebay: EbayFulfillmentOrder;
 }): 'effect_observed' | 'effect_absent';

@@ -148,7 +148,7 @@ export function deriveFulfillmentManifest(input: {
     }
     seen.add(entry.lineItemId);
     return Object.freeze({ lineItemId: entry.lineItemId, quantity: entry.quantity });
-  });
+  }).sort((left, right) => left.lineItemId.localeCompare(right.lineItemId));
   const manifest: FulfillmentManifest = Object.freeze({
     schemaVersion: 1 as const,
     scope: LISTING_DRAFT_SCOPE,
@@ -187,7 +187,9 @@ export function compareFulfillmentEffect(input: {
       shippedDate: canonicalUtc(entry.shippedDate),
       shippingCarrierCode: entry.shippingCarrierCode,
       trackingNumber: entry.trackingNumber,
-      lineItems: entry.lineItems,
+      lineItems: Object.freeze(
+        [...entry.lineItems].sort((left, right) => left.lineItemId.localeCompare(right.lineItemId)),
+      ),
     });
     return sha256Digest(candidate) === input.expectedManifestDigest;
   });
