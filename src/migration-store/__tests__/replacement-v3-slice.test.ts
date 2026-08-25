@@ -9,7 +9,8 @@
  * not weaker: a production order watermark now requires the recorded
  * ProductPipeline single-writer orderImport ownership chain AND the one-hour
  * no-backfill clamp, so a historical eBay order import remains structurally
- * impossible. mapping, fulfillment, and feedback stay fully denied.
+ * impossible. The later v4 fulfillment slice changes only fulfillment;
+ * mapping and feedback stay fully denied.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -631,13 +632,13 @@ describe('schema v3 production order watermark clamp', () => {
   });
 });
 
-describe('schema v3 keeps mapping, fulfillment, and feedback fully denied', () => {
+describe('current schema keeps mapping and feedback fully denied', () => {
   it('denies their production intents and ownership records', () => {
     const store = createProductionStore();
     const variant = registerVariant(store, 'PPV3-DENIED-001', '55396000563493');
     const listing = registerEbayIdentity(store, 'listing', '147502608418');
 
-    for (const action of ['update_mapping', 'sync_fulfillment', 'sync_feedback'] as const) {
+    for (const action of ['update_mapping', 'sync_feedback'] as const) {
       expectMigrationError(() => store.createIdempotencyIntent({
         action,
         sourceIdentityKey: variant.identityKey,
@@ -647,7 +648,7 @@ describe('schema v3 keeps mapping, fulfillment, and feedback fully denied', () =
         audit: { eventId: `intent:denied:${action}`, occurredAtUtc: '2026-08-19T18:00:05.000Z' },
       }), 'OWNERSHIP_DENIED');
     }
-    for (const responsibility of ['mapping', 'fulfillment', 'feedback'] as const) {
+    for (const responsibility of ['mapping', 'feedback'] as const) {
       expectMigrationError(() => store.recordOwnershipVersion({
         responsibility,
         version: 1,
@@ -743,14 +744,14 @@ describe('schema v3 upgrade path', () => {
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-19T18:00:00.000Z',
-    })).toEqual({ fromVersion: 2, toVersion: 3 });
+    })).toEqual({ fromVersion: 2, toVersion: 4 });
 
     // Upgrading again is an explicit no-op.
     expect(upgradeMigrationStore({
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-19T18:01:00.000Z',
-    })).toEqual({ fromVersion: 3, toVersion: 3 });
+    })).toEqual({ fromVersion: 4, toVersion: 4 });
 
     const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
     openStores.push(store);
@@ -795,7 +796,7 @@ describe('schema v3 upgrade path', () => {
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-19T18:00:00.000Z',
-    })).toEqual({ fromVersion: 1, toVersion: 3 });
+    })).toEqual({ fromVersion: 1, toVersion: 4 });
     const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
     openStores.push(store);
     expect(store.getCounts()).toMatchObject({ target_effect_observations: 0, audit_events: 1 });

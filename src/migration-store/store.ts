@@ -44,7 +44,7 @@ const MAX_APPROVAL_TTL_MS = 15 * 60 * 1000;
  */
 const NO_BACKFILL_CLAMP_MS = 60 * 60 * 1000;
 
-/** The exact schema-v3 production writer intent actions; all others stay denied. */
+/** The exact schema-v4 production writer intent actions; all others stay denied. */
 const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
   'revise_ebay_listing',
   'create_ebay_listing',
@@ -52,6 +52,7 @@ const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
   'update_ebay_price',
   'update_ebay_inventory',
   'import_shopify_order',
+  'sync_fulfillment',
 ];
 
 /**
@@ -75,9 +76,10 @@ const VERIFIED_INCUMBENT_RESPONSIBILITIES: readonly Responsibility[] = [
   'orderImport',
   'price',
   'inventory',
+  'fulfillment',
 ];
 
-/** The six writer responsibilities enabled by the schema-v3 production slice. */
+/** The seven writer responsibilities enabled through the schema-v4 fulfillment slice. */
 export const PRODUCTION_ENABLED_RESPONSIBILITIES: readonly Responsibility[] = [
   ...VERIFIED_INCUMBENT_RESPONSIBILITIES,
   ...NO_INCUMBENT_RESPONSIBILITIES,
@@ -89,6 +91,7 @@ const TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES: readonly Responsibility[] = [
   'listingEndRelist',
   'price',
   'inventory',
+  'fulfillment',
 ];
 
 type Sqlite = InstanceType<typeof Database>;
@@ -2407,8 +2410,8 @@ class MigrationStoreImpl {
   }): string {
     const productionRunAllowed =
       (input.mode === 'shadow' && !input.authoritative && input.externalWritesObserved === 0)
-      // The reviewed replacement slice: an exact-target post-dispatch
-      // production canary reconciliation, for one of the six enabled writer
+      // The reviewed replacement slices: an exact-target post-dispatch
+      // production canary reconciliation for one enabled writer
       // responsibilities, that itself performs zero writes.
       || (
         input.mode === 'production_canary'

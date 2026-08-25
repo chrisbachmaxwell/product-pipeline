@@ -650,7 +650,7 @@ describe('migration-admin strict local boundary', () => {
     expect(JSON.parse(stdout[0])).toMatchObject({
       command: 'upgrade',
       status: 'already-current',
-      schemaUpgrade: { fromVersion: 3, toVersion: 3 },
+      schemaUpgrade: { fromVersion: 4, toVersion: 4 },
     });
   });
 

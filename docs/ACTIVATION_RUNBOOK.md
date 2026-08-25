@@ -40,12 +40,13 @@ Per-slice runbooks with exact flags, error codes, and rollback procedures:
 | Listing create + end/relist | `dist/listing-lifecycle-admin/index.js` | `docs/LISTING_LIFECYCLE_DISPATCH.md` |
 | Price + inventory alignment | `dist/price-inventory-admin/index.js` | `docs/PRICE_INVENTORY_DISPATCH.md` |
 | New-order-only import | `dist/order-import-admin/index.js` | `docs/ORDER_IMPORT.md` |
+| Fulfillment/tracking | `dist/fulfillment-tracking-admin/index.js` | `docs/FULFILLMENT_TRACKING_DISPATCH.md` |
 
 ## 1. One-time foundation (do first, in order)
 
 1. **Confirm deploy.** `GET /health` on the production service must report `ok`.
    The deployed revision must include `main` ≥ `2bcadc9` (wave 2).
-2. **Initialize or upgrade the production migration-state store to schema v3.**
+2. **Initialize or upgrade the production migration-state store to schema v4.**
    - Fresh store: `migration-admin init` (see `docs/MIGRATION_ADMIN.md`).
    - Existing v1/v2 store: `migration-admin verify`, then `migration-admin upgrade`
      with the exact catalog-digest confirmation it prints, then `verify` again.
@@ -129,12 +130,28 @@ evidence, and ownership ceremony.
 - [ ] Marketplace Connect: turn off **Sync inventory** (§4) — evidence captured
 - [ ] Marketplace Connect: turn off **order import** (§5.2) — evidence captured
 - [ ] Shopify: release/install app version with `write_orders` (§5.1)
+- [ ] Marketplace Connect: after order cutover, record fulfillment/tracking behavior OFF
+- [ ] Establish fulfillment ownership and approve each exact full-order dispatch
 - [ ] Railway shell access for every ceremony in §§1–5
 - [ ] Signed-in browser session for the one-click draft save (§1.3)
 - [ ] Each individual dispatch approval (the ceremonies mint single-use, ≤15-minute
       approvals; nothing dispatches without an operator at the keyboard)
 
-## 7. Rollback posture
+## 7. Fulfillment/tracking takeover (after order cutover)
+
+1. **USER-ONLY:** record Marketplace Connect's residual
+   fulfillment/tracking behavior OFF with evidence. Order import being off is
+   not sufficient evidence by itself.
+2. Run `fulfillment-tracking-admin establish-ownership` with the baseline and
+   MC-disabled evidence digests.
+3. For one shipped order at a time: `preflight` with the exact Shopify order
+   GID and eBay order ID, review the redacted manifest digest, then `dispatch`.
+   Partial or split shipments are denied. See
+   `docs/FULFILLMENT_TRACKING_DISPATCH.md`.
+4. Do not add a webhook, scheduler, or worker until G18 automation is
+   separately authorized.
+
+## 8. Rollback posture
 
 - Ownership transitions are recorded, append-only, and reversible by recording a new
   transition back to `paused`; re-enabling the corresponding Marketplace Connect

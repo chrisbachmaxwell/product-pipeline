@@ -281,8 +281,8 @@ describe('migration-store filesystem and production boundary regressions', () =>
       audit: { eventId: 'production-watermark-denied', occurredAtUtc: '2026-08-11T20:00:03.000Z' },
     })).toThrow(/Production watermark requires current ProductPipeline single-writer orderImport ownership/);
 
-    // mapping, fulfillment, and feedback remain fully denied in production.
-    for (const responsibility of ['mapping', 'fulfillment', 'feedback'] as const) {
+    // mapping and feedback remain fully denied in production.
+    for (const responsibility of ['mapping', 'feedback'] as const) {
       expect(() => store.recordOwnershipVersion({
         responsibility,
         version: 1,

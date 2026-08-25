@@ -120,6 +120,7 @@ export const TARGET_EFFECT_RESPONSIBILITIES = [
   'listingEndRelist',
   'price',
   'inventory',
+  'fulfillment',
 ] as const;
 
 export type TargetEffectResponsibility = (typeof TARGET_EFFECT_RESPONSIBILITIES)[number];

@@ -387,6 +387,16 @@ The value is append-only local draft state. It does not update eBay, and this re
 
 That procedure can invoke exactly one descriptor-bound file-mode change to \`0600\`. It has no automatic rollback, restore, or second permission-write path and cannot edit database content, read or rotate a token, contact Shopify, or change any product, listing, order, price, or inventory state. If its outcome is interrupted or uncertain, stop: run the documented option-free read-only diagnostic, health check, and expected DB-backed app read, and never retry the repair blindly. Never use a generic \`chmod\` command or paste credentials into ProductPipeline.`,
   },
+  {
+    question: 'How does fulfillment tracking reach eBay?',
+    category: 'eBay',
+    sort_order: 7,
+    answer: `Fulfillment tracking is not automatic. An operator uses the standalone fulfillment ceremony for one exact Shopify order and one exact eBay order.
+
+Before any dispatch, Marketplace Connect fulfillment behavior must be recorded off, ProductPipeline fulfillment ownership must be established, and a fresh preflight must prove there is exactly one successful full-order Shopify fulfillment with one tracking number. Partial and split shipments are denied.
+
+The dispatch creates at most one eBay shipping fulfillment and immediately reconciles it. Tracking values are not printed or stored as raw migration-state data. The app server, webhooks, schedulers, and workers cannot invoke this ceremony. See \`docs/FULFILLMENT_TRACKING_DISPATCH.md\` for the operator steps.`,
+  },
 ];
 
 /**

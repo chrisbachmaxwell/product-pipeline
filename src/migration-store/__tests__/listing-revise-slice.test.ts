@@ -276,8 +276,8 @@ describe('production listing-revise execution slice', () => {
     const store = createProductionStore();
     const { variant, listing } = registerReviseIdentities(store);
 
-    // The mapping/fulfillment/feedback production intent actions stay denied.
-    for (const action of ['update_mapping', 'sync_fulfillment', 'sync_feedback'] as const) {
+    // Mapping and feedback production intent actions stay denied.
+    for (const action of ['update_mapping', 'sync_feedback'] as const) {
       expectMigrationError(() => store.createIdempotencyIntent({
         action,
         sourceIdentityKey: variant.identityKey,
@@ -288,8 +288,8 @@ describe('production listing-revise execution slice', () => {
       }), 'OWNERSHIP_DENIED');
     }
 
-    // Production ownership stays denied for mapping/fulfillment/feedback.
-    for (const responsibility of ['mapping', 'fulfillment', 'feedback'] as const) {
+    // Production ownership stays denied for mapping/feedback.
+    for (const responsibility of ['mapping', 'feedback'] as const) {
       expectMigrationError(() => store.recordOwnershipVersion({
         responsibility,
         version: 1,
@@ -574,14 +574,14 @@ describe('migration store schema upgrade', () => {
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-14T20:00:00.000Z',
-    })).toEqual({ fromVersion: 1, toVersion: 3 });
+    })).toEqual({ fromVersion: 1, toVersion: 4 });
 
     // Upgrading again is an explicit no-op.
     expect(upgradeMigrationStore({
       databasePath,
       expectedScope: PRODUCTION_SCOPE,
       appliedAtUtc: '2026-08-14T20:01:00.000Z',
-    })).toEqual({ fromVersion: 3, toVersion: 3 });
+    })).toEqual({ fromVersion: 4, toVersion: 4 });
 
     const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
     openStores.push(store);
