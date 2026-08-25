@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, } from '../safety/responsibilities.js';
 import { INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY } from './types.js';
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const MIGRATION_STORE_APPLICATION_ID = 0x50504d53;
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ');
 const migrationResponsibilitiesSql = sqlList(MIGRATION_RESPONSIBILITIES);
@@ -1671,6 +1671,263 @@ BEGIN
   SELECT RAISE(ABORT, 'attempt resolution lacks authoritative target reconciliation');
 END;
 `;
+/**
+ * Schema version 4 — the inert G17 fulfillment/tracking slice.
+ *
+ * This widens production capability for exactly one previously denied
+ * Class-B responsibility: fulfillment. Marketplace Connect remains the
+ * truthful genesis owner and ProductPipeline ownership still requires the
+ * staged MC -> paused -> ProductPipeline evidence chain. The existing
+ * sync_fulfillment action, production-canary reconciliation, and durable
+ * target-effect observation machinery are extended without enabling mapping
+ * or feedback.
+ */
+const migrationFourSql = `
+DROP TRIGGER idempotency_intents_deny_production;
+CREATE TRIGGER idempotency_intents_deny_production
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key AND scope.ebay_environment = 'production'
+)
+AND NEW.action NOT IN (
+  'revise_ebay_listing', 'create_ebay_listing', 'end_or_relist_ebay_listing',
+  'update_ebay_price', 'update_ebay_inventory', 'import_shopify_order',
+  'sync_fulfillment'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'production writer intents are disabled');
+END;
+
+DROP TRIGGER ownership_versions_enforce_safe_transition;
+CREATE TRIGGER ownership_versions_enforce_safe_transition
+BEFORE INSERT ON ownership_versions
+WHEN (
+  NEW.version = 1 AND NEW.owner != 'marketplace_connect'
+  AND NOT (
+    NEW.responsibility IN ('listingCreate', 'listingRevise', 'listingEndRelist')
+    AND NEW.owner = 'paused'
+  )
+)
+OR (
+  NEW.version > 1 AND NOT EXISTS (
+    SELECT 1 FROM ownership_versions previous
+    WHERE previous.scope_key = NEW.scope_key
+      AND previous.responsibility = NEW.responsibility
+      AND previous.version = NEW.version - 1
+      AND (
+        (previous.owner = 'marketplace_connect' AND NEW.owner = 'paused')
+        OR (previous.owner = 'paused' AND NEW.owner IN ('marketplace_connect', 'product_pipeline'))
+        OR (previous.owner = 'product_pipeline' AND NEW.owner = 'paused')
+      )
+  )
+)
+OR (
+  NEW.responsibility IN ('listingCreate', 'listingRevise', 'listingEndRelist')
+  AND NEW.owner = 'marketplace_connect'
+)
+OR EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key
+    AND scope.ebay_environment = 'production'
+    AND NOT (
+      (
+        NEW.version = 1
+        AND NEW.owner = 'marketplace_connect'
+        AND NEW.responsibility IN ('orderImport', 'price', 'inventory', 'fulfillment')
+      )
+      OR NEW.responsibility IN ('listingCreate', 'listingRevise', 'listingEndRelist')
+      OR (
+        NEW.responsibility IN ('orderImport', 'price', 'inventory', 'fulfillment')
+        AND NEW.version > 1
+        AND EXISTS (
+          SELECT 1 FROM ownership_versions previous
+          WHERE previous.scope_key = NEW.scope_key
+            AND previous.responsibility = NEW.responsibility
+            AND previous.version = NEW.version - 1
+            AND (
+              (previous.owner = 'marketplace_connect' AND NEW.owner = 'paused')
+              OR (previous.owner = 'paused' AND NEW.owner = 'product_pipeline')
+              OR (previous.owner = 'product_pipeline' AND NEW.owner = 'paused')
+            )
+        )
+      )
+    )
+)
+OR EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN job_events latest ON latest.job_id = job.job_id
+  WHERE job.scope_key = NEW.scope_key
+    AND job.responsibility = NEW.responsibility
+    AND latest.sequence = (
+      SELECT MAX(candidate.sequence) FROM job_events candidate WHERE candidate.job_id = job.job_id
+    )
+    AND latest.to_state IN ('dispatching', 'reconciliation_required')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'unsafe ownership transition');
+END;
+
+DROP TRIGGER reconciliation_runs_enforce_production_shadow_only;
+CREATE TRIGGER reconciliation_runs_enforce_production_shadow_only
+BEFORE INSERT ON reconciliation_runs
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key
+    AND scope.ebay_environment = 'production'
+    AND NOT (
+      (NEW.mode = 'shadow' AND NEW.authoritative = 0 AND NEW.external_writes_observed = 0)
+      OR (
+        NEW.mode = 'production_canary'
+        AND NEW.responsibility IN (
+          'orderImport', 'price', 'inventory', 'fulfillment',
+          'listingCreate', 'listingRevise', 'listingEndRelist'
+        )
+        AND NEW.external_writes_observed = 0
+      )
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'production reconciliation is shadow-only and non-authoritative');
+END;
+
+DROP TRIGGER attempt_resolutions_require_authoritative_target_reconciliation;
+DROP TRIGGER target_effect_observations_enforce_binding;
+DROP TRIGGER target_effect_observations_deny_conflicting_insert;
+DROP TRIGGER target_effect_observations_deny_delete;
+DROP TRIGGER target_effect_observations_deny_update;
+
+ALTER TABLE target_effect_observations RENAME TO target_effect_observations_v3;
+CREATE TABLE target_effect_observations (
+  observation_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES reconciliation_runs(run_id),
+  intent_key TEXT NOT NULL REFERENCES idempotency_intents(intent_key),
+  target_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  responsibility TEXT NOT NULL CHECK (
+    responsibility IN ('listingCreate', 'listingEndRelist', 'price', 'inventory', 'fulfillment')
+  ),
+  effect TEXT NOT NULL CHECK (effect IN ('effect_observed', 'effect_absent')),
+  observed_digest TEXT NOT NULL CHECK (${digestCheck('observed_digest')}),
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL
+);
+INSERT INTO target_effect_observations SELECT * FROM target_effect_observations_v3;
+DROP TABLE target_effect_observations_v3;
+
+CREATE TRIGGER target_effect_observations_deny_update
+BEFORE UPDATE ON target_effect_observations
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations is append-only');
+END;
+CREATE TRIGGER target_effect_observations_deny_delete
+BEFORE DELETE ON target_effect_observations
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations is append-only');
+END;
+CREATE TRIGGER target_effect_observations_deny_conflicting_insert
+BEFORE INSERT ON target_effect_observations
+WHEN EXISTS (
+  SELECT 1 FROM target_effect_observations
+  WHERE observation_id = NEW.observation_id OR run_id = NEW.run_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations replay or replacement denied');
+END;
+CREATE TRIGGER target_effect_observations_enforce_binding
+BEFORE INSERT ON target_effect_observations
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM reconciliation_runs run
+  JOIN idempotency_intents intent ON intent.intent_key = NEW.intent_key
+  WHERE run.run_id = NEW.run_id
+    AND run.responsibility = NEW.responsibility
+    AND run.target_identity_key = NEW.target_identity_key
+    AND intent.responsibility = NEW.responsibility
+    AND intent.approval_target_identity_key = NEW.target_identity_key
+    AND intent.scope_key = run.scope_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'target effect observation binding mismatch');
+END;
+
+CREATE TRIGGER attempt_resolutions_require_authoritative_target_reconciliation
+BEFORE INSERT ON attempt_resolutions
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM intent_attempts attempt
+  JOIN execution_jobs job ON job.job_id = attempt.job_id
+  JOIN idempotency_intents intent ON intent.intent_key = attempt.intent_key
+  JOIN reconciliation_runs run ON run.run_id = NEW.reconciliation_run_id
+  JOIN job_events reconciliation_event ON reconciliation_event.job_id = job.job_id
+  WHERE attempt.attempt_id = NEW.attempt_id
+    AND job.scope_key = run.scope_key
+    AND job.responsibility = run.responsibility
+    AND intent.approval_target_identity_key = run.target_identity_key
+    AND run.status = 'passed'
+    AND run.authoritative = 1
+    AND run.mode IN ('test_lane', 'production_canary')
+    AND run.external_writes_observed = 0
+    AND run.result_digest = NEW.evidence_digest
+    AND reconciliation_event.to_state = 'reconciliation_required'
+    AND reconciliation_event.sequence = (
+      SELECT MAX(latest.sequence) FROM job_events latest WHERE latest.job_id = job.job_id
+    )
+    AND run.started_epoch_ms >= reconciliation_event.occurred_epoch_ms
+    AND run.completed_epoch_ms <= NEW.reconciled_epoch_ms
+    AND NOT EXISTS (
+      SELECT 1 FROM reconciliation_exceptions exception
+      WHERE exception.run_id = run.run_id AND exception.severity = 'critical'
+    )
+    AND (
+      (job.responsibility = 'orderImport' AND (
+        (NEW.resolution = 'resolved_existing' AND EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+            AND link.idempotency_intent_key = intent.intent_key
+            AND link.link_kind = 'product_pipeline_created'
+        ))
+        OR
+        (NEW.resolution = 'confirmed_missing' AND NOT EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+        ))
+      ))
+      OR
+      (job.responsibility = 'listingRevise' AND EXISTS (
+        SELECT 1 FROM listing_revise_observations observation
+        WHERE observation.run_id = run.run_id
+          AND observation.intent_key = intent.intent_key
+          AND (
+            (NEW.resolution = 'resolved_existing'
+              AND observation.effect = 'revised_state_observed')
+            OR
+            (NEW.resolution = 'confirmed_missing'
+              AND observation.effect = 'revised_state_absent')
+          )
+      ))
+      OR
+      (job.responsibility IN (
+        'listingCreate', 'listingEndRelist', 'price', 'inventory', 'fulfillment'
+      ) AND EXISTS (
+        SELECT 1 FROM target_effect_observations observation
+        WHERE observation.run_id = run.run_id
+          AND observation.intent_key = intent.intent_key
+          AND observation.responsibility = job.responsibility
+          AND (
+            (NEW.resolution = 'resolved_existing' AND observation.effect = 'effect_observed')
+            OR
+            (NEW.resolution = 'confirmed_missing' AND observation.effect = 'effect_absent')
+          )
+      ))
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'attempt resolution lacks authoritative target reconciliation');
+END;
+`;
 export const SCHEMA_MIGRATIONS = [
     {
         version: 1,
@@ -1689,6 +1946,12 @@ export const SCHEMA_MIGRATIONS = [
         name: 'marketplace_connect_replacement_v3',
         sql: migrationThreeSql,
         checksum: sqlChecksum(migrationThreeSql),
+    },
+    {
+        version: 4,
+        name: 'fulfillment_tracking_slice_v4',
+        sql: migrationFourSql,
+        checksum: sqlChecksum(migrationFourSql),
     },
 ];
 const bootstrapSql = `

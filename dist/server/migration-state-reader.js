@@ -116,7 +116,7 @@ function normalizeVerifiedProjection(projection) {
             && orderImportOwnership.configured === true
             && orderImportOwnership.owner === 'product_pipeline'
             && orderImportOwnership.singleWriterVerified === true);
-    const contractValid = projection.schemaVersion === 3 &&
+    const contractValid = projection.schemaVersion === 4 &&
         scope !== null &&
         DIGEST.test(scope.scopeKey) &&
         SHOPIFY_DOMAIN.test(scope.shopifyStoreDomain) &&
@@ -173,7 +173,7 @@ function normalizeVerifiedProjection(projection) {
     }
     return {
         status: 'verified',
-        schemaVersion: 3,
+        schemaVersion: 4,
         scope: {
             scopeKey: scope.scopeKey,
             shopifyStoreDomain: scope.shopifyStoreDomain,

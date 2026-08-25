@@ -32,4 +32,5 @@ export const TARGET_EFFECT_RESPONSIBILITIES = [
     'listingEndRelist',
     'price',
     'inventory',
+    'fulfillment',
 ];

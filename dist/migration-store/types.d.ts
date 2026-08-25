@@ -81,7 +81,7 @@ export type ListingReviseObservationInput = {
  * target-effect observation in the schema-v3 slice. orderImport binds to
  * order_links and listingRevise to listing_revise_observations instead.
  */
-export declare const TARGET_EFFECT_RESPONSIBILITIES: readonly ["listingCreate", "listingEndRelist", "price", "inventory"];
+export declare const TARGET_EFFECT_RESPONSIBILITIES: readonly ["listingCreate", "listingEndRelist", "price", "inventory", "fulfillment"];
 export type TargetEffectResponsibility = (typeof TARGET_EFFECT_RESPONSIBILITIES)[number];
 export type TargetEffect = 'effect_observed' | 'effect_absent';
 export type TargetEffectObservationInput = {

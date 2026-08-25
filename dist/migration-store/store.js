@@ -13,7 +13,7 @@ const MAX_APPROVAL_TTL_MS = 15 * 60 * 1000;
  * never reach into order history. Mirrored by the schema-v3 SQL trigger.
  */
 const NO_BACKFILL_CLAMP_MS = 60 * 60 * 1000;
-/** The exact schema-v3 production writer intent actions; all others stay denied. */
+/** The exact schema-v4 production writer intent actions; all others stay denied. */
 const PRODUCTION_INTENT_ACTIONS = [
     'revise_ebay_listing',
     'create_ebay_listing',
@@ -21,6 +21,7 @@ const PRODUCTION_INTENT_ACTIONS = [
     'update_ebay_price',
     'update_ebay_inventory',
     'import_shopify_order',
+    'sync_fulfillment',
 ];
 /**
  * Class A — no verified Marketplace Connect incumbent exists. The truthful
@@ -42,8 +43,9 @@ const VERIFIED_INCUMBENT_RESPONSIBILITIES = [
     'orderImport',
     'price',
     'inventory',
+    'fulfillment',
 ];
-/** The six writer responsibilities enabled by the schema-v3 production slice. */
+/** The seven writer responsibilities enabled through the schema-v4 fulfillment slice. */
 export const PRODUCTION_ENABLED_RESPONSIBILITIES = [
     ...VERIFIED_INCUMBENT_RESPONSIBILITIES,
     ...NO_INCUMBENT_RESPONSIBILITIES,
@@ -54,6 +56,7 @@ const TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES = [
     'listingEndRelist',
     'price',
     'inventory',
+    'fulfillment',
 ];
 export class MigrationStoreError extends Error {
     code;
@@ -1579,8 +1582,8 @@ class MigrationStoreImpl {
     }
     recordReconciliationRun(input) {
         const productionRunAllowed = (input.mode === 'shadow' && !input.authoritative && input.externalWritesObserved === 0)
-            // The reviewed replacement slice: an exact-target post-dispatch
-            // production canary reconciliation, for one of the six enabled writer
+            // The reviewed replacement slices: an exact-target post-dispatch
+            // production canary reconciliation for one enabled writer
             // responsibilities, that itself performs zero writes.
             || (input.mode === 'production_canary'
                 && PRODUCTION_ENABLED_RESPONSIBILITIES.includes(input.responsibility)
