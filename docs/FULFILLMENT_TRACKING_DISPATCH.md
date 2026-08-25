@@ -79,6 +79,7 @@ not a substitute for the operator action.
 ```sh
 node dist/fulfillment-tracking-admin/index.js preflight \
   --shopify-order-gid gid://shopify/Order/<id> \
+  --shopify-fulfillment-gid gid://shopify/Fulfillment/<id> \
   --ebay-order-id <id>
 ```
 
@@ -94,6 +95,7 @@ Re-run with the exact digest printed by the fresh preflight:
 ```sh
 node dist/fulfillment-tracking-admin/index.js dispatch \
   --shopify-order-gid gid://shopify/Order/<id> \
+  --shopify-fulfillment-gid gid://shopify/Fulfillment/<id> \
   --ebay-order-id <id> \
   --manifest-digest sha256:<digest> \
   --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite
