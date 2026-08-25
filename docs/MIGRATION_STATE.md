@@ -15,7 +15,7 @@ The focused persistence suite covers filesystem publication/reopen behavior, pro
 - Records contain stable platform identities, policy/evidence digests, state-machine metadata, and timestamps only. Tokens, cookies, secrets, buyers, names, email, phone, addresses, line items, notes, and raw platform payloads are forbidden.
 - The canonical store API opens an exact 0600 regular file, enables its required SQLite constraints, verifies the complete schema/catalog and audit chain, and uses immediate transactions. A process with direct filesystem/SQLite administration can still replace the file or drop its schema and is outside this local threat boundary. The database is not an externally immutable audit service and does not prove production parity.
 - Every current writer remains quarantined. Persisting a row never enables an external write, establishes a production watermark, transfers ownership, or authorizes a canary.
-- The first implementation is deliberately asymmetric: a production-scoped store may record the Marketplace Connect v1 incumbent baseline and shadow evidence only. Outside the schema-v2 listing-revise slice and the schema-v3 replacement slice below, it rejects a ProductPipeline ownership transfer, production watermark, approval consumption, or execution reservation. Future-state behavior for every other responsibility is exercised only against an explicitly scoped sandbox store.
+- The first implementation is deliberately asymmetric: a production-scoped store may record the Marketplace Connect v1 incumbent baseline and shadow evidence only. Outside the schema-v2 listing-revise, schema-v3 replacement, and schema-v4 fulfillment slices below, it rejects a ProductPipeline ownership transfer, production watermark, approval consumption, or execution reservation. Future-state behavior for every other responsibility is exercised only against an explicitly scoped sandbox store.
 
 ## Schema version 2 — production listing-revise slice (2026-08-14, goal G4)
 
@@ -39,6 +39,34 @@ Version 3 extends the exact v2 pattern to the remaining writer responsibilities 
 - Attempt resolution adds one append-only table, `target_effect_observations` (`effect_observed`/`effect_absent`, bound to exactly one run, one intent, one target, and one of `listingCreate`/`listingEndRelist`/`price`/`inventory`), mirroring `listing_revise_observations` including its deny-update/deny-delete/deny-conflicting-insert and binding triggers. `attempt_resolutions_require_authoritative_target_reconciliation` now branches per responsibility: `orderImport` keeps its `order_links` predicates, `listingRevise` keeps `listing_revise_observations`, and the four new responsibilities require a matching `target_effect_observations` row whose recorded effect exactly matches the claimed resolution.
 
 The approval 15-minute TTL, single use, one-attempt ordinal, append-only trigger set, audit hash chain, deterministic order intent uniqueness, and every sandbox-only behavior are unchanged. The read-only projection and server reader accept a production watermark only when the same projection shows current `product_pipeline` single-writer `orderImport` ownership; any other production watermark makes the whole projection fail closed as invalid. Upgrading is the same explicit operator action as v2 (`migration-admin upgrade`), regression-tested for both v1→v3 and v2→v3; runtime never upgrades, and a v1 or v2 store fails every ordinary open until the operator upgrades it. Persisting any of this state still enables no external write: dispatch remains gated on the execution-time one-action exact-target operator approval, and no adapter for listing-create, end/relist, price, inventory, or order import is wired.
+
+## Schema version 4 — fulfillment/tracking slice (2026-08-25, goal G17)
+
+Version 4 widens the v3 production boundary for exactly one responsibility:
+`fulfillment`. `mapping` and `feedback` remain denied.
+
+- `sync_fulfillment` joins the exact production action allowlist.
+- `fulfillment` joins Class B. Its truthful genesis is
+  `marketplace_connect`; Production permits only the staged
+  `marketplace_connect -> paused -> product_pipeline` chain (and
+  `product_pipeline -> paused`) with single-writer evidence at every version.
+- Zero-write authoritative `production_canary` reconciliation is admitted for
+  fulfillment.
+- `target_effect_observations` is rebuilt by the explicit migration to admit
+  fulfillment effects, preserving every v3 row. Attempt resolution requires
+  the matching fulfillment observation and cannot borrow another
+  responsibility's run, intent, or target.
+- A partial unique index permits only one `sync_fulfillment` intent per exact
+  linked Shopify/eBay order pair, regardless of manifest changes. Dispatch
+  additionally requires the existing durable `order_links` row, so arbitrary
+  individually valid order IDs cannot be paired by operator input.
+
+The standalone `fulfillment-tracking-admin` is the only consumer. It supports
+one complete Shopify fulfillment to one eBay shipping fulfillment, denies
+partial/split shipments, and is not imported by the server, webhook,
+scheduler, worker, or legacy CLI. Schema upgrade, ownership, and every
+dispatch remain explicit operator actions; migration alone performs no
+provider write. See `docs/FULFILLMENT_TRACKING_DISPATCH.md`.
 
 ## Canonical responsibility vocabulary
 

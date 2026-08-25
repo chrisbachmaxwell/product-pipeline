@@ -116,7 +116,7 @@ function normalizeVerifiedProjection(projection) {
             && orderImportOwnership.configured === true
             && orderImportOwnership.owner === 'product_pipeline'
             && orderImportOwnership.singleWriterVerified === true);
-    const contractValid = projection.schemaVersion === 3 &&
+    const contractValid = projection.schemaVersion === 4 &&
         scope !== null &&
         DIGEST.test(scope.scopeKey) &&
         SHOPIFY_DOMAIN.test(scope.shopifyStoreDomain) &&
@@ -154,11 +154,11 @@ function normalizeVerifiedProjection(projection) {
             return entry.owner !== 'marketplace_connect'
                 && entry.singleWriterVerified === true;
         }
-        // Class B (verified incumbent): orderImport, price, and inventory may
+        // Class B (verified incumbent): orderImport, price, inventory, and fulfillment may
         // sit anywhere on the staged chain — the v1 Marketplace Connect
         // baseline remains valid — always with verified single-writer
-        // evidence. mapping/fulfillment/feedback configured rows stay invalid.
-        const baselineResponsibility = ['orderImport', 'price', 'inventory'].includes(entry.responsibility);
+        // evidence. mapping/feedback configured rows stay invalid.
+        const baselineResponsibility = ['orderImport', 'price', 'inventory', 'fulfillment'].includes(entry.responsibility);
         return baselineResponsibility
             && entry.owner !== null
             && ['marketplace_connect', 'paused', 'product_pipeline'].includes(entry.owner)
@@ -173,7 +173,7 @@ function normalizeVerifiedProjection(projection) {
     }
     return {
         status: 'verified',
-        schemaVersion: 3,
+        schemaVersion: 4,
         scope: {
             scopeKey: scope.scopeKey,
             shopifyStoreDomain: scope.shopifyStoreDomain,

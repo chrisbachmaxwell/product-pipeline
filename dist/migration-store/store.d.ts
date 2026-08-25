@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ListingReviseObservationInput, type TargetEffectObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
-/** The six writer responsibilities enabled by the schema-v3 production slice. */
+/** The seven writer responsibilities enabled through the schema-v4 fulfillment slice. */
 export declare const PRODUCTION_ENABLED_RESPONSIBILITIES: readonly Responsibility[];
 type Sqlite = InstanceType<typeof Database>;
 type IntentRow = {
@@ -117,6 +117,10 @@ declare class MigrationStoreImpl {
         audit: AuditContext;
     }): Digest;
     getIntent(intentKey: string): IntentRow | null;
+    hasExactOrderLink(input: {
+        shopifyOrderIdentityKey: string;
+        ebayOrderIdentityKey: string;
+    }): boolean;
     getJobStatus(jobIdInput: string): {
         jobId: string;
         intentKey: Digest;

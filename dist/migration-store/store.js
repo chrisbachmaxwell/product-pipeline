@@ -13,7 +13,7 @@ const MAX_APPROVAL_TTL_MS = 15 * 60 * 1000;
  * never reach into order history. Mirrored by the schema-v3 SQL trigger.
  */
 const NO_BACKFILL_CLAMP_MS = 60 * 60 * 1000;
-/** The exact schema-v3 production writer intent actions; all others stay denied. */
+/** The exact schema-v4 production writer intent actions; all others stay denied. */
 const PRODUCTION_INTENT_ACTIONS = [
     'revise_ebay_listing',
     'create_ebay_listing',
@@ -21,6 +21,7 @@ const PRODUCTION_INTENT_ACTIONS = [
     'update_ebay_price',
     'update_ebay_inventory',
     'import_shopify_order',
+    'sync_fulfillment',
 ];
 /**
  * Class A — no verified Marketplace Connect incumbent exists. The truthful
@@ -42,8 +43,9 @@ const VERIFIED_INCUMBENT_RESPONSIBILITIES = [
     'orderImport',
     'price',
     'inventory',
+    'fulfillment',
 ];
-/** The six writer responsibilities enabled by the schema-v3 production slice. */
+/** The seven writer responsibilities enabled through the schema-v4 fulfillment slice. */
 export const PRODUCTION_ENABLED_RESPONSIBILITIES = [
     ...VERIFIED_INCUMBENT_RESPONSIBILITIES,
     ...NO_INCUMBENT_RESPONSIBILITIES,
@@ -54,6 +56,7 @@ const TARGET_EFFECT_RESOLUTION_RESPONSIBILITIES = [
     'listingEndRelist',
     'price',
     'inventory',
+    'fulfillment',
 ];
 export class MigrationStoreError extends Error {
     code;
@@ -899,6 +902,14 @@ class MigrationStoreImpl {
             throw new MigrationStoreError('INVALID_INPUT', 'Intent audit time must equal creation time');
         }
         this.assertActionIdentityShape(input.action, source, target);
+        if (input.action === 'sync_fulfillment'
+            && this.database.prepare(`SELECT 1 FROM order_links
+         WHERE scope_key = ?
+           AND shopify_order_identity_key = ?
+           AND ebay_order_identity_key = ?
+         LIMIT 1`).get(this.scopeKey, source.identity_key, target?.identity_key ?? '') === undefined) {
+            throw new MigrationStoreError('OWNERSHIP_DENIED', 'Fulfillment intent requires the exact durable Shopify/eBay order link');
+        }
         const intentKey = deriveIdempotencyKey({
             scopeKey: this.scopeKey,
             action: input.action,
@@ -952,6 +963,17 @@ class MigrationStoreImpl {
             target_identity_key, approval_target_identity_key, desired_state_digest
            FROM idempotency_intents WHERE intent_key = ? AND scope_key = ?`)
             .get(key, this.scopeKey) ?? null);
+    }
+    hasExactOrderLink(input) {
+        this.assertOpen();
+        const shopifyOrderIdentityKey = assertDigest(input.shopifyOrderIdentityKey, 'shopifyOrderIdentityKey');
+        const ebayOrderIdentityKey = assertDigest(input.ebayOrderIdentityKey, 'ebayOrderIdentityKey');
+        return this.database.prepare(`SELECT 1
+       FROM order_links
+       WHERE scope_key = ?
+         AND shopify_order_identity_key = ?
+         AND ebay_order_identity_key = ?
+       LIMIT 1`).get(this.scopeKey, shopifyOrderIdentityKey, ebayOrderIdentityKey) !== undefined;
     }
     getJobStatus(jobIdInput) {
         this.assertOpen();
@@ -1579,8 +1601,8 @@ class MigrationStoreImpl {
     }
     recordReconciliationRun(input) {
         const productionRunAllowed = (input.mode === 'shadow' && !input.authoritative && input.externalWritesObserved === 0)
-            // The reviewed replacement slice: an exact-target post-dispatch
-            // production canary reconciliation, for one of the six enabled writer
+            // The reviewed replacement slices: an exact-target post-dispatch
+            // production canary reconciliation for one enabled writer
             // responsibilities, that itself performs zero writes.
             || (input.mode === 'production_canary'
                 && PRODUCTION_ENABLED_RESPONSIBILITIES.includes(input.responsibility)

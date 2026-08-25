@@ -17,7 +17,7 @@ const SCOPE = {
 
 const VERIFIED: MigrationStoreProjection = {
   status: 'verified',
-  schemaVersion: 3,
+  schemaVersion: 4,
   scope: { ...SCOPE, scopeKey: `sha256:${'1'.repeat(64)}` },
   access: {
     writable: false,
