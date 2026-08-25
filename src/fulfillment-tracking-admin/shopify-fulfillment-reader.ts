@@ -28,11 +28,14 @@ const ORDER_QUERY = `query FulfillmentTrackingOrder($id: ID!) {
   shop { id myshopifyDomain }
   order(id: $id) {
     id
-    lineItems(first: 100) { nodes { id quantity } }
+    lineItems(first: 100) { nodes { id quantity } pageInfo { hasNextPage } }
     fulfillments(first: 10) {
       id status createdAt
       trackingInfo(first: 10) { company number }
-      fulfillmentLineItems(first: 100) { nodes { quantity lineItem { id } } }
+      fulfillmentLineItems(first: 100) {
+        nodes { quantity lineItem { id } }
+        pageInfo { hasNextPage }
+      }
     }
   }
 }`;
@@ -114,7 +117,11 @@ export function createShopifyFulfillmentReader(dependencies: Readonly<{
         }
         const order = record(data.order);
         if (order.id !== orderGid) deny('FULFILLMENT_SHOPIFY_READ_FAILED');
-        const lineItems = array(record(order.lineItems).nodes).map((raw) => {
+        const orderLineConnection = record(order.lineItems);
+        if (record(orderLineConnection.pageInfo).hasNextPage !== false) {
+          deny('FULFILLMENT_SHOPIFY_READ_FAILED');
+        }
+        const lineItems = array(orderLineConnection.nodes).map((raw) => {
           const item = record(raw);
           return Object.freeze({ lineItemGid: text(item.id), quantity: quantity(item.quantity) });
         });
@@ -127,7 +134,11 @@ export function createShopifyFulfillmentReader(dependencies: Readonly<{
               number: text(item.number, 128),
             });
           });
-          const fulfillmentLineItems = array(record(fulfillment.fulfillmentLineItems).nodes)
+          const fulfillmentLineConnection = record(fulfillment.fulfillmentLineItems);
+          if (record(fulfillmentLineConnection.pageInfo).hasNextPage !== false) {
+            deny('FULFILLMENT_SHOPIFY_READ_FAILED');
+          }
+          const fulfillmentLineItems = array(fulfillmentLineConnection.nodes)
             .map((rawLine) => {
               const line = record(rawLine);
               return Object.freeze({

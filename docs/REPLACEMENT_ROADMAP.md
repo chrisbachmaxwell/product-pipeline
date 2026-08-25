@@ -45,7 +45,7 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 
 ## Phase 4 — Fulfillment/tracking sync (G17) — REQUIRED before MC removal
 
-- ☐ [AGENT] Build the fulfillment slice: schema allowance for exactly `fulfillment`, ceremony CLI (eBay createShippingFulfillment, `sell.fulfillment` scope already held), observations + reconciliation, tests, runbook
+- [x] [AGENT] Build the inert fulfillment slice: schema-v4 allowance for exactly `fulfillment`, standalone full-order ceremony CLI (eBay createShippingFulfillment, `sell.fulfillment` scope already held), observations + reconciliation, tests, runbook (source candidate 2026-08-25; no dispatch)
 - ☐ [USER] Record MC's fulfillment behavior off (with its order sync already off in Phase 3, capture evidence of the residual state) → establish-ownership (fulfillment)
 - ☐ [USER] Ship a real order in Shopify → ceremony pushes tracking → verify tracking + carrier visible on the eBay order
 - **Exit check:** 3+ real shipments tracked on eBay via ProductPipeline; buyer-visible status correct.

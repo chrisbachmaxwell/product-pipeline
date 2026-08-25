@@ -132,8 +132,7 @@ export function deriveFulfillmentManifest(input: {
     deny('FULFILLMENT_TRACKING_REQUIRED');
   }
   const trackingNumber = fulfillment.tracking[0].number;
-  if (!input.allowAlreadyRecorded
-    && input.ebay.shippingFulfillments.some((entry) => entry.trackingNumber === trackingNumber)) {
+  if (!input.allowAlreadyRecorded && input.ebay.shippingFulfillments.length > 0) {
     deny('FULFILLMENT_ALREADY_RECORDED');
   }
   if (!Array.isArray(input.ebay.lineItems) || input.ebay.lineItems.length === 0) {

@@ -333,25 +333,26 @@ export function buildFulfillmentTrackingAdminProgram(
             });
             current = store.getCurrentOwnership('fulfillment');
           }
-          if (current?.owner !== 'paused') deny('FULFILLMENT_OWNERSHIP_CHAIN_INVALID');
+          if (!current || current.owner !== 'paused') deny('FULFILLMENT_OWNERSHIP_CHAIN_INVALID');
+          const pausedOwnership = current as NonNullable<typeof current>;
           const at = clock();
           store.recordOwnershipVersion({
             responsibility: 'fulfillment',
-            version: current.version + 1,
+            version: pausedOwnership.version + 1,
             owner: 'product_pipeline',
             singleWriterVerified: true,
             evidenceDigest: disabledEvidence,
             effectiveAtUtc: at,
             recordedAtUtc: at,
             audit: {
-              eventId: `ownership:fulfillment:v${current.version + 1}:${uuid()}`,
+              eventId: `ownership:fulfillment:v${pausedOwnership.version + 1}:${uuid()}`,
               occurredAtUtc: at,
             },
           });
           io.stdout(JSON.stringify({
             command: 'establish-ownership',
             status: 'established',
-            version: current.version + 1,
+            version: pausedOwnership.version + 1,
             externalWritesPerformed: 0,
           }));
         } finally {
@@ -390,7 +391,7 @@ export function buildFulfillmentTrackingAdminProgram(
         }));
         io.setExitCode(1);
       }
-    }));
+    });
 
   withTarget(program.command('dispatch')
     .description('One-action exact-order dispatch with durable approval and reconciliation'))
@@ -413,9 +414,11 @@ export function buildFulfillmentTrackingAdminProgram(
         const clock = clockFrom(now);
         try {
           const ownership = store.getCurrentOwnership('fulfillment');
-          if (ownership?.owner !== 'product_pipeline' || !ownership.singleWriterVerified) {
+          if (!ownership || ownership.owner !== 'product_pipeline'
+            || !ownership.singleWriterVerified) {
             deny('FULFILLMENT_OWNERSHIP_NOT_ESTABLISHED');
           }
+          const activeOwnership = ownership as NonNullable<typeof ownership>;
           const identities = identityInputs(options.shopifyOrderGid, options.ebayOrderId);
           const sourceIdentityKey = ensureIdentity(store, identities.source, clock());
           const targetIdentityKey = ensureIdentity(store, identities.target, clock());
@@ -444,7 +447,7 @@ export function buildFulfillmentTrackingAdminProgram(
             intentKey,
             responsibility: 'fulfillment',
             targetIdentityKey,
-            ownershipVersion: ownership.version,
+            ownershipVersion: activeOwnership.version,
             issuedAtUtc,
             expiresAtUtc,
             evidenceDigest: expectedDigest,
@@ -459,7 +462,7 @@ export function buildFulfillmentTrackingAdminProgram(
             intentKey,
             responsibility: 'fulfillment',
             targetIdentityKey,
-            ownershipVersion: ownership.version,
+            ownershipVersion: activeOwnership.version,
             approvalEvidenceDigest: expectedDigest,
             reservedAtUtc,
             evidenceDigest: expectedDigest,
@@ -531,7 +534,7 @@ export function buildFulfillmentTrackingAdminProgram(
         }));
         io.setExitCode(1);
       }
-    }));
+    });
 
   withTarget(program.command('reconcile')
     .description('Re-read eBay for one outstanding job; never writes to either provider')
@@ -539,7 +542,7 @@ export function buildFulfillmentTrackingAdminProgram(
     .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
     .requiredOption('--job-id <id>', 'Exact job ID printed by dispatch')
     .requiredOption('--attempt-id <id>', 'Exact attempt ID printed by dispatch')
-    .option('--accept-absent', 'Explicitly terminalize a still-absent effect as confirmed_missing')
+    .option('--accept-absent', 'Explicitly terminalize a still-absent effect as confirmed_missing'))
     .action(async (options: TargetOptions & {
       manifestDigest: string;
       migrationStore: string;
@@ -603,7 +606,7 @@ export function buildFulfillmentTrackingAdminProgram(
         }));
         io.setExitCode(1);
       }
-    }));
+    });
 
   return program;
 }

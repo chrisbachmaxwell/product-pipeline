@@ -139,8 +139,8 @@ export function createEbayFulfillmentAdapter(dependencies: Readonly<{
         const fulfillment = record(raw);
         return Object.freeze({
           fulfillmentId: text(fulfillment.fulfillmentId, 128),
-          trackingNumber: typeof fulfillment.trackingNumber === 'string'
-            ? fulfillment.trackingNumber.slice(0, 128)
+          trackingNumber: typeof fulfillment.shipmentTrackingNumber === 'string'
+            ? fulfillment.shipmentTrackingNumber.slice(0, 128)
             : null,
           shippingCarrierCode: typeof fulfillment.shippingCarrierCode === 'string'
             ? fulfillment.shippingCarrierCode.slice(0, 64)
