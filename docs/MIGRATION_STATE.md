@@ -56,6 +56,10 @@ Version 4 widens the v3 production boundary for exactly one responsibility:
   fulfillment effects, preserving every v3 row. Attempt resolution requires
   the matching fulfillment observation and cannot borrow another
   responsibility's run, intent, or target.
+- A partial unique index permits only one `sync_fulfillment` intent per exact
+  linked Shopify/eBay order pair, regardless of manifest changes. Dispatch
+  additionally requires the existing durable `order_links` row, so arbitrary
+  individually valid order IDs cannot be paired by operator input.
 
 The standalone `fulfillment-tracking-admin` is the only consumer. It supports
 one complete Shopify fulfillment to one eBay shipping fulfillment, denies

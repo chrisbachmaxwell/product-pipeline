@@ -157,9 +157,9 @@ async function deriveTarget(
 
 async function reconcile(input: {
   store: MigrationStore;
-  shopify: ShopifyFulfillmentReader;
   ebay: EbayFulfillmentAdapter;
   target: TargetOptions;
+  shopifyFulfillmentGid: string;
   expectedManifestDigest: Digest;
   intentKey: Digest;
   targetIdentityKey: Digest;
@@ -170,21 +170,14 @@ async function reconcile(input: {
   uuid: () => string;
 }): Promise<{ effect: string; resolution: string | null; runId: string }> {
   const startedAtUtc = input.clock();
-  const [shopifyOrder, ebayOrder] = await Promise.all([
-    input.shopify.getOrder(input.target.shopifyOrderGid),
-    input.ebay.getOrder(input.target.ebayOrderId),
-  ]);
-  const derived = deriveFulfillmentManifest({
-    shopify: shopifyOrder,
+  const ebayOrder = await input.ebay.getOrder(input.target.ebayOrderId);
+  const effect = compareFulfillmentEffect({
+    expectedManifestDigest: input.expectedManifestDigest,
+    shopifyOrderGid: input.target.shopifyOrderGid,
+    ebayOrderId: input.target.ebayOrderId,
+    shopifyFulfillmentGid: input.shopifyFulfillmentGid,
     ebay: ebayOrder,
-    expectedShopifyOrderGid: input.target.shopifyOrderGid,
-    expectedEbayOrderId: input.target.ebayOrderId,
-    allowAlreadyRecorded: true,
   });
-  if (derived.manifestDigest !== input.expectedManifestDigest) {
-    deny('FULFILLMENT_MANIFEST_DIGEST_MISMATCH');
-  }
-  const effect = compareFulfillmentEffect({ manifest: derived.manifest, ebay: ebayOrder });
   const completedAtUtc = input.clock();
   const runId = `fulfillment-run:${input.uuid()}`;
   const targetSnapshotDigest = sha256Digest({
@@ -194,7 +187,7 @@ async function reconcile(input: {
   });
   const resultDigest = sha256Digest({
     schemaVersion: 1,
-    manifestDigest: derived.manifestDigest,
+    manifestDigest: input.expectedManifestDigest,
     effect,
     targetSnapshotDigest,
   });
@@ -205,11 +198,11 @@ async function reconcile(input: {
     targetIdentityKey: input.targetIdentityKey,
     mode: 'production_canary',
     status: 'passed',
-    sourceSnapshotDigest: derived.manifestDigest,
+    sourceSnapshotDigest: input.expectedManifestDigest,
     targetSnapshotDigest,
     resultDigest,
     authoritative: resolvable,
-    authorityEvidenceDigest: derived.manifestDigest,
+    authorityEvidenceDigest: input.expectedManifestDigest,
     externalWritesObserved: 0,
     startedAtUtc,
     completedAtUtc,
@@ -422,6 +415,12 @@ export function buildFulfillmentTrackingAdminProgram(
           const identities = identityInputs(options.shopifyOrderGid, options.ebayOrderId);
           const sourceIdentityKey = ensureIdentity(store, identities.source, clock());
           const targetIdentityKey = ensureIdentity(store, identities.target, clock());
+          if (!store.hasExactOrderLink({
+            shopifyOrderIdentityKey: sourceIdentityKey,
+            ebayOrderIdentityKey: targetIdentityKey,
+          })) {
+            deny('FULFILLMENT_ORDER_LINK_REQUIRED');
+          }
           const intentKey = deriveIdempotencyKey({
             scopeKey: deriveScopeKey(MIGRATION_SCOPE),
             action: 'sync_fulfillment',
@@ -497,9 +496,9 @@ export function buildFulfillmentTrackingAdminProgram(
           });
           const result = await reconcile({
             store,
-            shopify,
             ebay,
             target: options,
+            shopifyFulfillmentGid: derived.manifest.shopifyFulfillmentGid,
             expectedManifestDigest: expectedDigest,
             intentKey,
             targetIdentityKey,
@@ -538,6 +537,10 @@ export function buildFulfillmentTrackingAdminProgram(
 
   withTarget(program.command('reconcile')
     .description('Re-read eBay for one outstanding job; never writes to either provider')
+    .requiredOption(
+      '--shopify-fulfillment-gid <gid>',
+      'Exact Shopify fulfillment GID printed by preflight',
+    )
     .requiredOption('--manifest-digest <sha256>', 'Exact digest printed by preflight')
     .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
     .requiredOption('--job-id <id>', 'Exact job ID printed by dispatch')
@@ -548,6 +551,7 @@ export function buildFulfillmentTrackingAdminProgram(
       migrationStore: string;
       jobId: string;
       attemptId: string;
+      shopifyFulfillmentGid: string;
       acceptAbsent?: boolean;
     }) => {
       try {
@@ -572,11 +576,31 @@ export function buildFulfillmentTrackingAdminProgram(
         const clock = clockFrom(now);
         try {
           if (store.getIntent(intentKey) === null) deny('FULFILLMENT_INTENT_NOT_FOUND');
+          const job = store.getJobStatus(options.jobId);
+          if (!job || job.intentKey !== intentKey || job.responsibility !== 'fulfillment') {
+            deny('FULFILLMENT_JOB_MISMATCH');
+          }
+          const activeJob = job as NonNullable<typeof job>;
+          if (activeJob.state === 'dispatching') {
+            const requiredAtUtc = clock();
+            store.requirePostDispatchReconciliation({
+              jobId: options.jobId,
+              attemptId: options.attemptId,
+              occurredAtUtc: requiredAtUtc,
+              evidenceDigest: expectedDigest,
+              audit: {
+                eventId: `job:${options.jobId}:reconciliation-required`,
+                occurredAtUtc: requiredAtUtc,
+              },
+            });
+          } else if (activeJob.state !== 'reconciliation_required') {
+            deny('FULFILLMENT_JOB_NOT_RECONCILABLE');
+          }
           const result = await reconcile({
             store,
-            shopify,
             ebay,
             target: options,
+            shopifyFulfillmentGid: options.shopifyFulfillmentGid,
             expectedManifestDigest: expectedDigest,
             intentKey,
             targetIdentityKey,

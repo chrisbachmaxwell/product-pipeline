@@ -137,6 +137,15 @@ export function createEbayFulfillmentAdapter(dependencies: Readonly<{
         : [];
       const shippingFulfillments = rawFulfillments.map((raw: unknown) => {
         const fulfillment = record(raw);
+        const fulfillmentLineItems = Array.isArray(fulfillment.lineItems)
+          ? fulfillment.lineItems.map((rawLine: unknown) => {
+            const line = record(rawLine);
+            return Object.freeze({
+              lineItemId: text(line.lineItemId, 128),
+              quantity: positiveQuantity(line.quantity),
+            });
+          })
+          : [];
         return Object.freeze({
           fulfillmentId: text(fulfillment.fulfillmentId, 128),
           trackingNumber: typeof fulfillment.shipmentTrackingNumber === 'string'
@@ -145,6 +154,10 @@ export function createEbayFulfillmentAdapter(dependencies: Readonly<{
           shippingCarrierCode: typeof fulfillment.shippingCarrierCode === 'string'
             ? fulfillment.shippingCarrierCode.slice(0, 64)
             : null,
+          shippedDate: typeof fulfillment.shippedDate === 'string'
+            ? fulfillment.shippedDate.slice(0, 64)
+            : null,
+          lineItems: Object.freeze(fulfillmentLineItems),
         });
       });
       return Object.freeze({

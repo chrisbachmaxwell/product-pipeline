@@ -112,6 +112,7 @@ outcome-unknown until reconciliation.
 ```sh
 node dist/fulfillment-tracking-admin/index.js reconcile \
   --shopify-order-gid gid://shopify/Order/<id> \
+  --shopify-fulfillment-gid gid://shopify/Fulfillment/<id> \
   --ebay-order-id <id> \
   --manifest-digest sha256:<digest> \
   --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite \
@@ -119,8 +120,13 @@ node dist/fulfillment-tracking-admin/index.js reconcile \
   --attempt-id <attempt-id>
 ```
 
-This performs provider reads only. If the exact carrier/tracking effect is not
-yet visible, the job stays `reconciliation_required`. Use `--accept-absent` only
+This performs an eBay provider read only and can recover a job left at the
+`dispatching` boundary after a process interruption. It reconstructs each
+observed eBay effect and requires its complete manifest digest (tracking,
+carrier, shipped date, and all line quantities) to equal the approved digest;
+later Shopify edits cannot rewrite the historical attempt. If the exact effect
+is not yet visible, the job stays `reconciliation_required`. Use
+`--accept-absent` only
 after the documented observation window and direct eBay review; it terminalizes
 the attempt as `confirmed_missing` but does not retry.
 

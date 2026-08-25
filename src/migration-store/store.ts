@@ -1366,6 +1366,29 @@ class MigrationStoreImpl {
     );
   }
 
+  hasExactOrderLink(input: {
+    shopifyOrderIdentityKey: string;
+    ebayOrderIdentityKey: string;
+  }): boolean {
+    this.assertOpen();
+    const shopifyOrderIdentityKey = assertDigest(
+      input.shopifyOrderIdentityKey,
+      'shopifyOrderIdentityKey',
+    );
+    const ebayOrderIdentityKey = assertDigest(
+      input.ebayOrderIdentityKey,
+      'ebayOrderIdentityKey',
+    );
+    return this.database.prepare(
+      `SELECT 1
+       FROM order_links
+       WHERE scope_key = ?
+         AND shopify_order_identity_key = ?
+         AND ebay_order_identity_key = ?
+       LIMIT 1`,
+    ).get(this.scopeKey, shopifyOrderIdentityKey, ebayOrderIdentityKey) !== undefined;
+  }
+
   getJobStatus(jobIdInput: string): {
     jobId: string;
     intentKey: Digest;

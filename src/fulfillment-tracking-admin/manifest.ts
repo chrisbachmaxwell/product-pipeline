@@ -40,6 +40,8 @@ export type EbayFulfillmentOrder = Readonly<{
     fulfillmentId: string;
     trackingNumber: string | null;
     shippingCarrierCode: string | null;
+    shippedDate: string | null;
+    lineItems: readonly Readonly<{ lineItemId: string; quantity: number }>[];
   }>[];
 }>;
 
@@ -63,7 +65,7 @@ export type DerivedFulfillmentManifest = Readonly<{
 const ORDER_GID = /^gid:\/\/shopify\/Order\/[^/\s]+$/;
 const FULFILLMENT_GID = /^gid:\/\/shopify\/Fulfillment\/[^/\s]+$/;
 const SAFE_EBAY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const SAFE_TRACKING = /^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,127}$/;
+const SAFE_TRACKING = /^[A-Za-z0-9]{1,128}$/;
 
 function canonicalUtc(value: string): string {
   const epoch = Date.parse(value);
@@ -162,11 +164,32 @@ export function deriveFulfillmentManifest(input: {
 }
 
 export function compareFulfillmentEffect(input: {
-  manifest: FulfillmentManifest;
+  expectedManifestDigest: Digest;
+  shopifyOrderGid: string;
+  ebayOrderId: string;
+  shopifyFulfillmentGid: string;
   ebay: EbayFulfillmentOrder;
 }): 'effect_observed' | 'effect_absent' {
-  const match = input.ebay.shippingFulfillments.some((entry) =>
-    entry.trackingNumber === input.manifest.trackingNumber
-    && entry.shippingCarrierCode === input.manifest.shippingCarrierCode);
+  if (!ORDER_GID.test(input.shopifyOrderGid) || !SAFE_EBAY_ID.test(input.ebayOrderId)
+    || !FULFILLMENT_GID.test(input.shopifyFulfillmentGid)
+    || input.ebay.orderId !== input.ebayOrderId) {
+    deny('FULFILLMENT_TARGET_INVALID');
+  }
+  const match = input.ebay.shippingFulfillments.some((entry) => {
+    if (entry.trackingNumber === null || entry.shippingCarrierCode === null
+      || entry.shippedDate === null) return false;
+    const candidate: FulfillmentManifest = Object.freeze({
+      schemaVersion: 1,
+      scope: LISTING_DRAFT_SCOPE,
+      shopifyOrderGid: input.shopifyOrderGid,
+      ebayOrderId: input.ebayOrderId,
+      shopifyFulfillmentGid: input.shopifyFulfillmentGid,
+      shippedDate: canonicalUtc(entry.shippedDate),
+      shippingCarrierCode: entry.shippingCarrierCode,
+      trackingNumber: entry.trackingNumber,
+      lineItems: entry.lineItems,
+    });
+    return sha256Digest(candidate) === input.expectedManifestDigest;
+  });
   return match ? 'effect_observed' : 'effect_absent';
 }

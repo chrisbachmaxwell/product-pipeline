@@ -264,11 +264,11 @@ function normalizeVerifiedProjection(
         return entry.owner !== 'marketplace_connect'
           && entry.singleWriterVerified === true;
       }
-      // Class B (verified incumbent): orderImport, price, and inventory may
+      // Class B (verified incumbent): orderImport, price, inventory, and fulfillment may
       // sit anywhere on the staged chain — the v1 Marketplace Connect
       // baseline remains valid — always with verified single-writer
-      // evidence. mapping/fulfillment/feedback configured rows stay invalid.
-      const baselineResponsibility = ['orderImport', 'price', 'inventory'].includes(
+      // evidence. mapping/feedback configured rows stay invalid.
+      const baselineResponsibility = ['orderImport', 'price', 'inventory', 'fulfillment'].includes(
         entry.responsibility,
       );
       return baselineResponsibility

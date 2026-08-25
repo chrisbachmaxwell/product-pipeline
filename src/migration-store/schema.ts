@@ -1730,6 +1730,14 @@ BEGIN
   SELECT RAISE(ABORT, 'production writer intents are disabled');
 END;
 
+-- Fulfillment is one remote effect per exact linked order pair. A changed
+-- tracking value must not manufacture a second business intent.
+CREATE UNIQUE INDEX fulfillment_intents_one_per_order_pair
+ON idempotency_intents (
+  scope_key, action, source_identity_key, target_identity_key
+)
+WHERE action = 'sync_fulfillment';
+
 DROP TRIGGER ownership_versions_enforce_safe_transition;
 CREATE TRIGGER ownership_versions_enforce_safe_transition
 BEFORE INSERT ON ownership_versions
