@@ -79,4 +79,4 @@ The deliberate policy change: routine writes stop requiring a ceremony each. Eac
 
 - **G1** credential rotation incident — close when the user can participate (L1 evidence recorded)
 - **G14** business-policy management slice — scheduled 2026-09-01
-- **G2** sandbox lane reconciliation, **G9** enrichment decommission — background hygiene
+- **G2** reusable Sandbox lane is built but awaits a separately approved create/cleanup run and zero-residue evidence; **G9** enrichment decommission remains background hygiene

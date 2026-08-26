@@ -117,6 +117,13 @@ declare class MigrationStoreImpl {
         audit: AuditContext;
     }): Digest;
     getIntent(intentKey: string): IntentRow | null;
+    /** Read-only approval/job state for an exact intent. Used to permit safe re-approval only after expiry. */
+    getIntentApprovalState(intentKeyInput: string): {
+        latestApprovalDigest: Digest | null;
+        latestExpiresAtUtc: string | null;
+        latestExpiresEpochMs: number | null;
+        jobCount: number;
+    };
     hasExactOrderLink(input: {
         shopifyOrderIdentityKey: string;
         ebayOrderIdentityKey: string;
@@ -125,9 +132,21 @@ declare class MigrationStoreImpl {
         jobId: string;
         intentKey: Digest;
         responsibility: Responsibility;
+        targetIdentityKey: Digest;
+        approvalEvidenceDigest: Digest;
         ownershipVersion: number;
         state: string;
         attemptOutcome: 'outcome_unknown' | null;
+    } | null;
+    /** True only when the exact intent has a terminal, effect-observed successful resolution. */
+    hasResolvedExistingEffect(intentKeyInput: string, responsibilityInput: Responsibility, observedDigestInput: string): boolean;
+    /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
+    getAttemptStatus(jobIdInput: string, attemptIdInput: string): {
+        jobId: string;
+        attemptId: string;
+        intentKey: Digest;
+        outcome: 'outcome_unknown';
+        resolution: 'resolved_existing' | 'confirmed_missing' | null;
     } | null;
     issueActionApproval(input: {
         approvalToken: string;

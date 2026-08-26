@@ -261,6 +261,22 @@ The operator first runs a preflight that prints exactly which fields would chang
 This applies only to Inventory-managed listings, and only to content fields (title, description, images, category, condition description, policies, location). **Price and quantity are never changed** — Marketplace Connect remains their owner — and there is no bulk action, automatic retry, or in-app Publish button.`,
   },
   {
+    question: 'How does the eBay Sandbox listing canary work?',
+    category: 'eBay',
+    sort_order: 6,
+    answer: `The Sandbox canary is an operator-only command-line test for one exact Shopify product, variant, and SKU. It cannot run from the web app or on deploy, and its compiled network adapter can contact only eBay Sandbox hosts.
+
+1. Prepare a private mode-0600 manifest outside the repository. It must describe a quantity-one, USD $1.00 listing clearly marked **PRODUCT PIPELINE SANDBOX TEST - DO NOT BUY**.
+2. Supply a short-lived Sandbox credential packet through the approved stdin broker. Never put a token or private seller ID in a command, environment variable, file, log, or support message.
+3. Initialize a separate durable Sandbox state database, then run the read-only preflight with exact product GID, variant GID, SKU, and Shopify evidence digest.
+4. Review the manifest digest and action digest, then pass both to the separate approval command. The action digest binds the create action, Shopify target, evidence, and manifest. Approval records a short-lived exact-target grant and performs no provider write. Dispatch must receive the same action digest and can only consume that grant; it cannot issue one. An expired unused grant can be replaced for the same intent, but any attempted intent can never be reapproved.
+5. Prepare cleanup with the returned offer/listing IDs, then run its separate approval command. Cleanup requires durable proof that this state database reconciled the exact create first. Cleanup dispatch consumes that second approval and verifies the exact remote state before withdrawing the offer and deleting its Inventory artifacts; eBay's ended Trading history remains.
+6. If create has an unknown result, stop and run zero-write \`recover-create\`. It can discover response-lost IDs and reconcile only a fully exact published result; it otherwise names the exact partial stage without writing. Never rerun create.
+7. Exact leftover item/offer residue is removed only through the separately preflighted and approved recovery-cleanup ceremony bound to the original job, attempt, intent, and approval-evidence digest. The same recovery lane handles partial cleanup, and any unknown recovery result is reconciled without blind retries. Every reconcile denies a digest that differs from the evidence consumed by its reserved job.
+
+Shipping or deploying this CLI performs no provider action. See \`docs/SANDBOX_LISTING_CANARY.md\` for the complete manifest, credential, commands, and proof boundaries.`,
+  },
+  {
     question: 'How does eBay order sync work?',
     category: 'eBay',
     sort_order: 4,

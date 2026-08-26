@@ -964,6 +964,29 @@ class MigrationStoreImpl {
            FROM idempotency_intents WHERE intent_key = ? AND scope_key = ?`)
             .get(key, this.scopeKey) ?? null);
     }
+    /** Read-only approval/job state for an exact intent. Used to permit safe re-approval only after expiry. */
+    getIntentApprovalState(intentKeyInput) {
+        this.assertOpen();
+        const intentKey = assertDigest(intentKeyInput, 'intentKey');
+        const row = this.database.prepare(`SELECT
+        (SELECT approval_digest FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS approval_digest,
+        (SELECT expires_at_utc FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS expires_at_utc,
+        (SELECT expires_epoch_ms FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS expires_epoch_ms,
+        (SELECT COUNT(*) FROM execution_jobs
+         WHERE scope_key = ? AND intent_key = ?) AS job_count`).get(this.scopeKey, intentKey, this.scopeKey, intentKey, this.scopeKey, intentKey, this.scopeKey, intentKey);
+        return {
+            latestApprovalDigest: row.approval_digest,
+            latestExpiresAtUtc: row.expires_at_utc,
+            latestExpiresEpochMs: row.expires_epoch_ms,
+            jobCount: row.job_count,
+        };
+    }
     hasExactOrderLink(input) {
         this.assertOpen();
         const shopifyOrderIdentityKey = assertDigest(input.shopifyOrderIdentityKey, 'shopifyOrderIdentityKey');
@@ -979,7 +1002,8 @@ class MigrationStoreImpl {
         this.assertOpen();
         const jobId = identifier(jobIdInput, 'jobId');
         const row = this.database
-            .prepare(`SELECT job.job_id, job.intent_key, job.responsibility, job.ownership_version,
+            .prepare(`SELECT job.job_id, job.intent_key, job.responsibility, job.target_identity_key,
+          job.approval_evidence_digest, job.ownership_version,
           event.to_state AS state,
           (SELECT attempt.outcome FROM intent_attempts attempt
            WHERE attempt.job_id = job.job_id ORDER BY attempt.ordinal DESC LIMIT 1) AS attempt_outcome
@@ -995,11 +1019,50 @@ class MigrationStoreImpl {
                 jobId: row.job_id,
                 intentKey: row.intent_key,
                 responsibility: row.responsibility,
+                targetIdentityKey: row.target_identity_key,
+                approvalEvidenceDigest: row.approval_evidence_digest,
                 ownershipVersion: row.ownership_version,
                 state: row.state,
                 attemptOutcome: row.attempt_outcome,
             }
             : null;
+    }
+    /** True only when the exact intent has a terminal, effect-observed successful resolution. */
+    hasResolvedExistingEffect(intentKeyInput, responsibilityInput, observedDigestInput) {
+        this.assertOpen();
+        const intentKey = assertDigest(intentKeyInput, 'intentKey');
+        const observedDigest = assertDigest(observedDigestInput, 'observedDigest');
+        if (!WRITER_RESPONSIBILITIES.includes(responsibilityInput)) {
+            throw new MigrationStoreError('INVALID_INPUT', 'Responsibility is not a writer');
+        }
+        return this.database.prepare(`SELECT 1
+       FROM execution_jobs job
+       JOIN intent_attempts attempt ON attempt.job_id = job.job_id
+       JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+       JOIN target_effect_observations effect
+         ON effect.intent_key = job.intent_key
+        AND effect.responsibility = job.responsibility
+       WHERE job.scope_key = ? AND job.intent_key = ? AND job.responsibility = ?
+         AND resolution.resolution = 'resolved_existing'
+         AND effect.effect = 'effect_observed'
+         AND effect.observed_digest = ?
+       LIMIT 1`).get(this.scopeKey, intentKey, responsibilityInput, observedDigest) !== undefined;
+    }
+    /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
+    getAttemptStatus(jobIdInput, attemptIdInput) {
+        this.assertOpen();
+        const jobId = identifier(jobIdInput, 'jobId');
+        const attemptId = identifier(attemptIdInput, 'attemptId');
+        const row = this.database.prepare(`SELECT attempt.job_id, attempt.attempt_id, attempt.intent_key, attempt.outcome,
+        resolution.resolution
+       FROM intent_attempts attempt
+       JOIN execution_jobs job ON job.job_id = attempt.job_id
+       LEFT JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+       WHERE attempt.job_id = ? AND attempt.attempt_id = ? AND job.scope_key = ?`).get(jobId, attemptId, this.scopeKey);
+        return row ? {
+            jobId: row.job_id, attemptId: row.attempt_id, intentKey: row.intent_key,
+            outcome: row.outcome, resolution: row.resolution,
+        } : null;
     }
     issueActionApproval(input) {
         if (!WRITER_RESPONSIBILITIES.includes(input.responsibility)) {
