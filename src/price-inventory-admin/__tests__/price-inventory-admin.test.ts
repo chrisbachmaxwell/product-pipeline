@@ -60,9 +60,13 @@ afterEach(() => {
 function workspace(options: {
   shopifyPrice?: string;
   ebayPrice?: string;
+  shopifyAvailable?: number;
+  ebayQuantity?: number;
 } = {}): ListingWorkspaceDto {
   const shopifyPrice = options.shopifyPrice ?? '44.95';
   const ebayPrice = options.ebayPrice ?? '39.95';
+  const shopifyAvailable = options.shopifyAvailable ?? 1;
+  const ebayQuantity = options.ebayQuantity ?? 1;
   return {
     schemaVersion: 1,
     evidence: {
@@ -76,7 +80,8 @@ function workspace(options: {
       shopify: {
         productId: PRODUCT_GID, variantId: VARIANT_GID, sku: SKU, title: 'Shopify New',
         variantTitle: 'Default', productStatus: 'ACTIVE', primaryImageUrl: null,
-        imageCount: 1, available: 1, price: { amount: shopifyPrice, currency: 'USD' },
+        imageCount: 1, available: shopifyAvailable,
+        price: { amount: shopifyPrice, currency: 'USD' },
       },
       ebay: {
         sku: SKU, state: 'active', listingId: LISTING_ID, offerId: OFFER_ID,
@@ -117,8 +122,8 @@ function workspace(options: {
         condition: { id: '3000', name: 'Used', description: 'Excellent', descriptors: [] },
         aspects: { Mount: ['Canon EF'], Brand: ['Canon'] },
         identifiers: { brand: 'Canon', mpn: null, upc: [], ean: [], isbn: [], epid: null },
-        commerce: { price: { value: ebayPrice, currency: 'USD' }, totalQuantity: 1,
-          soldQuantity: 0, availableQuantity: 1, availableQuantityBasis: 'reported',
+        commerce: { price: { value: ebayPrice, currency: 'USD' }, totalQuantity: ebayQuantity,
+          soldQuantity: 0, availableQuantity: ebayQuantity, availableQuantityBasis: 'reported',
           bestOfferEnabled: false },
         policies: { fulfillmentPolicyId: '111', paymentPolicyId: '222', returnPolicyId: '333',
           paymentMethods: [], shippingType: null, domesticServices: [], internationalServices: [],
@@ -131,11 +136,13 @@ function workspace(options: {
         inventoryItem: { sku: SKU, content: { title: 'eBay Old',
           descriptionHtml: null, imageUrls: [] }, condition: { id: '3000', name: 'Used',
           description: null, descriptors: [] }, aspects: {}, identifiers: { brand: 'Canon',
-          mpn: null, upc: [], ean: [], isbn: [], epid: null }, shipToLocationQuantity: 1 },
+          mpn: null, upc: [], ean: [], isbn: [], epid: null },
+        shipToLocationQuantity: ebayQuantity },
         offer: { offerId: OFFER_ID, sku: SKU, marketplaceId: 'EBAY_US', status: 'PUBLISHED',
           listingStatus: 'ACTIVE', listingOnHold: false, soldQuantity: 0, format: 'FIXED_PRICE',
           duration: 'GTC', descriptionHtml: null, primaryCategoryId: '3323',
-          secondaryCategoryId: null, storeCategoryNames: [], price: null, availableQuantity: 1,
+          secondaryCategoryId: null, storeCategoryNames: [], price: null,
+          availableQuantity: ebayQuantity,
           quantityLimitPerBuyer: null, bestOfferEnabled: false, autoAcceptPrice: null,
           autoDeclinePrice: null, fulfillmentPolicyId: '111', paymentPolicyId: '222',
           returnPolicyId: '333', merchantLocationKey: 'warehouse-1',
@@ -177,8 +184,9 @@ function createWorld(initial: ListingWorkspaceDto = workspace()): World {
   }).close();
 
   // The real bounded adapter over a captured, network-free transport. A
-  // successful provider entry flips the observed eBay price to the Shopify
-  // source price, simulating the remote effect landing.
+  // successful provider entry flips only the dispatched eBay field to the
+  // Shopify source value, simulating the remote effect landing without
+  // contaminating the other responsibility.
   const requests: CapturedRequest[] = [];
   let entryStatusCode = 200;
   const fakeFetch: typeof fetch = async (input, init) => {
@@ -188,9 +196,28 @@ function createWorld(initial: ListingWorkspaceDto = workspace()): World {
       body: String(init?.body ?? ''),
     });
     if (entryStatusCode === 200) {
-      const shopifyPrice = (current.catalog.shopify as { price: { amount: string } })
-        .price.amount;
-      current = workspace({ shopifyPrice, ebayPrice: shopifyPrice });
+      const shopify = current.catalog.shopify as {
+        price: { amount: string };
+        available: number;
+      };
+      const commerce = current.ebayDetail!.actual.commerce;
+      const body = JSON.parse(String(init?.body ?? '')) as {
+        requests: Array<Record<string, unknown>>;
+      };
+      const quantityDispatch = Object.hasOwn(
+        body.requests[0] ?? {},
+        'shipToLocationAvailability',
+      );
+      current = workspace({
+        shopifyPrice: shopify.price.amount,
+        ebayPrice: quantityDispatch
+          ? commerce.price!.value
+          : shopify.price.amount,
+        shopifyAvailable: shopify.available,
+        ebayQuantity: quantityDispatch
+          ? shopify.available
+          : commerce.availableQuantity!,
+      });
     }
     return new Response(
       JSON.stringify({ responses: [{ statusCode: entryStatusCode }] }),
@@ -348,6 +375,89 @@ describe('price/inventory alignment operator CLI (inventory model)', () => {
     // therefore any replayed dispatch) fails closed before any store or
     // provider access.
     await world.run(['plan', ...targetArguments('price')]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
+    expect(world.requests).toHaveLength(1);
+  });
+
+  it('dispatches one approved quantity alignment without price contamination', async () => {
+    const world = createWorld(workspace({
+      shopifyPrice: '44.95',
+      ebayPrice: '44.95',
+      shopifyAvailable: 3,
+      ebayQuantity: 1,
+    }));
+
+    await world.run(establishArguments('inventory', world.migrationDatabasePath));
+    expect(lastJson(world.stdout)).toMatchObject({
+      status: 'established', responsibility: 'inventory', version: 3,
+    });
+
+    await world.run(['plan', ...targetArguments('quantity')]);
+    const preview = lastJson(world.stdout);
+    expect(preview).toMatchObject({
+      command: 'plan',
+      status: 'preview',
+      field: 'quantity',
+      responsibility: 'inventory',
+      drift: { before: '1', after: '3' },
+      externalWritesPerformed: 0,
+    });
+    expect(world.exitCodes.at(-1)).toBe(2);
+    expect(world.requests).toHaveLength(0);
+    const manifestDigest = preview.manifestDigest as string;
+
+    await world.run(['dispatch', ...targetArguments('quantity'),
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    const dispatched = lastJson(world.stdout);
+    expect(dispatched).toMatchObject({
+      command: 'dispatch',
+      status: 'dispatched-and-reconciled',
+      field: 'quantity',
+      responsibility: 'inventory',
+      effect: 'effect_observed',
+      resolution: 'resolved_existing',
+      providerDispatchReported: true,
+      externalCommerceWritesAttempted: 1,
+    });
+
+    expect(world.requests).toHaveLength(1);
+    const request = world.requests[0]!;
+    expect(request.url).toBe('https://api.ebay.com/sell/inventory/v1/bulk_update_price_quantity');
+    expect(request.headers.Authorization).toBe('Bearer test-inventory-token');
+    expect(JSON.parse(request.body)).toEqual({
+      requests: [{
+        sku: SKU,
+        shipToLocationAvailability: { quantity: 3 },
+        offers: [{ offerId: OFFER_ID, availableQuantity: 3 }],
+      }],
+    });
+    expect(request.body).not.toMatch(/price/i);
+
+    const store = openMigrationStoreReadOnly({
+      databasePath: world.migrationDatabasePath,
+      expectedScope: MIGRATION_SCOPE,
+    });
+    expect(store.getCurrentOwnership('inventory')).toMatchObject({
+      owner: 'product_pipeline', version: 3, singleWriterVerified: true,
+    });
+    expect(store.getJobStatus(dispatched.jobId as string)).toMatchObject({
+      state: 'resolved_existing', responsibility: 'inventory',
+    });
+    expect(store.getCounts()).toMatchObject({
+      idempotency_intents: 1,
+      action_approvals: 1,
+      approval_consumptions: 1,
+      execution_jobs: 1,
+      intent_attempts: 1,
+      attempt_resolutions: 1,
+      target_effect_observations: 1,
+    });
+    expect(store.verifyAuditChain()).toMatchObject({ valid: true });
+    store.close();
+
+    await world.run(['plan', ...targetArguments('quantity')]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
     expect(world.requests).toHaveLength(1);
   });
