@@ -97,3 +97,33 @@ export type AuditVerification = {
     headHash: string | null;
     error?: string;
 };
+export type OperationalStoreMonitoring = Readonly<{
+    currentJobs: Readonly<{
+        reserved: number;
+        dispatching: number;
+        reconciliationRequired: number;
+        resolvedExisting: number;
+        confirmedMissing: number;
+    }>;
+    previousUtcDay: Readonly<{
+        dateUtc: string;
+        windowStartUtc: string;
+        windowEndUtc: string;
+        writes: Readonly<{
+            performed: number;
+            succeeded: number;
+            failed: number;
+            unresolved: number;
+        }>;
+        reconciliations: Readonly<{
+            passed: number;
+            blocked: number;
+            failed: number;
+        }>;
+        exceptions: Readonly<{
+            info: number;
+            warning: number;
+            critical: number;
+        }>;
+    }>;
+}>;

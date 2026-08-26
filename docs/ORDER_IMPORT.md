@@ -78,6 +78,19 @@ order-import-admin reconcile --migration-store <path> \
   --order-id <id> --job-id <id> --attempt-id <id> [--accept-absent]
 ```
 
+For daily reports consumed by the G19 dashboard, the operator creates the
+service-owned private directory once on the Railway box before writing a fresh
+report:
+
+```bash
+install -d -m 700 /data/shadow-reports
+```
+
+Use an exact 24-hour poll and a fresh filename inside that directory. The
+monitoring reader denies any directory that is not absolute, service-owned,
+non-symlinked, and exact mode `0700`; report files remain exclusive-create
+mode `0600`.
+
 ### `poll` (read-only, no PII)
 
 - Mints a transient in-memory eBay user token requesting **exactly**

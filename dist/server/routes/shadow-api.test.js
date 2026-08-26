@@ -108,6 +108,42 @@ describe('shadow API allowlist', () => {
             '/api/products/overview',
         ]));
     });
+    it('serves the redacted read-only monitoring digest without provider activity', async () => {
+        const router = createShadowApiRouter({
+            getSnapshot: async () => { throw new Error('not called'); },
+            readMonitoring: async () => ({
+                schemaVersion: 1,
+                status: 'attention',
+                generatedAtUtc: '2026-08-26T12:00:00.000Z',
+                readOnly: true,
+                externalWritesPerformed: 0,
+                providerReadsPerformed: 0,
+                notificationsSent: 0,
+                health: { migrationStore: 'verified', auditChain: 'verified',
+                    catalogRead: 'pending', shadowParity: 'not-configured' },
+                counters: { unresolvedJobs: 0, failedJobs: 0, reconciliationExceptions: 0,
+                    shadowUnmatchedOrders: 0, shadowBlockedOrders: 0, catalogReadFailures: 0 },
+                dailyDigest: {
+                    dateUtc: '2026-08-25', windowStartUtc: '2026-08-25T00:00:00.000Z',
+                    windowEndUtc: '2026-08-26T00:00:00.000Z', digest: `sha256:${'a'.repeat(64)}`,
+                    writes: { performed: 0, succeeded: 0, failed: 0, unresolved: 0,
+                        skipped: null, skippedStatus: 'not-journaled-until-g18' },
+                    reconciliations: { passed: 0, blocked: 0, failed: 0 },
+                    exceptions: { info: 0, warning: 0, critical: 0 },
+                    shadow: { status: 'not-configured', arrivedAtUtc: null, observedCount: 0,
+                        matchedCount: 0, unmatchedCount: 0, blockedCount: 0 },
+                    automationObserved: false,
+                },
+            }),
+        });
+        const response = await requestShadowJson('/api/monitoring/digest', router);
+        expect(response).toMatchObject({
+            status: 200,
+            body: { status: 'attention', readOnly: true, externalWritesPerformed: 0,
+                providerReadsPerformed: 0, notificationsSent: 0 },
+        });
+        expect(JSON.stringify(response.body)).not.toMatch(/token|buyer|email|address|orderId|sku/i);
+    });
     it('projects local listing rows without notes, credentials, or unrelated legacy fields', () => {
         const projected = projectLocalListing({
             id: 7,

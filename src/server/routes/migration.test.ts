@@ -133,6 +133,7 @@ describe('migration status projection', () => {
           historicalBackfillAllowed: false,
         },
         audit: { valid: false, recordCount: 0, headHash: null },
+        monitoring: null,
         readiness: {
           canaryReady: false,
           cutoverReady: false,

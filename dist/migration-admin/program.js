@@ -119,6 +119,36 @@ function safeProjection(projection) {
             recordCount: projection.audit.recordCount,
             headHash: safeHeadHash,
         },
+        monitoring: projection.monitoring === null ? null : {
+            currentJobs: {
+                reserved: projection.monitoring.currentJobs.reserved,
+                dispatching: projection.monitoring.currentJobs.dispatching,
+                reconciliationRequired: projection.monitoring.currentJobs.reconciliationRequired,
+                resolvedExisting: projection.monitoring.currentJobs.resolvedExisting,
+                confirmedMissing: projection.monitoring.currentJobs.confirmedMissing,
+            },
+            previousUtcDay: {
+                dateUtc: projection.monitoring.previousUtcDay.dateUtc,
+                windowStartUtc: projection.monitoring.previousUtcDay.windowStartUtc,
+                windowEndUtc: projection.monitoring.previousUtcDay.windowEndUtc,
+                writes: {
+                    performed: projection.monitoring.previousUtcDay.writes.performed,
+                    succeeded: projection.monitoring.previousUtcDay.writes.succeeded,
+                    failed: projection.monitoring.previousUtcDay.writes.failed,
+                    unresolved: projection.monitoring.previousUtcDay.writes.unresolved,
+                },
+                reconciliations: {
+                    passed: projection.monitoring.previousUtcDay.reconciliations.passed,
+                    blocked: projection.monitoring.previousUtcDay.reconciliations.blocked,
+                    failed: projection.monitoring.previousUtcDay.reconciliations.failed,
+                },
+                exceptions: {
+                    info: projection.monitoring.previousUtcDay.exceptions.info,
+                    warning: projection.monitoring.previousUtcDay.exceptions.warning,
+                    critical: projection.monitoring.previousUtcDay.exceptions.critical,
+                },
+            },
+        },
         readiness: {
             canaryReady: false,
             cutoverReady: false,

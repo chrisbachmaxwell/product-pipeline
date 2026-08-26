@@ -373,6 +373,62 @@ export const useMigrationStatus = () =>
     refetchInterval: 15_000,
   });
 
+export interface OperationalMonitoringResponse {
+  schemaVersion: 1;
+  status: 'green' | 'attention' | 'critical';
+  generatedAtUtc: string;
+  readOnly: true;
+  externalWritesPerformed: 0;
+  providerReadsPerformed: 0;
+  notificationsSent: 0;
+  health: {
+    migrationStore: 'verified' | 'unavailable';
+    auditChain: 'verified' | 'unavailable';
+    catalogRead: 'current' | 'pending' | 'failed';
+    shadowParity: 'clean' | 'attention' | 'stale' | 'not-configured' | 'unavailable';
+  };
+  counters: {
+    unresolvedJobs: number;
+    failedJobs: number;
+    reconciliationExceptions: number;
+    shadowUnmatchedOrders: number;
+    shadowBlockedOrders: number;
+    catalogReadFailures: number;
+  };
+  dailyDigest: {
+    dateUtc: string | null;
+    windowStartUtc: string | null;
+    windowEndUtc: string | null;
+    digest: string;
+    writes: {
+      performed: number;
+      succeeded: number;
+      failed: number;
+      unresolved: number;
+      skipped: null;
+      skippedStatus: 'not-journaled-until-g18';
+    };
+    reconciliations: { passed: number; blocked: number; failed: number };
+    exceptions: { info: number; warning: number; critical: number };
+    shadow: {
+      status: string;
+      arrivedAtUtc: string | null;
+      observedCount: number;
+      matchedCount: number;
+      unmatchedCount: number;
+      blockedCount: number;
+    };
+    automationObserved: false;
+  };
+}
+
+export const useOperationalMonitoring = () =>
+  useQuery({
+    queryKey: ['operational-monitoring'],
+    queryFn: () => apiClient.get<OperationalMonitoringResponse>('/monitoring/digest'),
+    refetchInterval: 60_000,
+  });
+
 export const useListings = (params?: {
   limit?: number;
   offset?: number;

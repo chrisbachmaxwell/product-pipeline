@@ -1793,6 +1793,102 @@ class MigrationStoreImpl {
         }));
     }
     /**
+     * Aggregate-only operational monitoring. It returns no identity, job,
+     * attempt, exception code, digest, or provider/customer value. The window
+     * is the previous completed UTC day. Every write bucket uses the same
+     * dispatch-attempt cohort. Only resolutions recorded before the cohort
+     * window closes classify an attempt as succeeded/failed; later resolution
+     * leaves it truthfully unresolved in this immutable daily view.
+     */
+    getOperationalMonitoring(nowUtc) {
+        this.assertOpen();
+        const now = timestamp(nowUtc, 'monitoring now');
+        const nowDate = new Date(now.epochMs);
+        const endEpochMs = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate());
+        const startEpochMs = endEpochMs - 86_400_000;
+        const windowStartUtc = new Date(startEpochMs).toISOString();
+        const windowEndUtc = new Date(endEpochMs).toISOString();
+        const currentRows = this.database.prepare(`SELECT latest.to_state AS state, COUNT(*) AS count
+       FROM execution_jobs job
+       JOIN job_events latest ON latest.job_id = job.job_id
+       WHERE job.scope_key = ?
+         AND latest.sequence = (
+           SELECT MAX(candidate.sequence) FROM job_events candidate
+           WHERE candidate.job_id = job.job_id
+         )
+       GROUP BY latest.to_state`).all(this.scopeKey);
+        const current = Object.fromEntries(currentRows.map((row) => [row.state, row.count]));
+        const count = (query, ...parameters) => {
+            const row = this.database.prepare(query).get(...parameters);
+            return row.count;
+        };
+        const between = [this.scopeKey, startEpochMs, endEpochMs];
+        return Object.freeze({
+            currentJobs: Object.freeze({
+                reserved: current.reserved ?? 0,
+                dispatching: current.dispatching ?? 0,
+                reconciliationRequired: current.reconciliation_required ?? 0,
+                resolvedExisting: current.resolved_existing ?? 0,
+                confirmedMissing: current.confirmed_missing ?? 0,
+            }),
+            previousUtcDay: Object.freeze({
+                dateUtc: windowStartUtc.slice(0, 10),
+                windowStartUtc,
+                windowEndUtc,
+                writes: Object.freeze({
+                    performed: count(`SELECT COUNT(*) AS count FROM intent_attempts attempt
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             WHERE job.scope_key = ?
+               AND attempt.recorded_epoch_ms >= ? AND attempt.recorded_epoch_ms < ?`, ...between),
+                    succeeded: count(`SELECT COUNT(*) AS count FROM attempt_resolutions resolution
+             JOIN intent_attempts attempt ON attempt.attempt_id = resolution.attempt_id
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             WHERE job.scope_key = ? AND resolution.resolution = 'resolved_existing'
+               AND attempt.recorded_epoch_ms >= ? AND attempt.recorded_epoch_ms < ?
+               AND resolution.reconciled_epoch_ms < ?`, this.scopeKey, startEpochMs, endEpochMs, endEpochMs),
+                    failed: count(`SELECT COUNT(*) AS count FROM attempt_resolutions resolution
+             JOIN intent_attempts attempt ON attempt.attempt_id = resolution.attempt_id
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             WHERE job.scope_key = ? AND resolution.resolution = 'confirmed_missing'
+               AND attempt.recorded_epoch_ms >= ? AND attempt.recorded_epoch_ms < ?
+               AND resolution.reconciled_epoch_ms < ?`, this.scopeKey, startEpochMs, endEpochMs, endEpochMs),
+                    unresolved: count(`SELECT COUNT(*) AS count FROM intent_attempts attempt
+             JOIN execution_jobs job ON job.job_id = attempt.job_id
+             LEFT JOIN attempt_resolutions resolution
+               ON resolution.attempt_id = attempt.attempt_id
+               AND resolution.reconciled_epoch_ms < ?
+             WHERE job.scope_key = ? AND resolution.attempt_id IS NULL
+               AND attempt.recorded_epoch_ms >= ? AND attempt.recorded_epoch_ms < ?`, endEpochMs, this.scopeKey, startEpochMs, endEpochMs),
+                }),
+                reconciliations: Object.freeze({
+                    passed: count(`SELECT COUNT(*) AS count FROM reconciliation_runs
+             WHERE scope_key = ? AND status = 'passed'
+               AND completed_epoch_ms >= ? AND completed_epoch_ms < ?`, ...between),
+                    blocked: count(`SELECT COUNT(*) AS count FROM reconciliation_runs
+             WHERE scope_key = ? AND status = 'blocked'
+               AND completed_epoch_ms >= ? AND completed_epoch_ms < ?`, ...between),
+                    failed: count(`SELECT COUNT(*) AS count FROM reconciliation_runs
+             WHERE scope_key = ? AND status = 'failed'
+               AND completed_epoch_ms >= ? AND completed_epoch_ms < ?`, ...between),
+                }),
+                exceptions: Object.freeze({
+                    info: count(`SELECT COUNT(*) AS count FROM reconciliation_exceptions exception
+             JOIN reconciliation_runs run ON run.run_id = exception.run_id
+             WHERE run.scope_key = ? AND exception.severity = 'info'
+               AND exception.created_epoch_ms >= ? AND exception.created_epoch_ms < ?`, ...between),
+                    warning: count(`SELECT COUNT(*) AS count FROM reconciliation_exceptions exception
+             JOIN reconciliation_runs run ON run.run_id = exception.run_id
+             WHERE run.scope_key = ? AND exception.severity = 'warning'
+               AND exception.created_epoch_ms >= ? AND exception.created_epoch_ms < ?`, ...between),
+                    critical: count(`SELECT COUNT(*) AS count FROM reconciliation_exceptions exception
+             JOIN reconciliation_runs run ON run.run_id = exception.run_id
+             WHERE run.scope_key = ? AND exception.severity = 'critical'
+               AND exception.created_epoch_ms >= ? AND exception.created_epoch_ms < ?`, ...between),
+                }),
+            }),
+        });
+    }
+    /**
      * Counts every execution-authority row (intent, approval, consumption, job,
      * event, attempt, resolution) whose responsibility is not the given one.
      * Kept as a convenience wrapper over the set-based counter.

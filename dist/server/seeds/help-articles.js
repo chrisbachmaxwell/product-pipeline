@@ -433,6 +433,18 @@ Before any dispatch, Marketplace Connect fulfillment behavior must be recorded o
 
 The dispatch creates at most one eBay shipping fulfillment and immediately reconciles it. Tracking values are not printed or stored as raw migration-state data. The app server, webhooks, schedulers, and workers cannot invoke this ceremony. See \`docs/FULFILLMENT_TRACKING_DISPATCH.md\` for the operator steps.`,
     },
+    {
+        question: 'How do I read the operational daily digest?',
+        category: 'Settings',
+        sort_order: 8,
+        answer: `Open **Issues** to see ProductPipeline's read-only operational monitoring panel. Green means the local migration database and audit chain verify, catalog reads are current, the latest order shadow report is clean, and the previous completed UTC day has no unresolved or failed effects, blocked or failed reconciliations, or warning/critical exceptions.
+
+Attention means evidence is pending, missing, or stale. Critical means the local control state is unavailable, a catalog read failed, a job remains unresolved, a daily failure/exception exists, or the shadow report has unmatched or blocked orders. The cache cannot diagnose that a generic read failure was specifically authentication, so the panel labels this counter **Catalog read failures**. Investigate the named category before any new ceremony or worker activation.
+
+Opening Issues refreshes the authenticated local digest once per minute and warms the public health cache. Public health never opens the database: it reports unavailable before that first authenticated refresh and stale after five minutes without another refresh. This is not an automatic monitor or alert.
+
+The panel and health cache contain aggregate counts only. They perform no provider read or write, send no notification, and expose no order IDs, SKUs, customer data, credentials, or database paths. The daily write buckets are one prior-UTC-day attempt cohort and always satisfy succeeded + failed + unresolved = performed; a resolution after midnight leaves that completed-day attempt unresolved. Skipped-write counts remain unavailable until separately approved G18 workers add a run journal. The digest identifies the redacted aggregate snapshot; it is not external provider proof. See \`docs/OPERATIONAL_MONITORING.md\`.`,
+    },
 ];
 /**
  * Seed help articles into the help_questions table.

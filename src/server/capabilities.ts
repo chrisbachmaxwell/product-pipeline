@@ -62,6 +62,16 @@ registerCapability({
 });
 
 registerCapability({
+  id: 'operational-monitoring',
+  name: 'Operational Monitoring',
+  description: 'View a redacted read-only daily digest of ceremony outcomes, reconciliation exceptions, shadow parity, and catalog read health.',
+  category: 'analytics',
+  examplePrompts: ['show operational monitoring', 'show the daily operations digest'],
+  apiEndpoints: ['GET /api/monitoring/digest', 'GET /health'],
+  addedAt: '2026-08-26',
+});
+
+registerCapability({
   id: 'product-sync',
   name: 'Product Sync',
   description: 'Sync products from Shopify to eBay — push titles, prices, inventory and images.',

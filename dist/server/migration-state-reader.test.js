@@ -57,6 +57,20 @@ const VERIFIED = {
         historicalBackfillAllowed: false,
     },
     audit: { valid: true, recordCount: 1, headHash: `sha256:${'2'.repeat(64)}` },
+    monitoring: {
+        currentJobs: {
+            reserved: 0, dispatching: 0, reconciliationRequired: 0,
+            resolvedExisting: 0, confirmedMissing: 0,
+        },
+        previousUtcDay: {
+            dateUtc: '2026-08-25',
+            windowStartUtc: '2026-08-25T00:00:00.000Z',
+            windowEndUtc: '2026-08-26T00:00:00.000Z',
+            writes: { performed: 0, succeeded: 0, failed: 0, unresolved: 0 },
+            reconciliations: { passed: 0, blocked: 0, failed: 0 },
+            exceptions: { info: 0, warning: 0, critical: 0 },
+        },
+    },
     readiness: {
         canaryReady: false,
         cutoverReady: false,
@@ -112,6 +126,7 @@ describe('request-time durable migration-state reader', () => {
         expect(inspectStore).toHaveBeenCalledWith({
             databasePath: '/repo/.local/migration-state/product-pipeline-migration-v1.sqlite',
             expectedScope: SCOPE,
+            nowUtc: expect.any(String),
         });
         expect(result).toMatchObject({
             status: 'verified',
@@ -170,6 +185,7 @@ describe('request-time durable migration-state reader', () => {
             'ownership',
             'orders',
             'audit',
+            'monitoring',
             'readiness',
         ]);
     });
@@ -192,6 +208,26 @@ describe('request-time durable migration-state reader', () => {
             orders: { watermarkUtc: null, watermarkEstablished: false, eligibleForCreation: 0 },
             readiness: { canaryReady: false, cutoverReady: false },
         });
+    });
+    it('rejects monitoring write buckets that do not partition one attempt cohort', async () => {
+        const result = await readConfiguredMigrationState({
+            environment: { MIGRATION_STATE_CONFIG_PATH: 'config/migration-state.json' },
+            loadConfig: vi.fn(async () => ({
+                config: { scope: SCOPE },
+                databaseAbsolutePath: '/repo/.local/migration-state/product-pipeline-migration-v1.sqlite',
+            })),
+            inspectStore: vi.fn(() => ({
+                ...VERIFIED,
+                monitoring: {
+                    ...VERIFIED.monitoring,
+                    previousUtcDay: {
+                        ...VERIFIED.monitoring.previousUtcDay,
+                        writes: { performed: 1, succeeded: 1, failed: 0, unresolved: 1 },
+                    },
+                },
+            })),
+        });
+        expect(result).toMatchObject({ status: 'invalid', monitoring: null });
     });
     it('accepts a production watermark only with ProductPipeline single-writer orderImport ownership', async () => {
         const watermarked = (orderImportOwner) => ({
