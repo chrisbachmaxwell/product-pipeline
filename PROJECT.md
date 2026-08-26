@@ -343,6 +343,15 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: G20 Off-Volume Backup and Restore-Rehearsal Tooling
+Added the standalone, deploy-inert `control-state-backup-admin` CLI for consistent SQLite online
+snapshots of the app, listing-control, and migration databases plus bounded shadow reports. It
+requires a private destination on a different filesystem device, writes deterministic SHA-256
+manifests without exposing contents, refuses overwrite/symlink/hard-link substitution, and supports
+only an isolated new-directory restore rehearsal with digest and SQLite-integrity verification.
+Production storage, scheduling, retention, and the first real rehearsal remain operator-gated; no
+Production backup, restore, deployment, credential access, provider call, or commerce write occurred.
+
 ### 2026-08-26: Branded Description Support for Listing Create
 
 - Added opt-in \`--description-template ucg-branded-v1\` support to listing-lifecycle create preflight, dispatch, and recovery reconciliation. The rendered HTML replaces only the approved description before the deterministic manifest digest is computed; untemplated creates retain their prior bytes and digest behavior.

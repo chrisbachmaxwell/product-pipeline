@@ -416,6 +416,20 @@ That procedure can invoke exactly one descriptor-bound file-mode change to \`060
 The upgrade changes only the dedicated local migration-state schema. It has no provider client and cannot change Shopify, eBay, Marketplace Connect, Lightspeed, listings, prices, inventory, orders, or fulfillment. Never bypass a schema mismatch, skip the backup, or restore a pre-cutover backup after real order imports begin. See \`docs/MIGRATION_ADMIN.md\` for the exact commands.`,
   },
   {
+    question: 'How are ProductPipeline control-state backups tested?',
+    category: 'Settings',
+    sort_order: 8,
+    answer: `Backups are created only by the standalone control-state backup CLI. It snapshots the app database, listing-control store, migration store, and shadow reports to a pre-provisioned private filesystem on a different device from the Railway data volume. Deploying the app never starts a backup.
+
+1. An operator reviews the exact source and off-volume destination paths in the private configuration.
+2. Run the preview command and record its nonsecret configuration digest.
+3. Run one snapshot command with that digest and a fresh canonical UTC timestamp.
+4. Run verify against the completed snapshot.
+5. Periodically run rehearse-restore into a brand-new empty path on an isolated filesystem.
+
+The tool never overwrites a snapshot or restore target and has no live-restore, provider, credential, order-import, or commerce-write path. A successful rehearsal proves file digests and SQLite integrity only; it does not authorize replacing the live data volume or resuming writers. See docs/CONTROL_STATE_BACKUP.md for the exact boundary and commands.`,
+  },
+  {
     question: 'How do I read an eBay order shadow-parity report?',
     category: 'eBay',
     sort_order: 8,
