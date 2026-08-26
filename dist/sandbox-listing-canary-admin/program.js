@@ -142,20 +142,48 @@ function requireCleaned(snapshot, listingId) {
 }
 export function discoverSandboxRecovery(snapshot, manifest) {
     const payloads = buildPayloads(manifest);
-    const inventoryExact = !!snapshot.inventory && sha256Digest(snapshot.inventory) === sha256Digest({ sku: manifest.target.sku, ...payloads.inventory });
-    const ended = snapshot.tradingListings.length === 1 && ['Completed', 'Ended'].includes(snapshot.tradingListings[0]?.listingStatus ?? '');
+    const inventoryExact = !!snapshot.inventory &&
+        sha256Digest(snapshot.inventory) ===
+            sha256Digest({ sku: manifest.target.sku, ...payloads.inventory });
+    const ended = snapshot.tradingListings.length === 1 &&
+        ['Completed', 'Ended'].includes(snapshot.tradingListings[0]?.listingStatus ?? '');
     if (!snapshot.inventory && snapshot.offers.length === 0)
-        return { stage: snapshot.tradingListings.length === 0 ? 'absent' : ended ? 'cleaned' : 'drift', offerId: null, listingId: ended ? snapshot.tradingListings[0].itemId : null };
+        return {
+            stage: snapshot.tradingListings.length === 0 ? 'absent' : ended ? 'cleaned' : 'drift',
+            offerId: null,
+            listingId: ended ? snapshot.tradingListings[0].itemId : null,
+        };
     if (!inventoryExact || snapshot.offers.length > 1 || snapshot.tradingListings.length > 1)
         return { stage: 'drift', offerId: null, listingId: null };
     if (snapshot.offers.length === 0)
-        return { stage: ended ? 'inventory_only_ended' : snapshot.tradingListings.length === 0 ? 'inventory_only' : 'drift', offerId: null, listingId: ended ? snapshot.tradingListings[0].itemId : null };
+        return {
+            stage: ended
+                ? 'inventory_only_ended'
+                : snapshot.tradingListings.length === 0
+                    ? 'inventory_only'
+                    : 'drift',
+            offerId: null,
+            listingId: ended ? snapshot.tradingListings[0].itemId : null,
+        };
     const offer = snapshot.offers[0];
-    const expected = { offerId: offer.offerId, ...payloads.offer, status: offer.status, listingId: offer.listingId };
+    const expected = {
+        offerId: offer.offerId,
+        ...payloads.offer,
+        status: offer.status,
+        listingId: offer.listingId,
+    };
     if (sha256Digest(offer) !== sha256Digest(expected))
         return { stage: 'drift', offerId: null, listingId: null };
     if (offer.status === 'UNPUBLISHED' && offer.listingId === null)
-        return { stage: ended ? 'offer_unpublished_ended' : snapshot.tradingListings.length === 0 ? 'offer_unpublished' : 'drift', offerId: offer.offerId, listingId: ended ? snapshot.tradingListings[0].itemId : null };
+        return {
+            stage: ended
+                ? 'offer_unpublished_ended'
+                : snapshot.tradingListings.length === 0
+                    ? 'offer_unpublished'
+                    : 'drift',
+            offerId: offer.offerId,
+            listingId: ended ? snapshot.tradingListings[0].itemId : null,
+        };
     if (offer.status === 'PUBLISHED' && offer.listingId) {
         try {
             assertSandboxCreatedState(snapshot, offer.offerId, offer.listingId, manifest);
@@ -202,14 +230,45 @@ function createIntentKey(t, s) {
     });
 }
 function recoverySource(o, t, s, listingId) {
-    if (!SAFE.test(o.sourceJobId) || !SAFE.test(o.sourceAttemptId) || !DIGEST.test(o.sourceIntentKey) || !['listingCreate', 'listingEndRelist'].includes(o.sourceResponsibility))
+    if (!SAFE.test(o.sourceJobId) ||
+        !SAFE.test(o.sourceAttemptId) ||
+        !DIGEST.test(o.sourceIntentKey) ||
+        !DIGEST.test(o.sourceEvidenceDigest) ||
+        !['listingCreate', 'listingEndRelist'].includes(o.sourceResponsibility))
         deny('RECOVERY_SOURCE_INVALID');
     const responsibility = o.sourceResponsibility;
     if (responsibility === 'listingEndRelist' && !listingId)
         deny('RECOVERY_SOURCE_INVALID');
-    return { responsibility, ceremony: { intentKey: o.sourceIntentKey, targetIdentityKey: responsibility === 'listingCreate' ? deriveExternalIdentityKey(skuIdentity(t, s)) : deriveExternalIdentityKey(listingIdentity(listingId, s)), jobId: o.sourceJobId, attemptId: o.sourceAttemptId, markDispatching: () => deny('RECOVERY_SOURCE_WRITE_DENIED') } };
+    return {
+        responsibility,
+        evidenceDigest: o.sourceEvidenceDigest,
+        ceremony: {
+            intentKey: o.sourceIntentKey,
+            targetIdentityKey: responsibility === 'listingCreate'
+                ? deriveExternalIdentityKey(skuIdentity(t, s))
+                : deriveExternalIdentityKey(listingIdentity(listingId, s)),
+            jobId: o.sourceJobId,
+            attemptId: o.sourceAttemptId,
+            markDispatching: () => deny('RECOVERY_SOURCE_WRITE_DENIED'),
+        },
+    };
 }
-function recoveryDigest(t, manifestDigest, o, d) { return sha256Digest({ schemaVersion: 1, action: 'sandbox_recovery_cleanup', target: { storeDomain: t.storeDomain, variantGid: t.variantGid, sku: t.sku }, manifestDigest, source: { responsibility: o.sourceResponsibility, jobId: o.sourceJobId, attemptId: o.sourceAttemptId, intentKey: o.sourceIntentKey }, residue: d }); }
+function recoveryDigest(t, manifestDigest, o, d) {
+    return sha256Digest({
+        schemaVersion: 1,
+        action: 'sandbox_recovery_cleanup',
+        target: { storeDomain: t.storeDomain, variantGid: t.variantGid, sku: t.sku },
+        manifestDigest,
+        source: {
+            responsibility: o.sourceResponsibility,
+            jobId: o.sourceJobId,
+            attemptId: o.sourceAttemptId,
+            intentKey: o.sourceIntentKey,
+            evidenceDigest: o.sourceEvidenceDigest,
+        },
+        residue: d,
+    });
+}
 function establishOwnership(store, responsibility, evidence, next, uuid) {
     let current = store.getCurrentOwnership(responsibility);
     if (!current) {
@@ -368,7 +427,7 @@ function requireReconcile(store, c, digest, next) {
         },
     });
 }
-function assertOutstanding(store, c, responsibility) {
+function assertOutstanding(store, c, responsibility, expectedEvidenceDigest) {
     const job = store.getJobStatus(c.jobId);
     const attempt = store.getAttemptStatus(c.jobId, c.attemptId);
     if (!job ||
@@ -376,13 +435,14 @@ function assertOutstanding(store, c, responsibility) {
         job.intentKey !== c.intentKey ||
         attempt.intentKey !== c.intentKey ||
         job.targetIdentityKey !== c.targetIdentityKey ||
+        job.approvalEvidenceDigest !== expectedEvidenceDigest ||
         job.responsibility !== responsibility ||
         job.state !== 'reconciliation_required' ||
         attempt.resolution !== null)
         deny('RECONCILIATION_BINDING_INVALID');
 }
 function resolve(store, c, responsibility, digest, observed, next, uuid) {
-    assertOutstanding(store, c, responsibility);
+    assertOutstanding(store, c, responsibility, digest);
     const at = next();
     const runId = `sandbox-run:${uuid()}`;
     store.recordReconciliationRun({
@@ -724,7 +784,7 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
                 attemptId: o.attemptId,
                 markDispatching: () => deny('RECONCILE_WRITE_DENIED'),
             };
-            assertOutstanding(store, c, 'listingCreate');
+            assertOutstanding(store, c, 'listingCreate', actionDigest);
             requireCreated(await a.adapter.snapshot(t.sku), o.offerId, o.listingId, parsed.manifest);
             const observed = sha256Digest({
                 sku: t.sku,
@@ -744,10 +804,14 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             store.close();
         }
     }));
-    targetOptions(program.command('recover-create')
-        .requiredOption('--state <absolute-path>').requiredOption('--manifest-digest <sha256>')
-        .requiredOption('--action-digest <sha256>').requiredOption('--job-id <id>')
-        .requiredOption('--attempt-id <id>').requiredOption('--intent-key <sha256>')).action(run('recover-create', async (o) => {
+    targetOptions(program
+        .command('recover-create')
+        .requiredOption('--state <absolute-path>')
+        .requiredOption('--manifest-digest <sha256>')
+        .requiredOption('--action-digest <sha256>')
+        .requiredOption('--job-id <id>')
+        .requiredOption('--attempt-id <id>')
+        .requiredOption('--intent-key <sha256>')).action(run('recover-create', async (o) => {
         if (!SAFE.test(o.jobId) || !SAFE.test(o.attemptId) || !DIGEST.test(o.intentKey))
             deny('TARGET_INVALID');
         const t = target(o);
@@ -762,17 +826,41 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
         const store = openMigrationStore({ databasePath: o.state, expectedScope: s });
         const next = clock(now);
         try {
-            const c = { intentKey: o.intentKey, targetIdentityKey: deriveExternalIdentityKey(skuIdentity(t, s)), jobId: o.jobId, attemptId: o.attemptId, markDispatching: () => deny('RECOVERY_WRITE_DENIED') };
-            assertOutstanding(store, c, 'listingCreate');
+            const c = {
+                intentKey: o.intentKey,
+                targetIdentityKey: deriveExternalIdentityKey(skuIdentity(t, s)),
+                jobId: o.jobId,
+                attemptId: o.attemptId,
+                markDispatching: () => deny('RECOVERY_WRITE_DENIED'),
+            };
+            assertOutstanding(store, c, 'listingCreate', actionDigest);
             const discovered = discoverRecovery(await a.adapter.snapshot(t.sku), parsed.manifest);
             if (discovered.stage === 'drift' || discovered.stage === 'cleaned')
                 deny('CREATE_RECOVERY_AMBIGUOUS');
             if (discovered.stage === 'created' && discovered.offerId && discovered.listingId) {
-                const observed = sha256Digest({ sku: t.sku, offerId: discovered.offerId, listingId: discovered.listingId, state: 'published', actionDigest });
+                const observed = sha256Digest({
+                    sku: t.sku,
+                    offerId: discovered.offerId,
+                    listingId: discovered.listingId,
+                    state: 'published',
+                    actionDigest,
+                });
                 const runId = resolve(store, c, 'listingCreate', actionDigest, observed, next, uuid);
-                return { status: 'reconciled', ...discovered, reconciliationRunId: runId, providerWritesPerformed: 0 };
+                return {
+                    status: 'reconciled',
+                    ...discovered,
+                    reconciliationRunId: runId,
+                    providerWritesPerformed: 0,
+                };
             }
-            return { status: 'recovery-required', ...discovered, jobId: o.jobId, attemptId: o.attemptId, intentKey: o.intentKey, providerWritesPerformed: 0 };
+            return {
+                status: 'recovery-required',
+                ...discovered,
+                jobId: o.jobId,
+                attemptId: o.attemptId,
+                intentKey: o.intentKey,
+                providerWritesPerformed: 0,
+            };
         }
         finally {
             store.close();
@@ -1011,7 +1099,7 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
                 attemptId: o.attemptId,
                 markDispatching: () => deny('RECONCILE_WRITE_DENIED'),
             };
-            assertOutstanding(store, c, 'listingEndRelist');
+            assertOutstanding(store, c, 'listingEndRelist', expected);
             requireCleaned(await a.adapter.snapshot(t.sku), o.listingId);
             const observed = sha256Digest({
                 sku: t.sku,
@@ -1029,7 +1117,12 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             store.close();
         }
     }));
-    const recoverySourceOptions = (c) => c.requiredOption('--source-responsibility <responsibility>').requiredOption('--source-job-id <id>').requiredOption('--source-attempt-id <id>').requiredOption('--source-intent-key <sha256>');
+    const recoverySourceOptions = (c) => c
+        .requiredOption('--source-responsibility <responsibility>')
+        .requiredOption('--source-job-id <id>')
+        .requiredOption('--source-attempt-id <id>')
+        .requiredOption('--source-intent-key <sha256>')
+        .requiredOption('--source-evidence-digest <sha256>');
     recoverySourceOptions(targetOptions(program.command('preflight-recovery-cleanup').requiredOption('--state <absolute-path>'))).action(run('preflight-recovery-cleanup', async (o) => {
         const t = target(o);
         const parsed = readSandboxManifest(o.manifestFile, t);
@@ -1041,14 +1134,24 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             if (['drift', 'absent', 'cleaned'].includes(d.stage))
                 deny('RECOVERY_RESIDUE_NOT_EXACT');
             const source = recoverySource(o, t, s, d.listingId);
-            assertOutstanding(store, source.ceremony, source.responsibility);
-            return { status: 'ready', stage: d.stage, offerId: d.offerId, listingId: d.listingId, recoveryDigest: recoveryDigest(t, parsed.digest, o, d), providerWritesPerformed: 0 };
+            assertOutstanding(store, source.ceremony, source.responsibility, source.evidenceDigest);
+            return {
+                status: 'ready',
+                stage: d.stage,
+                offerId: d.offerId,
+                listingId: d.listingId,
+                recoveryDigest: recoveryDigest(t, parsed.digest, o, d),
+                providerWritesPerformed: 0,
+            };
         }
         finally {
             store.close();
         }
     }, true));
-    recoverySourceOptions(targetOptions(program.command('approve-recovery-cleanup').requiredOption('--state <absolute-path>').requiredOption('--recovery-digest <sha256>'))).action(run('approve-recovery-cleanup', async (o) => {
+    recoverySourceOptions(targetOptions(program
+        .command('approve-recovery-cleanup')
+        .requiredOption('--state <absolute-path>')
+        .requiredOption('--recovery-digest <sha256>'))).action(run('approve-recovery-cleanup', async (o) => {
         const t = target(o);
         const parsed = readSandboxManifest(o.manifestFile, t);
         const a = await authority(deps, now());
@@ -1061,15 +1164,40 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             if (expected !== o.recoveryDigest || ['drift', 'absent', 'cleaned'].includes(d.stage))
                 deny('RECOVERY_DIGEST_MISMATCH');
             const source = recoverySource(o, t, s, d.listingId);
-            assertOutstanding(store, source.ceremony, source.responsibility);
-            const approved = approve({ store, s, t, action: 'end_or_relist_ebay_listing', responsibility: 'listingEndRelist', targetIdentity: d.listingId ? listingIdentity(d.listingId, s) : skuIdentity(t, s), manifestDigest: expected, intentDesiredDigest: expected, next, uuid });
-            return { status: 'approved', stage: d.stage, offerId: d.offerId, listingId: d.listingId, recoveryDigest: expected, ...approved, providerWritesPerformed: 0 };
+            assertOutstanding(store, source.ceremony, source.responsibility, source.evidenceDigest);
+            const approved = approve({
+                store,
+                s,
+                t,
+                action: 'end_or_relist_ebay_listing',
+                responsibility: 'listingEndRelist',
+                targetIdentity: d.listingId ? listingIdentity(d.listingId, s) : skuIdentity(t, s),
+                manifestDigest: expected,
+                intentDesiredDigest: expected,
+                next,
+                uuid,
+            });
+            return {
+                status: 'approved',
+                stage: d.stage,
+                offerId: d.offerId,
+                listingId: d.listingId,
+                recoveryDigest: expected,
+                ...approved,
+                providerWritesPerformed: 0,
+            };
         }
         finally {
             store.close();
         }
     }));
-    recoverySourceOptions(targetOptions(program.command('dispatch-recovery-cleanup').requiredOption('--state <absolute-path>').requiredOption('--recovery-digest <sha256>').requiredOption('--approval-token <token>').requiredOption('--approval-digest <sha256>').requiredOption('--intent-key <sha256>'))).action(run('dispatch-recovery-cleanup', async (o) => {
+    recoverySourceOptions(targetOptions(program
+        .command('dispatch-recovery-cleanup')
+        .requiredOption('--state <absolute-path>')
+        .requiredOption('--recovery-digest <sha256>')
+        .requiredOption('--approval-token <token>')
+        .requiredOption('--approval-digest <sha256>')
+        .requiredOption('--intent-key <sha256>'))).action(run('dispatch-recovery-cleanup', async (o) => {
         const t = target(o);
         const parsed = readSandboxManifest(o.manifestFile, t);
         const a = await authority(deps, now());
@@ -1083,9 +1211,19 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             if (expected !== o.recoveryDigest || ['drift', 'absent', 'cleaned'].includes(d.stage))
                 deny('RECOVERY_DIGEST_MISMATCH');
             const source = recoverySource(o, t, s, d.listingId);
-            assertOutstanding(store, source.ceremony, source.responsibility);
+            assertOutstanding(store, source.ceremony, source.responsibility, source.evidenceDigest);
             const targetKey = deriveExternalIdentityKey(d.listingId ? listingIdentity(d.listingId, s) : skuIdentity(t, s));
-            const c = reserve({ store, responsibility: 'listingEndRelist', intentKey: o.intentKey, targetIdentityKey: targetKey, approvalToken: o.approvalToken, approvalDigest: o.approvalDigest, evidenceDigest: expected, next, uuid });
+            const c = reserve({
+                store,
+                responsibility: 'listingEndRelist',
+                intentKey: o.intentKey,
+                targetIdentityKey: targetKey,
+                approvalToken: o.approvalToken,
+                approvalDigest: o.approvalDigest,
+                evidenceDigest: expected,
+                next,
+                uuid,
+            });
             c.markDispatching();
             let dispatchError = null;
             try {
@@ -1116,22 +1254,51 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
             if (after) {
                 try {
                     d.listingId ? requireCleaned(after, d.listingId) : requireClean(after);
-                    const observed = sha256Digest({ sku: t.sku, listingId: d.listingId, state: d.listingId ? 'ended' : 'absent' });
+                    const observed = sha256Digest({
+                        sku: t.sku,
+                        listingId: d.listingId,
+                        state: d.listingId ? 'ended' : 'absent',
+                    });
                     const runId = resolve(store, c, 'listingEndRelist', expected, observed, next, uuid);
-                    return { status: 'cleaned-and-reconciled', jobId: c.jobId, attemptId: c.attemptId, intentKey: c.intentKey, reconciliationRunId: runId, providerWritesAttempted: attempted };
+                    return {
+                        status: 'cleaned-and-reconciled',
+                        jobId: c.jobId,
+                        attemptId: c.attemptId,
+                        intentKey: c.intentKey,
+                        reconciliationRunId: runId,
+                        providerWritesAttempted: attempted,
+                    };
                 }
                 catch (e) {
                     dispatchError = safeError(e).code;
                 }
             }
-            return { status: 'dispatched-unresolved', code: dispatchError ?? 'RECOVERY_CLEANUP_OUTCOME_UNKNOWN', jobId: c.jobId, attemptId: c.attemptId, intentKey: c.intentKey, providerWritesAttempted: attempted };
+            return {
+                status: 'dispatched-unresolved',
+                code: dispatchError ?? 'RECOVERY_CLEANUP_OUTCOME_UNKNOWN',
+                jobId: c.jobId,
+                attemptId: c.attemptId,
+                intentKey: c.intentKey,
+                providerWritesAttempted: attempted,
+            };
         }
         finally {
             store.close();
         }
     }));
-    targetOptions(program.command('reconcile-recovery-cleanup').requiredOption('--state <absolute-path>').requiredOption('--recovery-digest <sha256>').requiredOption('--listing-id <id-or-none>').requiredOption('--job-id <id>').requiredOption('--attempt-id <id>').requiredOption('--intent-key <sha256>')).action(run('reconcile-recovery-cleanup', async (o) => {
-        if (!DIGEST.test(o.recoveryDigest) || !DIGEST.test(o.intentKey) || !SAFE.test(o.jobId) || !SAFE.test(o.attemptId) || (o.listingId !== 'none' && !NUMERIC.test(o.listingId)))
+    targetOptions(program
+        .command('reconcile-recovery-cleanup')
+        .requiredOption('--state <absolute-path>')
+        .requiredOption('--recovery-digest <sha256>')
+        .requiredOption('--listing-id <id-or-none>')
+        .requiredOption('--job-id <id>')
+        .requiredOption('--attempt-id <id>')
+        .requiredOption('--intent-key <sha256>')).action(run('reconcile-recovery-cleanup', async (o) => {
+        if (!DIGEST.test(o.recoveryDigest) ||
+            !DIGEST.test(o.intentKey) ||
+            !SAFE.test(o.jobId) ||
+            !SAFE.test(o.attemptId) ||
+            (o.listingId !== 'none' && !NUMERIC.test(o.listingId)))
             deny('TARGET_INVALID');
         const t = target(o);
         readSandboxManifest(o.manifestFile, t);
@@ -1141,11 +1308,21 @@ export function buildSandboxListingCanaryProgram(deps = {}) {
         const next = clock(now);
         const listingId = o.listingId === 'none' ? null : o.listingId;
         try {
-            const c = { intentKey: o.intentKey, targetIdentityKey: deriveExternalIdentityKey(listingId ? listingIdentity(listingId, s) : skuIdentity(t, s)), jobId: o.jobId, attemptId: o.attemptId, markDispatching: () => deny('RECONCILE_WRITE_DENIED') };
-            assertOutstanding(store, c, 'listingEndRelist');
+            const c = {
+                intentKey: o.intentKey,
+                targetIdentityKey: deriveExternalIdentityKey(listingId ? listingIdentity(listingId, s) : skuIdentity(t, s)),
+                jobId: o.jobId,
+                attemptId: o.attemptId,
+                markDispatching: () => deny('RECONCILE_WRITE_DENIED'),
+            };
+            assertOutstanding(store, c, 'listingEndRelist', o.recoveryDigest);
             const snapshot = await a.adapter.snapshot(t.sku);
             listingId ? requireCleaned(snapshot, listingId) : requireClean(snapshot);
-            const observed = sha256Digest({ sku: t.sku, listingId, state: listingId ? 'ended' : 'absent' });
+            const observed = sha256Digest({
+                sku: t.sku,
+                listingId,
+                state: listingId ? 'ended' : 'absent',
+            });
             const runId = resolve(store, c, 'listingEndRelist', o.recoveryDigest, observed, next, uuid);
             return { status: 'reconciled', reconciliationRunId: runId, providerWritesPerformed: 0 };
         }

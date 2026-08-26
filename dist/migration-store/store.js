@@ -1002,7 +1002,8 @@ class MigrationStoreImpl {
         this.assertOpen();
         const jobId = identifier(jobIdInput, 'jobId');
         const row = this.database
-            .prepare(`SELECT job.job_id, job.intent_key, job.responsibility, job.target_identity_key, job.ownership_version,
+            .prepare(`SELECT job.job_id, job.intent_key, job.responsibility, job.target_identity_key,
+          job.approval_evidence_digest, job.ownership_version,
           event.to_state AS state,
           (SELECT attempt.outcome FROM intent_attempts attempt
            WHERE attempt.job_id = job.job_id ORDER BY attempt.ordinal DESC LIMIT 1) AS attempt_outcome
@@ -1019,6 +1020,7 @@ class MigrationStoreImpl {
                 intentKey: row.intent_key,
                 responsibility: row.responsibility,
                 targetIdentityKey: row.target_identity_key,
+                approvalEvidenceDigest: row.approval_evidence_digest,
                 ownershipVersion: row.ownership_version,
                 state: row.state,
                 attemptOutcome: row.attempt_outcome,

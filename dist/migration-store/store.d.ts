@@ -133,6 +133,7 @@ declare class MigrationStoreImpl {
         intentKey: Digest;
         responsibility: Responsibility;
         targetIdentityKey: Digest;
+        approvalEvidenceDigest: Digest;
         ownershipVersion: number;
         state: string;
         attemptOutcome: 'outcome_unknown' | null;

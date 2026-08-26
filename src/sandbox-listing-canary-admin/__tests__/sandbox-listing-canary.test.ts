@@ -301,11 +301,22 @@ describe('sandbox canary manifest and endpoint boundary', () => {
       ).toThrowError(/denied/);
   });
   it('classifies response-lost create residue without mutation', () => {
-    const m=manifest() as SandboxListingManifest;const base=createdSnapshot();
-    expect(discoverSandboxRecovery({...base,offers:[],tradingListings:[]},m)).toMatchObject({stage:'inventory_only',offerId:null,listingId:null});
-    const unpublished={...base.offers[0],status:'UNPUBLISHED',listingId:null};
-    expect(discoverSandboxRecovery({...base,offers:[unpublished],tradingListings:[]},m)).toMatchObject({stage:'offer_unpublished',offerId:'OFFER-100',listingId:null});
-    expect(discoverSandboxRecovery(base,m)).toMatchObject({stage:'created',offerId:'OFFER-100',listingId:'123456789012'});
+    const m = manifest() as SandboxListingManifest;
+    const base = createdSnapshot();
+    expect(discoverSandboxRecovery({ ...base, offers: [], tradingListings: [] }, m)).toMatchObject({
+      stage: 'inventory_only',
+      offerId: null,
+      listingId: null,
+    });
+    const unpublished = { ...base.offers[0], status: 'UNPUBLISHED', listingId: null };
+    expect(
+      discoverSandboxRecovery({ ...base, offers: [unpublished], tradingListings: [] }, m),
+    ).toMatchObject({ stage: 'offer_unpublished', offerId: 'OFFER-100', listingId: null });
+    expect(discoverSandboxRecovery(base, m)).toMatchObject({
+      stage: 'created',
+      offerId: 'OFFER-100',
+      listingId: '123456789012',
+    });
   });
 });
 
@@ -372,7 +383,10 @@ describe('standalone ceremony', () => {
           return new Response(null, { status: 204 });
         }
         if (method === 'DELETE') {
-          if(failDeleteInventoryOnce&&listingStatus==='Ended'){failDeleteInventoryOnce=false;return new Response('',{status:500});}
+          if (failDeleteInventoryOnce && listingStatus === 'Ended') {
+            failDeleteInventoryOnce = false;
+            return new Response('', { status: 500 });
+          }
           state = 'absent';
           return new Response(null, { status: 204 });
         }
@@ -638,7 +652,7 @@ describe('standalone ceremony', () => {
       created.json.intentKey,
     ]);
     expect(recovered.json.status).toBe('reconciled');
-    expect(recovered.json).toMatchObject({offerId,listingId,stage:'created'});
+    expect(recovered.json).toMatchObject({ offerId, listingId, stage: 'created' });
     const auditBeforeReplay = (await execute('verify-state', ['--state', f.state])).json.audit
       .recordCount;
     const terminalReplay = await execute('recover-create', [
@@ -721,34 +735,121 @@ describe('standalone ceremony', () => {
     expect(
       calls.filter((v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll')),
     ).toHaveLength(cleanupWrites);
-    const recoverySource=['--source-responsibility','listingEndRelist','--source-job-id',cleaned.json.jobId,'--source-attempt-id',cleaned.json.attemptId,'--source-intent-key',cleaned.json.intentKey];
-    const recoveryCleanup=await execute('preflight-recovery-cleanup',['--state',f.state,...recoverySource]);
-    expect(recoveryCleanup.json).toMatchObject({status:'ready',stage:'offer_unpublished_ended',offerId,listingId});
-    const recoveryApproval=await execute('approve-recovery-cleanup',['--state',f.state,...recoverySource,'--recovery-digest',recoveryCleanup.json.recoveryDigest]);
+    const recoverySource = [
+      '--source-responsibility',
+      'listingEndRelist',
+      '--source-job-id',
+      cleaned.json.jobId,
+      '--source-attempt-id',
+      cleaned.json.attemptId,
+      '--source-intent-key',
+      cleaned.json.intentKey,
+      '--source-evidence-digest',
+      cleanup.json.cleanupDigest,
+    ];
+    const recoveryCleanup = await execute('preflight-recovery-cleanup', [
+      '--state',
+      f.state,
+      ...recoverySource,
+    ]);
+    expect(recoveryCleanup.json).toMatchObject({
+      status: 'ready',
+      stage: 'offer_unpublished_ended',
+      offerId,
+      listingId,
+    });
+    const recoveryApproval = await execute('approve-recovery-cleanup', [
+      '--state',
+      f.state,
+      ...recoverySource,
+      '--recovery-digest',
+      recoveryCleanup.json.recoveryDigest,
+    ]);
     expect(recoveryApproval.json.status).toBe('approved');
     const cleanupRecovered = await execute('dispatch-recovery-cleanup', [
       '--state',
       f.state,
       ...recoverySource,
-      '--recovery-digest',recoveryCleanup.json.recoveryDigest,
-      '--approval-token',recoveryApproval.json.approvalToken,
-      '--approval-digest',recoveryApproval.json.approvalDigest,
+      '--recovery-digest',
+      recoveryCleanup.json.recoveryDigest,
+      '--approval-token',
+      recoveryApproval.json.approvalToken,
+      '--approval-digest',
+      recoveryApproval.json.approvalDigest,
       '--intent-key',
       recoveryApproval.json.intentKey,
     ]);
     expect(cleanupRecovered.json.status).toBe('dispatched-unresolved');
     expect(state).toBe('item');
-    const secondSource=['--source-responsibility','listingEndRelist','--source-job-id',cleanupRecovered.json.jobId,'--source-attempt-id',cleanupRecovered.json.attemptId,'--source-intent-key',cleanupRecovered.json.intentKey];
-    const secondPreflight=await execute('preflight-recovery-cleanup',['--state',f.state,...secondSource]);
-    expect(secondPreflight.json).toMatchObject({status:'ready',stage:'inventory_only_ended',offerId:null,listingId});
-    const secondApproval=await execute('approve-recovery-cleanup',['--state',f.state,...secondSource,'--recovery-digest',secondPreflight.json.recoveryDigest]);
-    const finalCleanup=await execute('dispatch-recovery-cleanup',['--state',f.state,...secondSource,'--recovery-digest',secondPreflight.json.recoveryDigest,'--approval-token',secondApproval.json.approvalToken,'--approval-digest',secondApproval.json.approvalDigest,'--intent-key',secondApproval.json.intentKey]);
+    const wrongEvidenceAudit=(await execute('verify-state',['--state',f.state])).json.audit.recordCount;
+    const wrongEvidence=await execute('reconcile-recovery-cleanup',['--state',f.state,'--recovery-digest',D,'--listing-id',listingId,'--job-id',cleanupRecovered.json.jobId,'--attempt-id',cleanupRecovered.json.attemptId,'--intent-key',cleanupRecovered.json.intentKey]);
+    expect(wrongEvidence.stderr[0]).toContain('RECONCILIATION_BINDING_INVALID');
+    expect((await execute('verify-state',['--state',f.state])).json.audit.recordCount).toBe(wrongEvidenceAudit);
+    const secondSource = [
+      '--source-responsibility',
+      'listingEndRelist',
+      '--source-job-id',
+      cleanupRecovered.json.jobId,
+      '--source-attempt-id',
+      cleanupRecovered.json.attemptId,
+      '--source-intent-key',
+      cleanupRecovered.json.intentKey,
+      '--source-evidence-digest',
+      recoveryCleanup.json.recoveryDigest,
+    ];
+    const secondPreflight = await execute('preflight-recovery-cleanup', [
+      '--state',
+      f.state,
+      ...secondSource,
+    ]);
+    expect(secondPreflight.json).toMatchObject({
+      status: 'ready',
+      stage: 'inventory_only_ended',
+      offerId: null,
+      listingId,
+    });
+    const secondApproval = await execute('approve-recovery-cleanup', [
+      '--state',
+      f.state,
+      ...secondSource,
+      '--recovery-digest',
+      secondPreflight.json.recoveryDigest,
+    ]);
+    const finalCleanup = await execute('dispatch-recovery-cleanup', [
+      '--state',
+      f.state,
+      ...secondSource,
+      '--recovery-digest',
+      secondPreflight.json.recoveryDigest,
+      '--approval-token',
+      secondApproval.json.approvalToken,
+      '--approval-digest',
+      secondApproval.json.approvalDigest,
+      '--intent-key',
+      secondApproval.json.intentKey,
+    ]);
     expect(finalCleanup.json.status).toBe('cleaned-and-reconciled');
     expect(state).toBe('absent');
-    const recoveryAudit=(await execute('verify-state',['--state',f.state])).json.audit.recordCount;
-    const recoveryReplay=await execute('reconcile-recovery-cleanup',['--state',f.state,'--recovery-digest',secondPreflight.json.recoveryDigest,'--listing-id',listingId,'--job-id',finalCleanup.json.jobId,'--attempt-id',finalCleanup.json.attemptId,'--intent-key',finalCleanup.json.intentKey]);
+    const recoveryAudit = (await execute('verify-state', ['--state', f.state])).json.audit
+      .recordCount;
+    const recoveryReplay = await execute('reconcile-recovery-cleanup', [
+      '--state',
+      f.state,
+      '--recovery-digest',
+      secondPreflight.json.recoveryDigest,
+      '--listing-id',
+      listingId,
+      '--job-id',
+      finalCleanup.json.jobId,
+      '--attempt-id',
+      finalCleanup.json.attemptId,
+      '--intent-key',
+      finalCleanup.json.intentKey,
+    ]);
     expect(recoveryReplay.stderr[0]).toContain('RECONCILIATION_BINDING_INVALID');
-    expect((await execute('verify-state',['--state',f.state])).json.audit.recordCount).toBe(recoveryAudit);
+    expect((await execute('verify-state', ['--state', f.state])).json.audit.recordCount).toBe(
+      recoveryAudit,
+    );
     const writesBefore = calls.filter(
       (v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll'),
     ).length;
