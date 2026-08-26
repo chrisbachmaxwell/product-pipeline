@@ -4,10 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadMigrationAdminConfig, MigrationAdminConfigError, parseMigrationAdminConfig, } from '../config.js';
+import { deriveScopeKey } from '../../migration-store/index.js';
 import { buildMigrationAdminProgram, initializeMigrationStore, previewMigrationStoreInitialization, verifyMigrationStore, } from '../program.js';
 const CREATED_AT = '2026-08-11T20:00:00.000Z';
 const NOW = Date.parse('2026-08-11T21:00:00.000Z');
 const CONFIG_PATH = 'config/migration-state.json';
+const PRODUCTION_SCOPE_DIGEST = 'sha256:f1f798163d3f7c7042825d998c9f2b6f3f0ad5f75794a9d12dd887daa7e8f54c';
 const temporaryDirectories = [];
 function validConfig() {
     return {
@@ -97,6 +99,40 @@ describe('migration-admin strict local boundary', () => {
     it('ships an intentionally invalid placeholder example that cannot bind a production scope', () => {
         const example = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'config', 'migration-state.example.json'), 'utf8'));
         expect(() => parseMigrationAdminConfig(example)).toThrow(MigrationAdminConfigError);
+    });
+    it('ships one exact nonsecret Railway production configuration and root marker', () => {
+        const productionConfigPath = path.join(process.cwd(), 'config', 'migration-state.production.json');
+        const production = parseMigrationAdminConfig(JSON.parse(fs.readFileSync(productionConfigPath, 'utf8')));
+        expect(production).toEqual({
+            schemaVersion: 1,
+            project: 'product-pipeline',
+            lane: 'production-shadow',
+            mode: 'migration-state-admin',
+            databasePath: '/data/migration-state/product-pipeline-migration-v1.sqlite',
+            scope: {
+                shopifyStoreDomain: 'usedcameragear.myshopify.com',
+                ebayEnvironment: 'production',
+                ebaySellerId: 'usedcameragear',
+                ebayMarketplaceId: 'EBAY_US',
+            },
+            safety: {
+                externalPlatformAccess: false,
+                externalWrites: false,
+                historicalBackfill: false,
+                cutoverWatermarkUtc: null,
+                ownershipTransferAllowed: false,
+                credentialsAllowed: false,
+            },
+        });
+        expect(deriveScopeKey(production.scope)).toBe(PRODUCTION_SCOPE_DIGEST);
+        const dockerfile = fs.readFileSync(path.join(process.cwd(), 'Dockerfile'), 'utf8');
+        const dockerignore = fs.readFileSync(path.join(process.cwd(), '.dockerignore'), 'utf8');
+        const marker = 'RUN mkdir -p .git && chmod 700 .git';
+        const build = 'RUN npm run build';
+        expect(dockerfile).toContain(marker);
+        expect(dockerfile.indexOf(marker)).toBeLessThan(dockerfile.indexOf(build));
+        expect(dockerfile).toContain('ENV MIGRATION_STATE_CONFIG_PATH=/app/config/migration-state.production.json');
+        expect(dockerignore.split(/\r?\n/u)).toContain('.git');
     });
     it('preview exits conceptually blocked and creates no directory or database', () => {
         const repository = temporaryRepository();

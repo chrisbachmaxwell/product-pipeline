@@ -1,0 +1,5 @@
+.git
+.local
+.playwright-mcp
+node_modules
+work
