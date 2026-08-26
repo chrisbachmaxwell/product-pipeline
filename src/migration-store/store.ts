@@ -1450,6 +1450,34 @@ class MigrationStoreImpl {
       : null;
   }
 
+  /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
+  getAttemptStatus(jobIdInput: string, attemptIdInput: string): {
+    jobId: string;
+    attemptId: string;
+    intentKey: Digest;
+    outcome: 'outcome_unknown';
+    resolution: 'resolved_existing' | 'confirmed_missing' | null;
+  } | null {
+    this.assertOpen();
+    const jobId = identifier(jobIdInput, 'jobId');
+    const attemptId = identifier(attemptIdInput, 'attemptId');
+    const row = this.database.prepare(
+      `SELECT attempt.job_id, attempt.attempt_id, attempt.intent_key, attempt.outcome,
+        resolution.resolution
+       FROM intent_attempts attempt
+       JOIN execution_jobs job ON job.job_id = attempt.job_id
+       LEFT JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+       WHERE attempt.job_id = ? AND attempt.attempt_id = ? AND job.scope_key = ?`,
+    ).get(jobId, attemptId, this.scopeKey) as {
+      job_id: string; attempt_id: string; intent_key: Digest; outcome: 'outcome_unknown';
+      resolution: 'resolved_existing' | 'confirmed_missing' | null;
+    } | undefined;
+    return row ? {
+      jobId: row.job_id, attemptId: row.attempt_id, intentKey: row.intent_key,
+      outcome: row.outcome, resolution: row.resolution,
+    } : null;
+  }
+
   issueActionApproval(input: {
     approvalToken: string;
     intentKey: string;

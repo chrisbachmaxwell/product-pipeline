@@ -391,6 +391,13 @@ chain and durable reconciliation outcome, and assert that the serialized
 single-field request cannot contaminate the untouched price or quantity field.
 No runtime path, provider authority, or automation flag changed.
 
+### 2026-08-26: Reusable Operator-Gated eBay Sandbox Canary
+
+- Replaced the unmerged, hardcoded historical `pptest` concept with a standalone `sandbox-listing-canary-admin` CLI whose exact Shopify product GID, variant GID, and SKU are required on every command.
+- Compiled the adapter to only eBay Sandbox API/identity hosts, denied redirects and Production hosts, bounded every request/response, required fresh seller/Inventory/Offer/Trading reads, and accepted short-lived credentials only through bounded stdin. Raw credentials and the private Sandbox seller identity are never logged or persisted; state uses an opaque seller pseudonym.
+- Added a separate durable migration-store ceremony for create and cleanup: deterministic manifest/cleanup digests, distinct human-invoked approval commands, dispatches that can only consume exact short-lived approvals, idempotent intents, jobs/attempts recorded before provider calls, zero-write recovery reconciliation, and a retained hash-chained audit. Nothing is imported by the server or executes on deploy.
+- Added adversarial tests for the fixed $1 marker manifest, production-host isolation, ambiguity denial, state permissions, read-before-write ordering, create/reconcile/cleanup, replay denial, and secret/seller redaction; added the operator runbook and Help article. No provider write or deployment occurred.
+
 ### 2026-08-26: G10 Reconciled and G13 Production Identity Repaired
 
 - Completed G10's first live listing-revise ceremony for eBay listing `147232036779`: the approved branded description is live, price and quantity were preserved, and the original job/attempt is durably `revised_state_observed` / `resolved_existing`. Exactly one provider write occurred; the recovery reconciliation performed zero external writes and the migration-store audit chain verifies.

@@ -1001,6 +1001,22 @@ class MigrationStoreImpl {
             }
             : null;
     }
+    /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
+    getAttemptStatus(jobIdInput, attemptIdInput) {
+        this.assertOpen();
+        const jobId = identifier(jobIdInput, 'jobId');
+        const attemptId = identifier(attemptIdInput, 'attemptId');
+        const row = this.database.prepare(`SELECT attempt.job_id, attempt.attempt_id, attempt.intent_key, attempt.outcome,
+        resolution.resolution
+       FROM intent_attempts attempt
+       JOIN execution_jobs job ON job.job_id = attempt.job_id
+       LEFT JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+       WHERE attempt.job_id = ? AND attempt.attempt_id = ? AND job.scope_key = ?`).get(jobId, attemptId, this.scopeKey);
+        return row ? {
+            jobId: row.job_id, attemptId: row.attempt_id, intentKey: row.intent_key,
+            outcome: row.outcome, resolution: row.resolution,
+        } : null;
+    }
     issueActionApproval(input) {
         if (!WRITER_RESPONSIBILITIES.includes(input.responsibility)) {
             throw new MigrationStoreError('INVALID_INPUT', 'Approval responsibility is not a writer');

@@ -129,6 +129,14 @@ declare class MigrationStoreImpl {
         state: string;
         attemptOutcome: 'outcome_unknown' | null;
     } | null;
+    /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
+    getAttemptStatus(jobIdInput: string, attemptIdInput: string): {
+        jobId: string;
+        attemptId: string;
+        intentKey: Digest;
+        outcome: 'outcome_unknown';
+        resolution: 'resolved_existing' | 'confirmed_missing' | null;
+    } | null;
     issueActionApproval(input: {
         approvalToken: string;
         intentKey: string;

@@ -261,6 +261,21 @@ The operator first runs a preflight that prints exactly which fields would chang
 This applies only to Inventory-managed listings, and only to content fields (title, description, images, category, condition description, policies, location). **Price and quantity are never changed** — Marketplace Connect remains their owner — and there is no bulk action, automatic retry, or in-app Publish button.`,
   },
   {
+    question: 'How does the eBay Sandbox listing canary work?',
+    category: 'eBay',
+    sort_order: 6,
+    answer: `The Sandbox canary is an operator-only command-line test for one exact Shopify product, variant, and SKU. It cannot run from the web app or on deploy, and its compiled network adapter can contact only eBay Sandbox hosts.
+
+1. Prepare a private mode-0600 manifest outside the repository. It must describe a quantity-one, USD $1.00 listing clearly marked **PRODUCT PIPELINE SANDBOX TEST - DO NOT BUY**.
+2. Supply a short-lived Sandbox credential packet through the approved stdin broker. Never put a token or private seller ID in a command, environment variable, file, log, or support message.
+3. Initialize a separate durable Sandbox state database, then run the read-only preflight with exact product GID, variant GID, SKU, and Shopify evidence digest.
+4. Review the manifest digest, then run the separate approval command. It records a short-lived exact-target approval and performs no provider write. Dispatch can only consume that approval; it cannot issue one.
+5. Prepare cleanup with the returned offer/listing IDs, then run its separate approval command. Cleanup dispatch consumes that second approval and verifies the exact remote state before withdrawing the offer and deleting its artifacts.
+6. If either write has an unknown result, stop and use the zero-write reconciliation command. Never blindly rerun a dispatch.
+
+Shipping or deploying this CLI performs no provider action. See \`docs/SANDBOX_LISTING_CANARY.md\` for the complete manifest, credential, commands, and proof boundaries.`,
+  },
+  {
     question: 'How does eBay order sync work?',
     category: 'eBay',
     sort_order: 4,
