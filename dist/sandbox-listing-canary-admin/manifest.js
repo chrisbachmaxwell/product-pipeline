@@ -84,7 +84,7 @@ export function readSandboxManifest(filePath, exactTarget) {
         const before = fs.fstatSync(fd);
         if (!before.isFile() ||
             before.size > 64 * 1024 ||
-            (before.mode & 0o077) !== 0 ||
+            (before.mode & 0o777) !== 0o600 ||
             before.nlink !== 1 ||
             (typeof process.geteuid === 'function' && before.uid !== process.geteuid()))
             deny('MANIFEST_PATH_DENIED');

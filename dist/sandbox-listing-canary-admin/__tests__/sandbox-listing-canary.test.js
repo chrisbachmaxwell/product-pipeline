@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createSandboxAdapter } from '../adapter.js';
 import { buildPayloads, readSandboxManifest, SANDBOX_API_ORIGIN, SANDBOX_IDENTITY_ORIGIN, } from '../manifest.js';
-import { assertSandboxCreatedState, buildSandboxListingCanaryProgram, } from '../program.js';
+import { assertSandboxCreatedState, buildSandboxListingCanaryProgram, discoverSandboxRecovery, } from '../program.js';
 const NOW = new Date('2026-08-26T18:00:00.000Z');
 const D = `sha256:${'a'.repeat(64)}`;
 const target = {
@@ -68,10 +68,9 @@ function packet() {
 function createdSnapshot(offerId = 'OFFER-100', listingId = '123456789012') {
     const m = manifest();
     const payloads = buildPayloads(m);
-    const { format: _format, listingDuration: _duration, ...offer } = payloads.offer;
     return {
         inventory: { sku: target.sku, ...payloads.inventory },
-        offers: [{ offerId, ...offer, status: 'PUBLISHED', listingId }],
+        offers: [{ offerId, ...payloads.offer, status: 'PUBLISHED', listingId }],
         tradingListings: [
             {
                 itemId: listingId,
@@ -92,6 +91,13 @@ describe('sandbox canary manifest and endpoint boundary', () => {
         const f = fixture();
         const parsed = readSandboxManifest(f.file, target);
         expect(parsed.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+        fs.chmodSync(f.file, 0o400);
+        expect(() => readSandboxManifest(f.file, target)).toThrowError(/denied/);
+        fs.chmodSync(f.file, 0o500);
+        expect(() => readSandboxManifest(f.file, target)).toThrowError(/denied/);
+        fs.chmodSync(f.file, 0o700);
+        expect(() => readSandboxManifest(f.file, target)).toThrowError(/denied/);
+        fs.chmodSync(f.file, 0o600);
         const bad = manifest();
         bad.listing.price.value = '9.99';
         fs.writeFileSync(f.file, JSON.stringify(bad), { mode: 0o600 });
@@ -255,6 +261,14 @@ describe('sandbox canary manifest and endpoint boundary', () => {
         for (const drift of drifts)
             expect(() => assertSandboxCreatedState(drift, 'OFFER-100', '123456789012', manifest())).toThrowError(/denied/);
     });
+    it('classifies response-lost create residue without mutation', () => {
+        const m = manifest();
+        const base = createdSnapshot();
+        expect(discoverSandboxRecovery({ ...base, offers: [], tradingListings: [] }, m)).toMatchObject({ stage: 'inventory_only', offerId: null, listingId: null });
+        const unpublished = { ...base.offers[0], status: 'UNPUBLISHED', listingId: null };
+        expect(discoverSandboxRecovery({ ...base, offers: [unpublished], tradingListings: [] }, m)).toMatchObject({ stage: 'offer_unpublished', offerId: 'OFFER-100', listingId: null });
+        expect(discoverSandboxRecovery(base, m)).toMatchObject({ stage: 'created', offerId: 'OFFER-100', listingId: '123456789012' });
+    });
 });
 describe('standalone ceremony', () => {
     it('initializes separate state, contains partial outcomes, reconciles, cleans up, and denies replay', async () => {
@@ -263,6 +277,7 @@ describe('standalone ceremony', () => {
         let listingStatus = 'none';
         let failPublishOnce = true;
         let failDeleteOfferOnce = true;
+        let failDeleteInventoryOnce = true;
         const calls = [];
         const offerId = 'OFFER-100';
         const listingId = '123456789012';
@@ -306,6 +321,10 @@ describe('standalone ceremony', () => {
                     return new Response(null, { status: 204 });
                 }
                 if (method === 'DELETE') {
+                    if (failDeleteInventoryOnce && listingStatus === 'Ended') {
+                        failDeleteInventoryOnce = false;
+                        return new Response('', { status: 500 });
+                    }
                     state = 'absent';
                     return new Response(null, { status: 204 });
                 }
@@ -315,12 +334,11 @@ describe('standalone ceremony', () => {
                 return new Response(JSON.stringify({ offerId }), { status: 201 });
             }
             if (url.includes('/offer?')) {
-                const { format: _format, listingDuration: _duration, ...offerPayload } = payloads.offer;
                 const offers = state === 'offer' || state === 'published'
                     ? [
                         {
                             offerId,
-                            ...offerPayload,
+                            ...payloads.offer,
                             status: state === 'published' ? 'PUBLISHED' : 'UNPUBLISHED',
                             ...(state === 'published' ? { listing: { listingId } } : {}),
                         },
@@ -333,6 +351,8 @@ describe('standalone ceremony', () => {
             if (url.endsWith(`/offer/${offerId}/publish`)) {
                 if (failPublishOnce) {
                     failPublishOnce = false;
+                    state = 'published';
+                    listingStatus = 'Active';
                     return new Response('', { status: 500 });
                 }
                 state = 'published';
@@ -398,7 +418,7 @@ describe('standalone ceremony', () => {
         expect(initialized).toMatchObject({ json: { status: 'initialized' } });
         expect(fs.statSync(f.state).mode & 0o077).toBe(0);
         const pre = await execute('preflight', []);
-        expect(pre.json.status).toBe('ready');
+        expect(pre.json.status).toBe('prerequisites-partial');
         expect(pre.exits).toEqual([2]);
         const beforeDispatch = calls.length;
         const createAction = ['--action-digest', pre.json.actionDigest];
@@ -521,7 +541,8 @@ describe('standalone ceremony', () => {
         ]);
         expect(created.json.status).toBe('dispatched-unresolved');
         expect(created.json.offerId).toBe(offerId);
-        expect(state).toBe('offer');
+        expect(created.json.listingId).toBeNull();
+        expect(state).toBe('published');
         const writesAfterUnknown = calls.filter((v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll')).length;
         const replay = await execute('dispatch-create', [
             '--state',
@@ -538,18 +559,12 @@ describe('standalone ceremony', () => {
         ]);
         expect(replay.stderr[0]).toContain('TARGET_NOT_ABSENT');
         expect(calls.filter((v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll'))).toHaveLength(writesAfterUnknown);
-        state = 'published';
-        listingStatus = 'Active';
-        const recovered = await execute('reconcile-create', [
+        const recovered = await execute('recover-create', [
             '--state',
             f.state,
             '--manifest-digest',
             pre.json.manifestDigest,
             ...createAction,
-            '--offer-id',
-            offerId,
-            '--listing-id',
-            listingId,
             '--job-id',
             created.json.jobId,
             '--attempt-id',
@@ -558,18 +573,15 @@ describe('standalone ceremony', () => {
             created.json.intentKey,
         ]);
         expect(recovered.json.status).toBe('reconciled');
+        expect(recovered.json).toMatchObject({ offerId, listingId, stage: 'created' });
         const auditBeforeReplay = (await execute('verify-state', ['--state', f.state])).json.audit
             .recordCount;
-        const terminalReplay = await execute('reconcile-create', [
+        const terminalReplay = await execute('recover-create', [
             '--state',
             f.state,
             '--manifest-digest',
             pre.json.manifestDigest,
             ...createAction,
-            '--offer-id',
-            offerId,
-            '--listing-id',
-            listingId,
             '--job-id',
             created.json.jobId,
             '--attempt-id',
@@ -636,24 +648,34 @@ describe('standalone ceremony', () => {
         ]);
         expect(cleanupReplay.stderr[0]).toContain('CREATED_STATE_UNRESOLVED');
         expect(calls.filter((v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll'))).toHaveLength(cleanupWrites);
-        state = 'absent';
-        const cleanupRecovered = await execute('reconcile-cleanup', [
+        const recoverySource = ['--source-responsibility', 'listingEndRelist', '--source-job-id', cleaned.json.jobId, '--source-attempt-id', cleaned.json.attemptId, '--source-intent-key', cleaned.json.intentKey];
+        const recoveryCleanup = await execute('preflight-recovery-cleanup', ['--state', f.state, ...recoverySource]);
+        expect(recoveryCleanup.json).toMatchObject({ status: 'ready', stage: 'offer_unpublished_ended', offerId, listingId });
+        const recoveryApproval = await execute('approve-recovery-cleanup', ['--state', f.state, ...recoverySource, '--recovery-digest', recoveryCleanup.json.recoveryDigest]);
+        expect(recoveryApproval.json.status).toBe('approved');
+        const cleanupRecovered = await execute('dispatch-recovery-cleanup', [
             '--state',
             f.state,
-            '--offer-id',
-            offerId,
-            '--listing-id',
-            listingId,
-            '--cleanup-digest',
-            cleanup.json.cleanupDigest,
-            '--job-id',
-            cleaned.json.jobId,
-            '--attempt-id',
-            cleaned.json.attemptId,
+            ...recoverySource,
+            '--recovery-digest', recoveryCleanup.json.recoveryDigest,
+            '--approval-token', recoveryApproval.json.approvalToken,
+            '--approval-digest', recoveryApproval.json.approvalDigest,
             '--intent-key',
-            cleaned.json.intentKey,
+            recoveryApproval.json.intentKey,
         ]);
-        expect(cleanupRecovered.json.status).toBe('reconciled');
+        expect(cleanupRecovered.json.status).toBe('dispatched-unresolved');
+        expect(state).toBe('item');
+        const secondSource = ['--source-responsibility', 'listingEndRelist', '--source-job-id', cleanupRecovered.json.jobId, '--source-attempt-id', cleanupRecovered.json.attemptId, '--source-intent-key', cleanupRecovered.json.intentKey];
+        const secondPreflight = await execute('preflight-recovery-cleanup', ['--state', f.state, ...secondSource]);
+        expect(secondPreflight.json).toMatchObject({ status: 'ready', stage: 'inventory_only_ended', offerId: null, listingId });
+        const secondApproval = await execute('approve-recovery-cleanup', ['--state', f.state, ...secondSource, '--recovery-digest', secondPreflight.json.recoveryDigest]);
+        const finalCleanup = await execute('dispatch-recovery-cleanup', ['--state', f.state, ...secondSource, '--recovery-digest', secondPreflight.json.recoveryDigest, '--approval-token', secondApproval.json.approvalToken, '--approval-digest', secondApproval.json.approvalDigest, '--intent-key', secondApproval.json.intentKey]);
+        expect(finalCleanup.json.status).toBe('cleaned-and-reconciled');
+        expect(state).toBe('absent');
+        const recoveryAudit = (await execute('verify-state', ['--state', f.state])).json.audit.recordCount;
+        const recoveryReplay = await execute('reconcile-recovery-cleanup', ['--state', f.state, '--recovery-digest', secondPreflight.json.recoveryDigest, '--listing-id', listingId, '--job-id', finalCleanup.json.jobId, '--attempt-id', finalCleanup.json.attemptId, '--intent-key', finalCleanup.json.intentKey]);
+        expect(recoveryReplay.stderr[0]).toContain('RECONCILIATION_BINDING_INVALID');
+        expect((await execute('verify-state', ['--state', f.state])).json.audit.recordCount).toBe(recoveryAudit);
         const writesBefore = calls.filter((v) => /^(PUT|POST|DELETE) /.test(v) && !v.includes('/ws/api.dll')).length;
         const replayAfterCleanup = await execute('approve-create', [
             '--state',

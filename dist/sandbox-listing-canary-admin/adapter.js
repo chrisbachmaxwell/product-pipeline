@@ -245,6 +245,8 @@ export function createSandboxAdapter(input) {
                 !SAFE.test(e.offerId) ||
                 e.sku !== sku ||
                 e.marketplaceId !== SANDBOX_MARKETPLACE ||
+                e.format !== 'FIXED_PRICE' ||
+                e.listingDuration !== 'GTC' ||
                 !['PUBLISHED', 'UNPUBLISHED'].includes(status))
                 deny('AMBIGUOUS_REMOTE_STATE');
             const listing = e.listing === undefined ? null : object(e.listing);
@@ -262,6 +264,8 @@ export function createSandboxAdapter(input) {
                 offerId: e.offerId,
                 sku,
                 marketplaceId: SANDBOX_MARKETPLACE,
+                format: 'FIXED_PRICE',
+                listingDuration: 'GTC',
                 status: status,
                 listingId: listingId ?? null,
                 availableQuantity: exactInteger(e.availableQuantity),

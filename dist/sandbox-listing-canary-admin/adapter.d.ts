@@ -30,6 +30,8 @@ export type SandboxOfferSnapshot = Readonly<{
     sku: string;
     marketplaceId: 'EBAY_US';
     status: 'PUBLISHED' | 'UNPUBLISHED';
+    format: 'FIXED_PRICE';
+    listingDuration: 'GTC';
     listingId: string | null;
     availableQuantity: number;
     categoryId: string;

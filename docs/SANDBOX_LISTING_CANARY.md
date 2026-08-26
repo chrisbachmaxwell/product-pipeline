@@ -71,7 +71,7 @@ COMMON="--store-domain $STORE_DOMAIN --product-gid $PRODUCT_GID --variant-gid $V
 <sandbox-credential-broker> | node dist/sandbox-listing-canary-admin/index.js init-store $COMMON --state "$CANARY_STATE" --evidence-digest "$EVIDENCE"
 ```
 
-2. Read-only preflight. Exit `2` means preview/ready, not failure. Record both exact `manifestDigest` and `actionDigest`; the latter binds the create action, exact Shopify target, evidence, and manifest.
+2. Read-only preflight. Exit `2` means preview, not failure. Status `prerequisites-partial` proves the target is absent and the exact location/policies exist, but eBay Sandbox does not expose a bounded read that proves this category accepts the selected Inventory condition. Record both exact `manifestDigest` and `actionDigest`; final category-condition compatibility is provider-validated only inside the approved dispatch.
 
 ```sh
 <sandbox-credential-broker> | node dist/sandbox-listing-canary-admin/index.js preflight $COMMON
@@ -89,7 +89,7 @@ COMMON="--store-domain $STORE_DOMAIN --product-gid $PRODUCT_GID --variant-gid $V
 <sandbox-credential-broker> | node dist/sandbox-listing-canary-admin/index.js dispatch-create $COMMON --state "$CANARY_STATE" --manifest-digest "$MANIFEST_DIGEST" --action-digest "$ACTION_DIGEST" --approval-token "$APPROVAL_TOKEN" --approval-digest "$APPROVAL_DIGEST" --intent-key "$INTENT_KEY"
 ```
 
-5. If dispatch reports unresolved but the exact IDs are known, use the zero-write `reconcile-create` command shown by `--help`, including the same `--action-digest`. Never redispatch. An expired, unused approval may be replaced by rerunning `approve-create` with the same exact digests; this reuses the original intent. Once any job exists, reapproval is denied.
+5. If dispatch reports unresolved, never redispatch. Run zero-write `recover-create` with the original job, attempt, intent, manifest digest, and action digest. It discovers a unique exact offer/listing even when a successful provider response was lost and resolves only a fully exact published state. Otherwise it returns a fixed residue stage (`inventory_only`, `offer_unpublished`, or their ended-history variants) without mutation. `reconcile-create` remains available when exact IDs were already returned. An expired, unused approval may be replaced by rerunning `approve-create` with the same exact digests; once any job exists, reapproval is denied.
 
 6. Prepare cleanup with the exact returned IDs, review its `cleanupDigest`, and record a separate cleanup approval before dispatching it.
 
@@ -99,6 +99,10 @@ COMMON="--store-domain $STORE_DOMAIN --product-gid $PRODUCT_GID --variant-gid $V
 <sandbox-credential-broker> | node dist/sandbox-listing-canary-admin/index.js dispatch-cleanup $COMMON --state "$CANARY_STATE" --offer-id "$OFFER_ID" --listing-id "$LISTING_ID" --cleanup-digest "$CLEANUP_DIGEST" --approval-token "$CLEANUP_APPROVAL_TOKEN" --approval-digest "$CLEANUP_APPROVAL_DIGEST" --intent-key "$CLEANUP_INTENT_KEY"
 ```
 
-7. If cleanup is unresolved, use zero-write `reconcile-cleanup`; never repeat cleanup writes. Retain the state database, then run `verify-state` with the same exact target/manifest/state arguments and fresh stdin authority. It re-verifies the seller binding and hash-chained audit without a provider write.
+7. If cleanup is unresolved, use zero-write `reconcile-cleanup` when the full expected effect is present; never repeat the consumed cleanup dispatch. For exact remaining offer/item residue, run `preflight-recovery-cleanup` bound to the original source responsibility/job/attempt/intent, separately run `approve-recovery-cleanup`, then `dispatch-recovery-cleanup`. That new approval can delete only the exact freshly rediscovered residue. If its response is unknown, use `reconcile-recovery-cleanup`; further residue requires another separately preflighted recovery chained to that outstanding recovery job. Commands and required exact arguments are shown by `--help`.
+
+The recovery-cleanup lane is also the only authorized way to remove `inventory_only` or `offer_unpublished` residue from an unresolved create. It never publishes and never retries create.
+
+Retain the state database, then run `verify-state` with the same exact target/manifest/state arguments and fresh stdin authority. It re-verifies the seller binding and hash-chained audit without a provider write.
 
 Success is `dispatched-and-reconciled` followed by `cleaned-and-reconciled`, with a final fresh state of inventory absent, zero offers, and the exact Trading item ID observed in an ended/completed state. Trading history is retained by eBay; zero historical SKU matches is not expected. A local test or clean audit does not prove that a live Sandbox run occurred.

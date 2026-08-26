@@ -46,6 +46,8 @@ export type SandboxOfferSnapshot = Readonly<{
   sku: string;
   marketplaceId: 'EBAY_US';
   status: 'PUBLISHED' | 'UNPUBLISHED';
+  format: 'FIXED_PRICE';
+  listingDuration: 'GTC';
   listingId: string | null;
   availableQuantity: number;
   categoryId: string;
@@ -332,6 +334,8 @@ export function createSandboxAdapter(input: {
         !SAFE.test(e.offerId) ||
         e.sku !== sku ||
         e.marketplaceId !== SANDBOX_MARKETPLACE ||
+        e.format !== 'FIXED_PRICE' ||
+        e.listingDuration !== 'GTC' ||
         !['PUBLISHED', 'UNPUBLISHED'].includes(status)
       )
         deny('AMBIGUOUS_REMOTE_STATE');
@@ -348,6 +352,8 @@ export function createSandboxAdapter(input: {
         offerId: e.offerId as string,
         sku,
         marketplaceId: SANDBOX_MARKETPLACE,
+        format: 'FIXED_PRICE',
+        listingDuration: 'GTC',
         status: status as 'PUBLISHED' | 'UNPUBLISHED',
         listingId: (listingId as string | undefined) ?? null,
         availableQuantity: exactInteger(e.availableQuantity),
