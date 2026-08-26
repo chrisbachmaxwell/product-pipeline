@@ -295,7 +295,26 @@ describe('trading-model listing-revise dispatch', () => {
             listing_revise_observations: 1,
         });
         expect(store.verifyAuditChain()).toMatchObject({ valid: true });
+        const terminalCounts = store.getCounts();
+        const terminalAudit = store.verifyAuditChain();
         store.close();
+        // A completed attempt is terminal. A repeated reconcile must fail before
+        // it can append another authoritative run or target observation.
+        await world.run(['reconcile', ...targetArguments(world.revision.revisionDigest),
+            '--migration-store', world.migrationDatabasePath,
+            '--job-id', dispatched.jobId,
+            '--attempt-id', dispatched.attemptId,
+        ]);
+        expect(lastJson(world.stderr)).toMatchObject({
+            command: 'reconcile', status: 'denied', code: 'REVISE_ATTEMPT_ALREADY_RESOLVED',
+        });
+        const replayStore = openMigrationStoreReadOnly({
+            databasePath: world.migrationDatabasePath,
+            expectedScope: MIGRATION_SCOPE,
+        });
+        expect(replayStore.getCounts()).toEqual(terminalCounts);
+        expect(replayStore.verifyAuditChain()).toEqual(terminalAudit);
+        replayStore.close();
         // Replaying after a successful dispatch is denied by the freshness gate.
         await world.run(['dispatch', ...targetArguments(world.revision.revisionDigest),
             '--manifest-digest', manifestDigest,

@@ -387,6 +387,14 @@ That procedure can invoke exactly one descriptor-bound file-mode change to \`060
 The upgrade changes only the dedicated local migration-state schema. It has no provider client and cannot change Shopify, eBay, Marketplace Connect, Lightspeed, listings, prices, inventory, orders, or fulfillment. Never bypass a schema mismatch, skip the backup, or restore a pre-cutover backup after real order imports begin. See \`docs/MIGRATION_ADMIN.md\` for the exact commands.`,
     },
     {
+        question: 'How do I read an eBay order shadow-parity report?',
+        category: 'eBay',
+        sort_order: 8,
+        answer: `The standalone order-import-admin shadow-poll command is a read-only check used while Marketplace Connect still owns order import. It compares recent eBay orders with Shopify using Marketplace Connect's exact originating-platform order ID and ProductPipeline's durable order tag. It never opens the migration store and cannot create a Shopify order.
+
+A clean report requires both unmatchedCount: 0 and blockedCount: 0 after Marketplace Connect's normal import delay. Any lookup failure, unexpected pagination, fuzzy identifier echo, or conflicting Shopify order is blocked and makes the command exit nonzero. Investigate and rerun; never count a blocked report as a clean day. Reports made before the source-identifier correction on 2026-08-26 do not count toward the cutover gate. Historical orders must never be imported. See docs/ORDER_IMPORT.md for the operator contract.`,
+    },
+    {
         question: 'How does fulfillment tracking reach eBay?',
         category: 'eBay',
         sort_order: 7,

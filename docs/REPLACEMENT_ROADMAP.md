@@ -19,9 +19,9 @@ Legend: ☐ = pending · [USER] = only the user/operator can do it · [AGENT] = 
 
 Prove every listing lifecycle write end-to-end while MC still owns price/inventory/orders. No MC changes in this phase.
 
-- ☐ [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise, optionally `--description-template ucg-branded-v1`); verify on ebay.com
-- **Current gate (2026-08-26):** Production is schema v4 and the human operator dispatched Draft 1 for listing `147232036779`. The branded description is publicly live and byte-identical to the approved raw HTML; eBay still shows price `$164.95` and quantity `5`. The job remains `reconciliation_required` because the deployed comparator incorrectly compared that raw HTML with the editor's plain-text projection. Recovery is fix/deploy the raw-HTML comparator, then reconcile the existing job without another dispatch; see Brain L14.
-- ☐ [USER] Re-run preflight → expect `REVISE_BASE_STALE` (proof the revised state is live); confirm MC price/quantity sync still behaves on that listing over 24h
+- [x] [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise with `ucg-branded-v1`); verify on ebay.com; reconcile the exact attempt
+- **Current gate (2026-08-26):** Production is schema v4. Draft 1 for listing `147232036779` is publicly live and byte-identical to the approved raw HTML; eBay still shows price `$164.95` and quantity `5`. The existing job/attempt is authoritatively `revised_state_observed` / `resolved_existing`, with exactly one provider write and a valid migration-store audit chain. Brain L14 records the recovered comparator incident; L15 records the harmless denied replay.
+- ☐ [USER] Confirm MC price/quantity sync still behaves on that listing over 24h
 - ☐ [USER] G16a: create one new SKU end-to-end (branded template) via `listing-lifecycle-admin`; verify live listing
 - ☐ [USER] G16b: end (or end+relist) one low-stakes listing; verify
 - **Exit check:** three dispatch types each `dispatched-and-reconciled` in the migration store; zero unexplained reconciliation exceptions; MC untouched.
@@ -38,8 +38,9 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 
 ## Phase 3 — Order shadow and cutover (G13)
 
+- [x] [AGENT] Repair the live shadow join: exact Marketplace Connect `sourceIdentifier` plus ProductPipeline durable tag; block fuzzy, paginated, failed, or ambiguous Shopify reads
 - ☐ [USER] Run `shadow-poll` daily; collect reports in `/data/shadow-reports/`
-- ☐ [BOTH] 7–14 consecutive clean reports (`unmatchedCount: 0` after MC's normal import delay); investigate any persistent unmatched order before proceeding
+- ☐ [BOTH] 7–14 consecutive post-fix clean reports (`unmatchedCount: 0`, `blockedCount: 0` after MC's normal import delay); investigate any persistent unmatched order before proceeding
 - ☐ [USER] Cutover sitting, one hour, in order: release Shopify app version with `write_orders` → MC order import OFF (evidence) → establish-ownership (orderImport) → establish-watermark (within the one-hour clamp) → import the first arriving orders supervised, one per ceremony
 - ☐ [USER] Verify: each new eBay order lands in Shopify, cascades to Lightspeed correctly, and carries the `eBay-<id>` tag; attempt a duplicate import → denied
 - **Exit check:** watermark permanent; 3+ real orders imported cleanly; Lightspeed cascade verified; L11 guards all intact.

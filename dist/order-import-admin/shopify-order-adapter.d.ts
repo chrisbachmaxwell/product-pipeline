@@ -14,6 +14,8 @@ export type ShopifyOrderAdapter = Readonly<{
     getInstallationScopes: () => Promise<string[]>;
     /** Dedup/verify search: orders(first: 5, query: "tag:'<tag>'") — GIDs only. */
     findOrderGidsByTag: (tag: string) => Promise<string[]>;
+    /** Incumbent dedup search: exact originating-platform order id — GIDs only. */
+    findOrderGidsBySourceIdentifier: (sourceIdentifier: string) => Promise<string[]>;
     /** Exact-SKU variant lookup: productVariants(first: 1, query: "sku:'<sku>'"). */
     findVariantGidBySku: (sku: string) => Promise<string | null>;
     /** The single bounded orderCreate mutation of the dispatch ceremony. */

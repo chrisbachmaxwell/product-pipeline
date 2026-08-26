@@ -105,6 +105,11 @@ evidence, and ownership ceremony.
 
 ## 5. Order import takeover (most-gated; user actions required first)
 
+Before cutover, accumulate 7–14 post-2026-08-26 `shadow-poll` reports with both
+`unmatchedCount: 0` and `blockedCount: 0`. The read-only comparator binds Marketplace
+Connect orders by exact Shopify `sourceIdentifier` and ProductPipeline orders by the
+durable tag; pre-fix tag-only reports do not count.
+
 1. **USER-ONLY:** release and install a Shopify app version that adds `write_orders`
    (current `productpipeline-read-only-8` is read-only). The import command preflights
    `currentAppInstallation.accessScopes` and fails closed
@@ -120,8 +125,9 @@ evidence, and ownership ceremony.
 5. Steady state: `poll` (own token exchange scoped to exactly
    `api_scope + sell.fulfillment`; ≤3 pages / ≤50 orders; records observations only,
    no PII) → `import --order-id <id> --confirm-lightspeed` one order per invocation.
-   Import pre-checks Shopify for the `eBay-<id>` dedup tag and links instead of
-   creating on a hit; it post-verifies the created order before recording the link.
+   Import pre-checks Shopify for both exact `source_identifier:<id>` and the
+   `eBay-<id>` dedup tag, links instead of creating on one unioned hit, and denies
+   ambiguity; it post-verifies the created order before recording the link.
    `confirmed_missing` is never automatic for orders (`--accept-absent` only).
 
 ## 6. What only the user can do (checklist)

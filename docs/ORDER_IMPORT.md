@@ -114,9 +114,12 @@ it needs no ceremony precisely because it writes nothing:
 - **What it does.** Fetches eBay orders created within the last
   `--lookback-hours` hours (1-168) via the same bounded read adapter and
   exact `api_scope + sell.fulfillment` transient token as `poll` (≤3 pages,
-  ≤50 orders, 2 MB / 20 s bounds), then checks each observed order for a
-  Shopify order carrying the durable `eBay-<orderId>` tag using the same
-  read-only Admin GraphQL tag lookup `import` uses for dedup. It prints one
+  ≤50 orders, 2 MB / 20 s bounds), then checks each observed order by both
+  exact originating-platform `source_identifier:<orderId>` (Marketplace
+  Connect's production marker) and ProductPipeline's durable
+  `eBay-<orderId>` tag. Both bounded searches must echo the exact identifier,
+  return no unexpected pagination, and resolve to at most one unioned order
+  GID. It prints one
   JSON report: per-order `{ ebayOrderId, createdAtUtc, lineItemSkus,
   shopifyMatch }` plus a `summary` with `observedCount`, `matchedCount`,
   `unmatchedCount`, and `unmatchedEbayOrderIds`. When a match is found,
@@ -131,18 +134,19 @@ it needs no ceremony precisely because it writes nothing:
   never follows a symlink (refused with `SHADOW_POLL_REPORT_EXISTS`).
 - **Failures.** An eBay read failure fails the whole run with
   `SHADOW_POLL_EBAY_READ_FAILED` (exit 1, no partial output). A failed
-  per-order Shopify lookup is reported on that order as
+  per-order Shopify lookup or conflicting source/tag result is reported on that order as
   `shopifyMatch: { found: false, orderName: null, lookupFailed: true }` and
-  counted as unmatched, so one flaky lookup does not discard the run —
-  re-run before drawing conclusions from `lookupFailed` entries.
+  `lookupFailed` or `ambiguous`, counted as unmatched and blocked, and makes
+  the command exit nonzero. The PII-free report remains available for
+  diagnosis, but a blocked report can never count as a clean shadow day.
 
 **Suggested cadence:** run it daily during the shadow period (e.g. a daily
 operator invocation with `--lookback-hours 24` and a dated `--report-file`),
 plus once with a longer window such as `--lookback-hours 168` before the
 cutover decision.
 
-**Reading the summary:** `unmatchedCount: 0` means every eBay order in the
-window has a tagged Shopify counterpart — parity holds. `unmatchedCount > 0`
+**Reading the summary:** `unmatchedCount: 0` and `blockedCount: 0` means every
+eBay order in the window has an exact Shopify counterpart — parity holds. `unmatchedCount > 0`
 is only meaningful after Marketplace Connect's normal import delay has
 passed for those orders; a very recent order may simply not be imported yet.
 If an order remains unmatched after that delay (e.g. still unmatched in the
@@ -152,7 +156,8 @@ understood before ProductPipeline takes ownership. Note that MC may tag its
 orders differently; a persistent 100% unmatched result more likely means the
 `eBay-<orderId>` tag convention does not hold for MC-created orders than
 that every order was missed — verify one known order in the Shopify admin
-first.
+first. Reports created before the source-identifier correction on 2026-08-26
+used only ProductPipeline's tag and do not count toward the clean-day gate.
 
 ### `import` (exactly one order)
 
@@ -160,9 +165,10 @@ Steps, all fail-closed, in order:
 
 1. The observation for `--order-id` must exist, be post-watermark eligible,
    unresolved, and unlinked.
-2. **Shopify dedup pre-check**: bounded Admin GraphQL
-   `orders(first: 5, query: "tag:'eBay-<orderId>'")` against the pinned
-   store/app/apiVersion. If any order carries the tag, the CLI registers its
+2. **Shopify dedup pre-check**: bounded Admin GraphQL searches for both exact
+   `source_identifier:<orderId>` and `tag:'eBay-<orderId>'` against the pinned
+   store/app/apiVersion. Returned rows must echo the exact marker and the
+   union must contain at most one Shopify order. If one order matches, the CLI registers its
    identity, records `linkObservedExistingOrder`, resolves the observation
    `linked_existing`, prints `DEDUP_LINKED_EXISTING`, and STOPS — no intent
    is created, and the schema then denies any future intent for that eBay
@@ -173,7 +179,8 @@ Steps, all fail-closed, in order:
    `productVariants(first: 1, query: "sku:'<sku>'")`; any unresolvable SKU
    denies `IMPORT_SKU_UNRESOLVED` before any write. Tags
    `['eBay', 'eBay-<orderId>']`, a note referencing the eBay order id,
-   financial status from the eBay payment status, `sourceName: 'ebay'`.
+   financial status from the eBay payment status, `sourceName: 'ebay'`, and
+   `sourceIdentifier: '<orderId>'`.
    Buyer shipping details pass through to the provider call ONLY — never
    persisted, never logged, never in any stored payload (the store holds
    digests of a PII-free manifest only).
@@ -187,7 +194,7 @@ Steps, all fail-closed, in order:
    (`reserveExecutionJob` + `orderObservationId`), one
    `outcome_unknown` dispatch attempt — then ONE bounded Shopify
    `orderCreate` mutation.
-7. Mandatory post-dispatch reconciliation: re-query Shopify by the tag.
+7. Mandatory post-dispatch reconciliation: re-query Shopify by both markers.
    Found → register the Shopify order identity, record a zero-write
    `production_canary` reconciliation run targeting the eBay order identity,
    and resolve `resolved_existing` with the order link `link:<orderId>`.
@@ -226,8 +233,8 @@ CLI belt on top:
 - The eBay poll filter **starts at the watermark**; pre-boundary orders are
   not even requested, and any at-or-before order that does arrive is recorded
   permanently `excluded_by_watermark`.
-- Shopify dedup pre-check by the durable `eBay-<orderId>` tag before any
-  intent; a hit links and stops.
+- Shopify dedup pre-check by exact source identifier and durable tag before
+  any intent; one unioned hit links and stops, while ambiguity denies.
 - Write-scope preflight before any intent.
 - One order per invocation, `--confirm-lightspeed` required, immediate
   authoritative post-verification, and no automatic `confirmed_missing`.

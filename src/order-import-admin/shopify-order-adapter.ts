@@ -2,8 +2,9 @@
  * Bounded Shopify Admin GraphQL adapter for the isolated order-import
  * operator CLI. It can reach exactly one URL — the pinned Used Camera Gear
  * store's Admin GraphQL endpoint at the pinned API version — with exactly
- * four compiled operations: the identity/scope preflight, the dedup/verify
- * order-tag search, the exact-SKU variant lookup, and the single orderCreate
+ * five compiled operations: the identity/scope preflight, exact source-id
+ * and order-tag dedup/verify searches, the exact-SKU variant lookup, and the
+ * single orderCreate
  * mutation the dispatch ceremony authorizes. Errors are redacted to fixed
  * codes; no token, payload, or provider body is ever thrown or logged.
  *
@@ -58,6 +59,8 @@ export type ShopifyOrderAdapter = Readonly<{
   getInstallationScopes: () => Promise<string[]>;
   /** Dedup/verify search: orders(first: 5, query: "tag:'<tag>'") — GIDs only. */
   findOrderGidsByTag: (tag: string) => Promise<string[]>;
+  /** Incumbent dedup search: exact originating-platform order id — GIDs only. */
+  findOrderGidsBySourceIdentifier: (sourceIdentifier: string) => Promise<string[]>;
   /** Exact-SKU variant lookup: productVariants(first: 1, query: "sku:'<sku>'"). */
   findVariantGidBySku: (sku: string) => Promise<string | null>;
   /** The single bounded orderCreate mutation of the dispatch ceremony. */
@@ -79,7 +82,17 @@ const PREFLIGHT_QUERY = `query OrderImportPreflight {
 }`;
 
 const ORDERS_BY_TAG_QUERY = `query OrderImportOrdersByTag($query: String!) {
-  orders(first: 5, query: $query) { nodes { id } }
+  orders(first: 5, query: $query) {
+    nodes { id tags sourceIdentifier }
+    pageInfo { hasNextPage }
+  }
+}`;
+
+const ORDERS_BY_SOURCE_IDENTIFIER_QUERY = `query OrderImportOrdersBySourceIdentifier($query: String!) {
+  orders(first: 5, query: $query) {
+    nodes { id tags sourceIdentifier }
+    pageInfo { hasNextPage }
+  }
 }`;
 
 const VARIANT_BY_SKU_QUERY = `query OrderImportVariantBySku($query: String!) {
@@ -173,11 +186,46 @@ export function createShopifyOrderAdapter(dependencies: Readonly<{
         { query: `tag:'${tag}'` },
         'SHOPIFY_READ_FAILED',
       );
-      const nodes = asRecord(data.orders, 'SHOPIFY_READ_FAILED').nodes;
-      return (Array.isArray(nodes) ? nodes : deny('SHOPIFY_READ_FAILED')).map((node: unknown) => {
-        const gid = asRecord(node, 'SHOPIFY_READ_FAILED').id;
+      const orders = asRecord(data.orders, 'SHOPIFY_READ_FAILED');
+      const pageInfo = asRecord(orders.pageInfo, 'SHOPIFY_READ_FAILED');
+      if (pageInfo.hasNextPage !== false) deny('SHOPIFY_READ_FAILED');
+      const nodes = orders.nodes;
+      return (Array.isArray(nodes) ? nodes : deny('SHOPIFY_READ_FAILED')).flatMap((node: unknown) => {
+        const record = asRecord(node, 'SHOPIFY_READ_FAILED');
+        const gid = record.id;
         if (typeof gid !== 'string' || !ORDER_GID.test(gid)) return deny('SHOPIFY_READ_FAILED');
-        return gid;
+        if (!Array.isArray(record.tags)
+          || !record.tags.every((value: unknown) => typeof value === 'string')) {
+          return deny('SHOPIFY_READ_FAILED');
+        }
+        if (!record.tags.includes(tag)) return deny('SHOPIFY_READ_FAILED');
+        return [gid];
+      });
+    },
+
+    findOrderGidsBySourceIdentifier: async (sourceIdentifier: string): Promise<string[]> => {
+      if (typeof sourceIdentifier !== 'string' || !SAFE_TAG.test(sourceIdentifier)) {
+        deny('SHOPIFY_TARGET_INVALID');
+      }
+      const data = await graphql(
+        'OrderImportOrdersBySourceIdentifier',
+        ORDERS_BY_SOURCE_IDENTIFIER_QUERY,
+        { query: `source_identifier:${sourceIdentifier}` },
+        'SHOPIFY_READ_FAILED',
+      );
+      const orders = asRecord(data.orders, 'SHOPIFY_READ_FAILED');
+      const pageInfo = asRecord(orders.pageInfo, 'SHOPIFY_READ_FAILED');
+      if (pageInfo.hasNextPage !== false) deny('SHOPIFY_READ_FAILED');
+      const nodes = orders.nodes;
+      return (Array.isArray(nodes) ? nodes : deny('SHOPIFY_READ_FAILED')).flatMap((node: unknown) => {
+        const record = asRecord(node, 'SHOPIFY_READ_FAILED');
+        const gid = record.id;
+        if (typeof gid !== 'string' || !ORDER_GID.test(gid)) return deny('SHOPIFY_READ_FAILED');
+        if (record.sourceIdentifier !== null && typeof record.sourceIdentifier !== 'string') {
+          return deny('SHOPIFY_READ_FAILED');
+        }
+        if (record.sourceIdentifier !== sourceIdentifier) return deny('SHOPIFY_READ_FAILED');
+        return [gid];
       });
     },
 
