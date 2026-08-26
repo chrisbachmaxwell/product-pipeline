@@ -1,4 +1,6 @@
 import { Command } from 'commander';
+import { type SandboxSnapshot } from './adapter.js';
+import { type SandboxListingManifest } from './manifest.js';
 export type SandboxCanaryIo = {
     stdout(message: string): void;
     stderr(message: string): void;
@@ -11,4 +13,5 @@ export type Dependencies = {
     now?: () => Date;
     uuid?: () => string;
 };
+export declare function assertSandboxCreatedState(snapshot: SandboxSnapshot, offerId: string, listingId: string, manifest: SandboxListingManifest): void;
 export declare function buildSandboxListingCanaryProgram(deps?: Dependencies): Command;

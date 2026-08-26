@@ -1382,6 +1382,47 @@ class MigrationStoreImpl {
     );
   }
 
+  /** Read-only approval/job state for an exact intent. Used to permit safe re-approval only after expiry. */
+  getIntentApprovalState(intentKeyInput: string): {
+    latestApprovalDigest: Digest | null;
+    latestExpiresAtUtc: string | null;
+    latestExpiresEpochMs: number | null;
+    jobCount: number;
+  } {
+    this.assertOpen();
+    const intentKey = assertDigest(intentKeyInput, 'intentKey');
+    const row = this.database.prepare(
+      `SELECT
+        (SELECT approval_digest FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS approval_digest,
+        (SELECT expires_at_utc FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS expires_at_utc,
+        (SELECT expires_epoch_ms FROM action_approvals
+         WHERE scope_key = ? AND intent_key = ?
+         ORDER BY issued_epoch_ms DESC, approval_digest DESC LIMIT 1) AS expires_epoch_ms,
+        (SELECT COUNT(*) FROM execution_jobs
+         WHERE scope_key = ? AND intent_key = ?) AS job_count`,
+    ).get(
+      this.scopeKey, intentKey,
+      this.scopeKey, intentKey,
+      this.scopeKey, intentKey,
+      this.scopeKey, intentKey,
+    ) as {
+      approval_digest: Digest | null;
+      expires_at_utc: string | null;
+      expires_epoch_ms: number | null;
+      job_count: number;
+    };
+    return {
+      latestApprovalDigest: row.approval_digest,
+      latestExpiresAtUtc: row.expires_at_utc,
+      latestExpiresEpochMs: row.expires_epoch_ms,
+      jobCount: row.job_count,
+    };
+  }
+
   hasExactOrderLink(input: {
     shopifyOrderIdentityKey: string;
     ebayOrderIdentityKey: string;
@@ -1409,6 +1450,7 @@ class MigrationStoreImpl {
     jobId: string;
     intentKey: Digest;
     responsibility: Responsibility;
+    targetIdentityKey: Digest;
     ownershipVersion: number;
     state: string;
     attemptOutcome: 'outcome_unknown' | null;
@@ -1417,7 +1459,7 @@ class MigrationStoreImpl {
     const jobId = identifier(jobIdInput, 'jobId');
     const row = this.database
       .prepare(
-        `SELECT job.job_id, job.intent_key, job.responsibility, job.ownership_version,
+        `SELECT job.job_id, job.intent_key, job.responsibility, job.target_identity_key, job.ownership_version,
           event.to_state AS state,
           (SELECT attempt.outcome FROM intent_attempts attempt
            WHERE attempt.job_id = job.job_id ORDER BY attempt.ordinal DESC LIMIT 1) AS attempt_outcome
@@ -1433,6 +1475,7 @@ class MigrationStoreImpl {
           job_id: string;
           intent_key: Digest;
           responsibility: Responsibility;
+          target_identity_key: Digest;
           ownership_version: number;
           state: string;
           attempt_outcome: 'outcome_unknown' | null;
@@ -1443,11 +1486,40 @@ class MigrationStoreImpl {
           jobId: row.job_id,
           intentKey: row.intent_key,
           responsibility: row.responsibility,
+          targetIdentityKey: row.target_identity_key,
           ownershipVersion: row.ownership_version,
           state: row.state,
           attemptOutcome: row.attempt_outcome,
         }
       : null;
+  }
+
+  /** True only when the exact intent has a terminal, effect-observed successful resolution. */
+  hasResolvedExistingEffect(
+    intentKeyInput: string,
+    responsibilityInput: Responsibility,
+    observedDigestInput: string,
+  ): boolean {
+    this.assertOpen();
+    const intentKey = assertDigest(intentKeyInput, 'intentKey');
+    const observedDigest = assertDigest(observedDigestInput, 'observedDigest');
+    if (!(WRITER_RESPONSIBILITIES as readonly string[]).includes(responsibilityInput)) {
+      throw new MigrationStoreError('INVALID_INPUT', 'Responsibility is not a writer');
+    }
+    return this.database.prepare(
+      `SELECT 1
+       FROM execution_jobs job
+       JOIN intent_attempts attempt ON attempt.job_id = job.job_id
+       JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+       JOIN target_effect_observations effect
+         ON effect.intent_key = job.intent_key
+        AND effect.responsibility = job.responsibility
+       WHERE job.scope_key = ? AND job.intent_key = ? AND job.responsibility = ?
+         AND resolution.resolution = 'resolved_existing'
+         AND effect.effect = 'effect_observed'
+         AND effect.observed_digest = ?
+       LIMIT 1`,
+    ).get(this.scopeKey, intentKey, responsibilityInput, observedDigest) !== undefined;
   }
 
   /** Read-only exact attempt binding used by standalone recovery CLIs before appending evidence. */
