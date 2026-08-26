@@ -349,6 +349,16 @@ Test files: `src/services/__tests__/`
 - Brought the read-only Production projection in line with schema v4 by recognizing `fulfillment` as the fourth Class-B responsibility alongside order import, price, and inventory.
 - Added a real-store request-path regression shaped like the resolved G10 history (listing-revise ownership v2, one attempt and resolution, three reconciliation observations, and no order watermark), plus configured-fulfillment coverage. No migration data, provider state, deployment, or runtime wiring changed.
 
+### 2026-08-26: G18 Inert Automation Policy Foundation
+
+Added a schema-neutral, unwired G18 contract for exactly inventory, price, new-order import, and
+fulfillment automation. It defines deterministic policy bytes and SHA-256 digests, conservative
+compiled cadence/write ceilings, explicit Lightspeed-cascade acceptance for order automation, and
+one exact global environment gate that defaults to stopped. Exhaustive tests cover the allowlist,
+policy shape, digest determinism, every ceiling, authorization lifetime, fail-closed flag parsing,
+forbidden imports, and import-time side effects. No worker, schedule, migration-store schema, server
+wiring, credential read, provider adapter, runtime authority, or external write was added or enabled.
+
 ### 2026-08-26: G20 Off-Volume Backup and Restore-Rehearsal Tooling
 Added the standalone, deploy-inert `control-state-backup-admin` CLI for consistent SQLite online
 snapshots of the app, listing-control, and migration databases plus bounded shadow reports. It
