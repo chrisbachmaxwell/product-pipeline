@@ -89,6 +89,19 @@ const ACCESS = Object.freeze({
   historicalBackfillAllowed: false,
 } as const);
 
+const RESPONSIBILITY_BLOCKER_SLUG = {
+  orderImport: 'order-import',
+  price: 'price',
+  inventory: 'inventory',
+  listingCreate: 'listing-create',
+  listingRevise: 'listing-revise',
+  listingEndRelist: 'listing-end-relist',
+  mapping: 'mapping',
+  fulfillment: 'fulfillment',
+  feedback: 'feedback',
+  reconciliation: 'reconciliation',
+} as const satisfies Record<Responsibility, string>;
+
 function deniedProjection(status: 'unavailable' | 'invalid'): MigrationStoreProjection {
   return {
     status,
@@ -222,14 +235,15 @@ export function inspectMigrationStoreReadOnly(input: {
           'orderImport',
           'price',
           'inventory',
+          'fulfillment',
         ]);
         const stagedOwners = new Set(['marketplace_connect', 'paused', 'product_pipeline']);
         // Production execution authority is valid only for the reviewed
         // replacement slice: Class A chains that never name Marketplace
         // Connect, Class B chains staged from the v1 Marketplace Connect
-        // baseline, and execution rows scoped exclusively to the six enabled
+        // baseline, and execution rows scoped exclusively to the seven enabled
         // writer responsibilities. Any other configured writer state
-        // (mapping, fulfillment, feedback) is forbidden.
+        // (mapping or feedback) is forbidden.
         const ownershipValid = ownership.every((entry) => {
           if (!entry.configured) return true;
           if (noIncumbentResponsibilities.has(entry.responsibility)) {
@@ -258,7 +272,7 @@ export function inspectMigrationStoreReadOnly(input: {
       const blockers = [
         ...ownership
           .filter((entry) => !entry.configured)
-          .map((entry) => `ownership-${entry.responsibility}-unrecorded`),
+          .map((entry) => `ownership-${RESPONSIBILITY_BLOCKER_SLUG[entry.responsibility]}-unrecorded`),
         ...(watermark ? [] : ['order-watermark-not-established']),
         'external-writes-not-supported',
         'operator-cutover-approval-required',

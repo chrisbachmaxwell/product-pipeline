@@ -343,6 +343,12 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: G19 Production Migration Projection Contract Repair
+
+- Replaced dynamically interpolated camel-case ownership blocker codes with an exhaustive responsibility-to-lower-kebab mapping while preserving the server's strict redacted-code allowlist unchanged.
+- Brought the read-only Production projection in line with schema v4 by recognizing `fulfillment` as the fourth Class-B responsibility alongside order import, price, and inventory.
+- Added a real-store request-path regression shaped like the resolved G10 history (listing-revise ownership v2, one attempt and resolution, three reconciliation observations, and no order watermark), plus configured-fulfillment coverage. No migration data, provider state, deployment, or runtime wiring changed.
+
 ### 2026-08-26: G20 Off-Volume Backup and Restore-Rehearsal Tooling
 Added the standalone, deploy-inert `control-state-backup-admin` CLI for consistent SQLite online
 snapshots of the app, listing-control, and migration databases plus bounded shadow reports. It
