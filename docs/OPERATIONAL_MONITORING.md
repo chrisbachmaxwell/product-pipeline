@@ -20,6 +20,21 @@ email, contact Shopify/eBay, enable a worker, or authorize a commerce write.
   existing configured projection. Startup still does not create, upgrade, or
   write that database.
 
+Migration-readiness blocker codes are a fixed lower-kebab vocabulary. They
+are generated from an exhaustive responsibility mapping rather than from the
+camel-case control-plane names. The server's strict redaction allowlist stays
+unchanged: a new or malformed blocker makes the whole configured projection
+invalid instead of being passed through. A generic
+`MIGRATION_STATE_STORE_INVALID` response therefore proves that the redacted
+projection could not be accepted; it does not by itself prove that the SQLite
+schema or audit chain is corrupt. Stop ceremonies and use the standalone
+`migration-admin verify` command to distinguish durable-store verification
+from a monitoring projection defect. Stage-specific diagnostics remain
+deferred because splitting config, open, schema, integrity, audit, ownership,
+execution, and projection failures would broaden the verified store-open
+boundary; the production-shaped projection regression is the bounded repair
+for this incident.
+
 The digest covers the previous completed UTC day using one immutable cohort:
 all dispatch attempts whose dispatch-boundary timestamp falls inside that
 half-open UTC window. A cohort attempt is successful or failed only if its

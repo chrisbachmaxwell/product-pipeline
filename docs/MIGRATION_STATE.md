@@ -76,6 +76,15 @@ Every control-plane record uses the exact values exported by `src/safety/respons
 
 `reconciliation` is an ownership/evidence responsibility but never a writer action. Legacy names such as `orders`, `listing_update`, and `listingLifecycle` are rejected rather than translated. This prevents a permissive mapping layer from authorizing a different responsibility than the operator reviewed.
 
+The read-only projection converts that internal vocabulary to a fixed,
+exhaustively mapped lower-kebab blocker vocabulary such as
+`ownership-order-import-unrecorded` and
+`ownership-listing-revise-unrecorded`. It never transforms a responsibility
+with a permissive regular expression. The server retains its strict redacted
+blocker allowlist and rejects the whole projection if an unknown code appears.
+Production projection validation recognizes all four schema-v4 Class-B
+responsibilities: `orderImport`, `price`, `inventory`, and `fulfillment`.
+
 ## Account-scoped identities
 
 Every external identity must include the account boundary that gives it meaning:

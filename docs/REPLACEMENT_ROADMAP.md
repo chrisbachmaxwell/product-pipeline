@@ -58,7 +58,7 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 
 The deliberate policy change: routine writes stop requiring a ceremony each. Each worker is enabled only by an explicit recorded user approval; the kill switch and quarantine layers stay.
 
-- [x] [AGENT] G19: monitoring + daily digest (failures, reconciliation exceptions, counts) — read-only dashboard/API/health source candidate built 2026-08-26; deployment and live digest observation remain separate proof
+- [x] [AGENT] G19: monitoring + daily digest (failures, reconciliation exceptions, counts) — read-only dashboard/API/health deployed 2026-08-26; a strict projection-compatibility repair for the first live migration-status observation is source-complete but remains unmerged/unverified in Production
 - ☐ [AGENT] G18: bounded workers behind disabled flags: quantity alignment, price alignment, order poll+import, tracking push — delta-only, per-run caps, journaled to the migration store, single kill switch
 - ☐ [USER] Enable workers one at a time (suggested order: quantity → price → orders → tracking), each after 2–3 clean supervised days of the previous
 - [x] [AGENT] G20: standalone off-volume snapshot and isolated restore-rehearsal tooling built inertly; no schedule or Production restore was enabled

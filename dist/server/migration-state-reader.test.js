@@ -1,10 +1,19 @@
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMigrationStore, openMigrationStore, sha256Digest } from '../migration-store/index.js';
 import { MIGRATION_RESPONSIBILITIES } from '../safety/responsibilities.js';
 import { readConfiguredMigrationState } from './migration-state-reader.js';
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const temporaryRoots = [];
+afterEach(() => {
+    for (const root of temporaryRoots.splice(0)) {
+        fsSync.rmSync(root, { recursive: true, force: true });
+    }
+});
 const SCOPE = {
     shopifyStoreDomain: 'usedcameragear.myshopify.com',
     ebayEnvironment: 'sandbox',
@@ -77,6 +86,122 @@ const VERIFIED = {
         blockers: ['external-writes-not-supported'],
     },
 };
+const PRODUCTION_SCOPE = {
+    shopifyStoreDomain: 'usedcameragear.myshopify.com',
+    ebayEnvironment: 'production',
+    ebaySellerId: 'usedcameragear',
+    ebayMarketplaceId: 'EBAY_US',
+};
+function createProductionDatabase() {
+    const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'migration-reader-production-'));
+    temporaryRoots.push(root);
+    const databasePath = path.join(root, 'migration-state.sqlite');
+    const store = createMigrationStore({
+        databasePath,
+        scope: PRODUCTION_SCOPE,
+        createdAtUtc: '2026-08-26T10:00:00.000Z',
+    });
+    store.close();
+    return databasePath;
+}
+async function readProductionDatabase(databasePath) {
+    return readConfiguredMigrationState({
+        environment: { MIGRATION_STATE_CONFIG_PATH: 'config/migration-state.production.json' },
+        loadConfig: vi.fn(async () => ({
+            config: { scope: PRODUCTION_SCOPE },
+            databaseAbsolutePath: databasePath,
+            scopeDigest: 'not-projected',
+            configDigest: 'not-projected',
+        })),
+        now: () => new Date('2026-08-27T12:00:00.000Z'),
+    });
+}
+function populateResolvedG10(databasePath) {
+    const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
+    const variant = store.registerIdentity({
+        platform: 'shopify', kind: 'variant', bindingKey: 'variant:g10-production-shape',
+        storeDomain: PRODUCTION_SCOPE.shopifyStoreDomain,
+        externalGid: 'gid://shopify/ProductVariant/54881767358755',
+    }, { eventId: 'identity:g10-variant', occurredAtUtc: '2026-08-26T10:01:00.000Z' });
+    const listing = store.registerIdentity({
+        platform: 'ebay', kind: 'listing', bindingKey: 'listing:g10-production-shape',
+        environment: 'production', sellerId: PRODUCTION_SCOPE.ebaySellerId,
+        marketplaceId: PRODUCTION_SCOPE.ebayMarketplaceId, externalId: '147232036779',
+    }, { eventId: 'identity:g10-listing', occurredAtUtc: '2026-08-26T10:02:00.000Z' });
+    store.recordOwnershipVersion({
+        responsibility: 'listingRevise', version: 1, owner: 'paused',
+        singleWriterVerified: true, evidenceDigest: sha256Digest('g10-paused'),
+        effectiveAtUtc: '2026-08-26T10:03:00.000Z', recordedAtUtc: '2026-08-26T10:03:00.000Z',
+        audit: { eventId: 'ownership:g10:v1', occurredAtUtc: '2026-08-26T10:03:00.000Z' },
+    });
+    store.recordOwnershipVersion({
+        responsibility: 'listingRevise', version: 2, owner: 'product_pipeline',
+        singleWriterVerified: true, evidenceDigest: sha256Digest('g10-product-pipeline'),
+        effectiveAtUtc: '2026-08-26T10:04:00.000Z', recordedAtUtc: '2026-08-26T10:04:00.000Z',
+        audit: { eventId: 'ownership:g10:v2', occurredAtUtc: '2026-08-26T10:04:00.000Z' },
+    });
+    const intentKey = store.createIdempotencyIntent({
+        action: 'revise_ebay_listing', sourceIdentityKey: variant.identityKey,
+        targetIdentityKey: listing.identityKey, desiredStateDigest: sha256Digest('g10-manifest'),
+        createdAtUtc: '2026-08-26T10:05:00.000Z',
+        audit: { eventId: 'intent:g10', occurredAtUtc: '2026-08-26T10:05:00.000Z' },
+    });
+    const approvalToken = 'g10-production-shape-one-action-approval';
+    const approvalEvidenceDigest = sha256Digest('g10-approval-evidence');
+    store.issueActionApproval({
+        approvalToken, intentKey, responsibility: 'listingRevise',
+        targetIdentityKey: listing.identityKey, ownershipVersion: 2,
+        issuedAtUtc: '2026-08-26T10:06:00.000Z', expiresAtUtc: '2026-08-26T10:16:00.000Z',
+        evidenceDigest: approvalEvidenceDigest,
+        audit: { eventId: 'approval:g10', occurredAtUtc: '2026-08-26T10:06:00.000Z' },
+    });
+    store.reserveExecutionJob({
+        jobId: 'job:g10', approvalToken, intentKey, responsibility: 'listingRevise',
+        targetIdentityKey: listing.identityKey, ownershipVersion: 2, approvalEvidenceDigest,
+        reservedAtUtc: '2026-08-26T10:07:00.000Z', evidenceDigest: sha256Digest('g10-reserved'),
+        audit: { eventId: 'job:g10:reserved', occurredAtUtc: '2026-08-26T10:07:00.000Z' },
+    });
+    store.markDispatchingOutcomeUnknown({
+        jobId: 'job:g10', attemptId: 'attempt:g10', approvalToken, approvalEvidenceDigest,
+        occurredAtUtc: '2026-08-26T10:08:00.000Z', evidenceDigest: sha256Digest('g10-dispatch'),
+        audit: { eventId: 'job:g10:dispatch', occurredAtUtc: '2026-08-26T10:08:00.000Z' },
+    });
+    store.requirePostDispatchReconciliation({
+        jobId: 'job:g10', attemptId: 'attempt:g10', occurredAtUtc: '2026-08-26T10:09:00.000Z',
+        evidenceDigest: sha256Digest('g10-reconciliation-required'),
+        audit: { eventId: 'job:g10:required', occurredAtUtc: '2026-08-26T10:09:00.000Z' },
+    });
+    for (const [ordinal, effect] of [
+        [1, 'revised_state_absent'],
+        [2, 'revised_state_absent'],
+        [3, 'revised_state_observed'],
+    ]) {
+        const resultDigest = sha256Digest(`g10-result-${ordinal}`);
+        const completedAtUtc = `2026-08-26T10:${String(9 + ordinal).padStart(2, '0')}:00.000Z`;
+        store.recordReconciliationRun({
+            runId: `reconciliation:g10:${ordinal}`, responsibility: 'listingRevise',
+            targetIdentityKey: listing.identityKey, mode: 'production_canary', status: 'passed',
+            sourceSnapshotDigest: sha256Digest(`g10-source-${ordinal}`),
+            targetSnapshotDigest: sha256Digest(`g10-target-${ordinal}`), resultDigest,
+            authoritative: true, authorityEvidenceDigest: sha256Digest(`g10-authority-${ordinal}`),
+            externalWritesObserved: 0, startedAtUtc: completedAtUtc, completedAtUtc,
+            exceptions: [],
+            listingReviseObservation: {
+                observationId: `observation:g10:${ordinal}`, intentKey, effect,
+                observedDigest: sha256Digest(`g10-observed-${ordinal}`),
+            },
+            audit: { eventId: `reconciliation:g10:${ordinal}`, occurredAtUtc: completedAtUtc },
+        });
+    }
+    store.resolveUnknownAttempt({
+        jobId: 'job:g10', attemptId: 'attempt:g10', resolution: 'resolved_existing',
+        reconciliationRunId: 'reconciliation:g10:3',
+        reconciliationResultDigest: sha256Digest('g10-result-3'),
+        reconciledAtUtc: '2026-08-26T10:13:00.000Z',
+        audit: { eventId: 'resolution:g10', occurredAtUtc: '2026-08-26T10:13:00.000Z' },
+    });
+    store.close();
+}
 describe('request-time durable migration-state reader', () => {
     it('does not load a config or inspect a store when the explicit environment path is absent', async () => {
         const loadConfig = vi.fn();
@@ -142,6 +267,74 @@ describe('request-time durable migration-state reader', () => {
         });
         expect(JSON.stringify(result)).not.toMatch(/databaseAbsolutePath|configDigest|scopeDigest|must-not-escape|\.local\/migration-state/);
         expect(JSON.stringify(result)).not.toContain('scope-seller');
+    });
+    it('accepts the resolved Production G10 shape with canonical safe blockers', async () => {
+        const databasePath = createProductionDatabase();
+        populateResolvedG10(databasePath);
+        const result = await readProductionDatabase(databasePath);
+        expect(result).toMatchObject({
+            status: 'verified',
+            schemaVersion: 4,
+            orders: { watermarkUtc: null, watermarkEstablished: false },
+            audit: { valid: true },
+            counts: {
+                executionJobs: 1, intentAttempts: 1, attemptResolutions: 1,
+                reconciliationRuns: 3, listingReviseObservations: 3,
+            },
+            monitoring: {
+                currentJobs: { resolvedExisting: 1 },
+                previousUtcDay: {
+                    writes: { performed: 1, succeeded: 1, failed: 0, unresolved: 0 },
+                    reconciliations: { passed: 3, blocked: 0, failed: 0 },
+                },
+            },
+            readiness: {
+                blockers: [
+                    'ownership-order-import-unrecorded',
+                    'ownership-price-unrecorded',
+                    'ownership-inventory-unrecorded',
+                    'ownership-listing-create-unrecorded',
+                    'ownership-listing-end-relist-unrecorded',
+                    'ownership-mapping-unrecorded',
+                    'ownership-fulfillment-unrecorded',
+                    'ownership-feedback-unrecorded',
+                    'ownership-reconciliation-unrecorded',
+                    'order-watermark-not-established',
+                    'external-writes-not-supported',
+                    'operator-cutover-approval-required',
+                ],
+            },
+        });
+        expect(JSON.stringify(result.readiness.blockers))
+            .not.toMatch(/orderImport|listingCreate|listingEndRelist/);
+    });
+    it('accepts configured fulfillment as the fourth Production Class-B responsibility', async () => {
+        const databasePath = createProductionDatabase();
+        const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
+        for (const ownership of [
+            { version: 1, owner: 'marketplace_connect', at: '2026-08-26T10:01:00.000Z' },
+            { version: 2, owner: 'paused', at: '2026-08-26T10:02:00.000Z' },
+            { version: 3, owner: 'product_pipeline', at: '2026-08-26T10:03:00.000Z' },
+        ]) {
+            store.recordOwnershipVersion({
+                responsibility: 'fulfillment', version: ownership.version, owner: ownership.owner,
+                singleWriterVerified: true,
+                evidenceDigest: sha256Digest(`fulfillment-owner-${ownership.version}`),
+                effectiveAtUtc: ownership.at, recordedAtUtc: ownership.at,
+                audit: { eventId: `ownership:fulfillment:${ownership.version}`, occurredAtUtc: ownership.at },
+            });
+        }
+        store.close();
+        const result = await readProductionDatabase(databasePath);
+        expect(result.status).toBe('verified');
+        if (result.status !== 'verified')
+            throw new Error('verified result required');
+        expect(result.ownership.find((entry) => entry.responsibility === 'fulfillment'))
+            .toEqual({
+            responsibility: 'fulfillment', configured: true, version: 3,
+            owner: 'product_pipeline', singleWriterVerified: true,
+        });
+        expect(result.readiness.blockers).not.toContain('ownership-fulfillment-unrecorded');
     });
     it('deep-allowlists the projection so future internal or injected details cannot escape', async () => {
         const secret = 'must-not-escape-internal-detail';
