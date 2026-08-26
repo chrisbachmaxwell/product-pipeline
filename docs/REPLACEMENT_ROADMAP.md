@@ -39,6 +39,7 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 ## Phase 3 — Order shadow and cutover (G13)
 
 - [x] [AGENT] Repair the live shadow join: exact Marketplace Connect `sourceIdentifier` plus ProductPipeline durable tag; block fuzzy, paginated, failed, or ambiguous Shopify reads
+- **Current gate (2026-08-26):** first corrected 24-hour report is 10/11 exact matches, one unmatched, zero blocked/ambiguous lookups. A similar Shopify order exists by SKU/time/channel but lacks the exact eBay order ID; it is not accepted as a match. Observe the next report and investigate before starting the clean-day count.
 - ☐ [USER] Run `shadow-poll` daily; collect reports in `/data/shadow-reports/`
 - ☐ [BOTH] 7–14 consecutive post-fix clean reports (`unmatchedCount: 0`, `blockedCount: 0` after MC's normal import delay); investigate any persistent unmatched order before proceeding
 - ☐ [USER] Cutover sitting, one hour, in order: release Shopify app version with `write_orders` → MC order import OFF (evidence) → establish-ownership (orderImport) → establish-watermark (within the one-hour clamp) → import the first arriving orders supervised, one per ceremony
