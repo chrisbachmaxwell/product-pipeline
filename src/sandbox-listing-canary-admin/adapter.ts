@@ -10,6 +10,8 @@ const MAX = 2 * 1024 * 1024;
 const TIMEOUT = 20_000;
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const NUMERIC = /^[0-9]{1,20}$/;
+const ALIGNMENT_SKU = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MONEY = /^[1-9][0-9]{0,9}\.[0-9]{2}$/;
 
 export class SandboxAdapterError extends Error {
   constructor(readonly code: string) {
@@ -78,6 +80,43 @@ export type SandboxSnapshot = Readonly<{
   offers: readonly SandboxOfferSnapshot[];
   tradingListings: readonly TradingListingSnapshot[];
 }>;
+
+export type SandboxBulkAlignment =
+  | Readonly<{ field: 'price'; sku: string; offerId: string; price: Readonly<{ currency: 'USD'; value: string }> }>
+  | Readonly<{ field: 'quantity'; sku: string; offerId: string; quantity: number }>;
+
+/** Shared exact-one-entry serializer for Sandbox Inventory/Offer alignment. */
+export function buildSandboxBulkUpdateBody(input: SandboxBulkAlignment): string {
+  if (!ALIGNMENT_SKU.test(input.sku) || !NUMERIC.test(input.offerId)) deny('TARGET_INVALID');
+  const request = input.field === 'price'
+    ? { sku: input.sku, offers: [{ offerId: input.offerId, price: input.price }] }
+    : {
+        sku: input.sku,
+        shipToLocationAvailability: { quantity: input.quantity },
+        offers: [{ offerId: input.offerId, availableQuantity: input.quantity }],
+      };
+  const body = JSON.stringify({ requests: [request] });
+  if (Buffer.byteLength(body, 'utf8') > MAX) deny('WRITE_FAILED');
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  if (!Array.isArray(parsed.requests) || parsed.requests.length !== 1) deny('WRITE_FAILED');
+  const keys: string[] = [];
+  const collect = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(collect);
+    else if (value !== null && typeof value === 'object') {
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        keys.push(key);
+        collect(entry);
+      }
+    }
+  };
+  collect(parsed);
+  if (input.field === 'price') {
+    if (input.price.currency !== 'USD' || !MONEY.test(input.price.value)
+      || keys.some((key) => /quantity|availab/i.test(key))) deny('WRITE_FAILED');
+  } else if (!Number.isSafeInteger(input.quantity) || input.quantity < 0
+    || keys.some((key) => /price/i.test(key))) deny('WRITE_FAILED');
+  return body;
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) deny('RESPONSE_INVALID');
@@ -181,6 +220,7 @@ export function createSandboxAdapter(input: {
 }) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const now = input.now ?? (() => new Date());
+  let bulkAlignmentConsumed = false;
   async function request(
     url: string,
     init: RequestInit,
@@ -491,6 +531,17 @@ export function createSandboxAdapter(input: {
     );
     if (![200, 204].includes(r.status)) deny('WRITE_FAILED');
   }
+  async function bulkUpdatePriceQuantity(alignment: SandboxBulkAlignment): Promise<void> {
+    if (bulkAlignmentConsumed) deny('WRITE_CAPABILITY_CONSUMED');
+    bulkAlignmentConsumed = true;
+    const body = buildSandboxBulkUpdateBody(alignment);
+    const r = await request(`${SANDBOX_API_ORIGIN}/sell/inventory/v1/bulk_update_price_quantity`, {
+      method: 'POST', headers: headers(), body,
+    });
+    const response = r.status === 200 ? json(r.body) : null;
+    if (!response || !Array.isArray(response.responses) || response.responses.length !== 1
+      || object(response.responses[0]).statusCode !== 200) deny('WRITE_FAILED');
+  }
   return Object.freeze({
     verifyIdentity,
     validatePrerequisites,
@@ -501,5 +552,6 @@ export function createSandboxAdapter(input: {
     withdraw,
     deleteOffer,
     deleteInventory,
+    bulkUpdatePriceQuantity,
   });
 }

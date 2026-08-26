@@ -65,6 +65,22 @@ export type SandboxSnapshot = Readonly<{
     offers: readonly SandboxOfferSnapshot[];
     tradingListings: readonly TradingListingSnapshot[];
 }>;
+export type SandboxBulkAlignment = Readonly<{
+    field: 'price';
+    sku: string;
+    offerId: string;
+    price: Readonly<{
+        currency: 'USD';
+        value: string;
+    }>;
+}> | Readonly<{
+    field: 'quantity';
+    sku: string;
+    offerId: string;
+    quantity: number;
+}>;
+/** Shared exact-one-entry serializer for Sandbox Inventory/Offer alignment. */
+export declare function buildSandboxBulkUpdateBody(input: SandboxBulkAlignment): string;
 export declare function readCredentialPacket(stream?: NodeJS.ReadableStream, now?: Date): Promise<CredentialPacket>;
 /** Opaque, migration-scope-safe pseudonym; the private Sandbox seller id is never persisted. */
 export declare function sellerDigest(sellerId: string): string;
@@ -84,4 +100,5 @@ export declare function createSandboxAdapter(input: {
     withdraw: (offerId: string) => Promise<void>;
     deleteOffer: (offerId: string) => Promise<void>;
     deleteInventory: (sku: string) => Promise<void>;
+    bulkUpdatePriceQuantity: (alignment: SandboxBulkAlignment) => Promise<void>;
 }>;

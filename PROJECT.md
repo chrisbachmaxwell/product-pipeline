@@ -343,6 +343,18 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: Isolated Pipeline Test Sandbox Price and Inventory Ceremony
+
+Added a standalone, server-unwired Sandbox-only control store and CLI for the exact
+`Pipeline Test` Shopify variant and its separately created eBay Sandbox listing. The
+tool uses fresh exact-shop/app/source and exact-Sandbox seller/item/offer reads, then
+supports three distinct preflight -> approval -> one-call dispatch -> reconciliation
+ceremonies: USD 1.00 to Shopify USD 99.99, quantity 1 to 2, and quantity 2 back to
+Shopify 1. Unknown outcomes can only be reconciled with zero writes; terminal replay,
+Production hosts, other SKUs, item/offer splits, cross-field payloads, automatic retry,
+and Production migration-store reuse fail closed. This source addition performed no
+provider call, credential read, live write, deployment, or Marketplace Connect change.
+
 ### 2026-08-26: G19 Production Migration Projection Contract Repair
 
 - Replaced dynamically interpolated camel-case ownership blocker codes with an exhaustive responsibility-to-lower-kebab mapping while preserving the server's strict redacted-code allowlist unchanged.

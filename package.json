@@ -19,6 +19,7 @@
     "migration-admin": "tsx src/migration-admin/index.ts",
     "listing-control-admin": "tsx src/listing-control-admin/index.ts",
     "sandbox-listing-canary": "tsx src/sandbox-listing-canary-admin/index.ts",
+    "sandbox-price-inventory": "tsx src/sandbox-price-inventory-admin/index.ts",
     "evidence-capture": "tsx src/evidence-capture/index.ts",
     "control-state-backup": "tsx src/control-state-backup-admin/index.ts",
     "test": "vitest run",

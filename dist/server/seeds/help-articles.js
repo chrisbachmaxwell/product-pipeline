@@ -450,6 +450,16 @@ Before any dispatch, Marketplace Connect fulfillment behavior must be recorded o
 The dispatch creates at most one eBay shipping fulfillment and immediately reconciles it. Tracking values are not printed or stored as raw migration-state data. The app server, webhooks, schedulers, and workers cannot invoke this ceremony. See \`docs/FULFILLMENT_TRACKING_DISPATCH.md\` for the operator steps.`,
     },
     {
+        question: 'How is the Pipeline Test price and quantity path tested?',
+        category: 'eBay',
+        sort_order: 9,
+        answer: `The standalone Sandbox price/inventory ceremony can test exactly one isolated Pipeline Test listing after the separately reviewed Sandbox listing-create ceremony has completed and reconciled it.
+
+It performs three separately approved actions in order: align the seeded USD 1.00 Sandbox price to Shopify's USD 99.99 source price, seed Sandbox quantity from 1 to 2, then align quantity back to Shopify's source quantity 1. Every action requires a fresh exact Shopify and eBay Sandbox preflight, a ten-minute single-use approval, one no-retry dispatch, and exact post-write reconciliation.
+
+The tool is not available in the web app and is not automatic. It uses a separate private Sandbox control store and cannot open the Production migration store, contact Production eBay, change Shopify, import an order, or alter Marketplace Connect. An unresolved dispatch must never be retried; use only its read-only reconcile command. Successful Sandbox results do not authorize Production price or inventory takeover. See \`docs/SANDBOX_PRICE_INVENTORY.md\` for the exact operator contract.`,
+    },
+    {
         question: 'How do I read the operational daily digest?',
         category: 'Settings',
         sort_order: 8,
