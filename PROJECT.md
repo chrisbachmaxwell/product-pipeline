@@ -343,6 +343,12 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: Exact Raw-HTML Listing Reconciliation
+
+- Corrected the first production G10 revise's reconciliation defect: the approved branded manifest contains raw HTML, while the draft/editor basis intentionally contains plain text. Listing-revise reconciliation now compares descriptions against the fresh provider's exact raw HTML with XML line-ending normalization only, and binds the raw-description digest into its result evidence.
+- Strengthened all changed-field classification to distinguish exact after-state, provable before-state, and unknown drift. Any value matching neither approved state is now `partial`, so even `--accept-absent` cannot terminalize one-byte markup drift. Missing/non-provable raw description state fails closed.
+- Added Inventory and Trading end-to-end branded-description reconciliation regressions, XML entity round-trip coverage through the real Trading serializer, one-byte HTML drift coverage, and explicit proof that partial drift remains unresolved. Production recovery reuses the existing job and attempt; it must never redispatch.
+
 ### 2026-08-26: Railway-Safe Schema-v4 Activation Path
 
 - Packaged the existing reviewed migration-admin root marker in the Railway Docker image and added one strict nonsecret production configuration pinned to `/data/migration-state/product-pipeline-migration-v1.sqlite`, `usedcameragear.myshopify.com`, seller `usedcameragear`, and `EBAY_US`. The authenticated read-only migration projection now receives that exact config path; server startup still never opens or upgrades the store.

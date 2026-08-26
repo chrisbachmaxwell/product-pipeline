@@ -85,7 +85,7 @@ function tradingWorkspace(options = {}) {
                 lifecycle: { status: 'ACTIVE', active: true, format: 'FIXED_PRICE', duration: 'GTC',
                     startAtUtc: null, endAtUtc: null },
                 content: { title: options.ebayTitle ?? 'eBay Trading Old',
-                    descriptionHtml: '<p>Legacy &amp; loved</p>',
+                    descriptionHtml: options.descriptionHtml ?? '<p>Legacy &amp; loved</p>',
                     imageUrls: ['https://i.ebayimg.com/images/g/xyz/s-l1600.jpg'] },
                 category: { primary: { id: '78997', name: 'Lenses' }, secondary: null, storeCategories: [] },
                 condition: { id: '3000', name: 'Used', description: 'Excellent', descriptors: [] },
@@ -117,7 +117,11 @@ async function createTradingWorld(draft = { title: 'Trading Operator Title', mer
         createdAtUtc: '2026-08-19T15:00:00.000Z',
     }).close();
     let current = tradingWorkspace();
-    const revisedWorkspace = () => tradingWorkspace({ ebayTitle: draft.title ?? 'eBay Trading Old' });
+    let dispatchedDescription;
+    const revisedWorkspace = () => tradingWorkspace({
+        ebayTitle: draft.title ?? 'eBay Trading Old',
+        descriptionHtml: dispatchedDescription,
+    });
     const service = createListingDraftService({
         readWorkspace: async () => current,
         databasePath: () => draftDatabasePath,
@@ -129,7 +133,7 @@ async function createTradingWorld(draft = { title: 'Trading Operator Title', mer
         expectedRevisionDigest: null,
         base: { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest },
         draft: { title: draft.title, category: null, condition: null,
-            conditionDescription: null, description: null, images: null,
+            conditionDescription: null, description: draft.description ?? null, images: null,
             fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
             merchantLocation: draft.merchantLocation },
     }), 'shopify-user:operator');
@@ -150,11 +154,19 @@ async function createTradingWorld(draft = { title: 'Trading Operator Title', mer
     const requests = [];
     let responseAck = 'Success';
     const fakeFetch = async (input, init) => {
+        const body = String(init?.body ?? '');
         requests.push({
             url: String(input),
             headers: { ...init?.headers },
-            body: String(init?.body ?? ''),
+            body,
         });
+        const descriptionMatch = body.match(/<Description>([\s\S]*?)<\/Description>/u);
+        const decodedDescription = descriptionMatch?.[1]
+            ?.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"')
+            .replace(/&#39;/gu, "'").replace(/&amp;/gu, '&');
+        dispatchedDescription = decodedDescription === undefined
+            ? undefined
+            : draft.observedDescriptionTransform?.(decodedDescription) ?? decodedDescription;
         if (responseAck === 'Success')
             current = revisedWorkspace();
         return new Response('<?xml version="1.0" encoding="UTF-8"?>'
@@ -291,6 +303,77 @@ describe('trading-model listing-revise dispatch', () => {
         ]);
         expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_BASE_STALE' });
         expect(world.requests).toHaveLength(1);
+    });
+    it('reconciles a branded Trading description against exact raw provider HTML', async () => {
+        const world = await createTradingWorld({
+            title: null,
+            merchantLocation: null,
+            description: '<p>Freshly serviced &amp; ready for production.</p>',
+            observedDescriptionTransform: (html) => html.replace(/\n/gu, '\r\n'),
+        });
+        await world.run(['establish-ownership',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--evidence-digest', `sha256:${'a'.repeat(64)}`,
+        ]);
+        await world.run(['preflight', ...targetArguments(world.revision.revisionDigest),
+            '--description-template', 'ucg-branded-v1']);
+        const manifestDigest = lastJson(world.stdout).manifestDigest;
+        await world.run(['dispatch', ...targetArguments(world.revision.revisionDigest),
+            '--description-template', 'ucg-branded-v1',
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        expect(lastJson(world.stdout)).toMatchObject({
+            command: 'dispatch',
+            status: 'dispatched-and-reconciled',
+            effect: 'revised_state_observed',
+            resolution: 'resolved_existing',
+            providerDispatchReported: true,
+            externalCommerceWritesAttempted: 1,
+        });
+        expect(world.requests).toHaveLength(1);
+        expect(world.requests[0].body).toContain('&lt;!-- template:ucg-branded-v1 --&gt;');
+        expect(world.requests[0].body).not.toMatch(NO_PRICE_OR_QUANTITY);
+    });
+    it('keeps one-byte branded-description drift partial and unresolved', async () => {
+        const world = await createTradingWorld({
+            title: null,
+            merchantLocation: null,
+            description: '<p>Freshly serviced &amp; ready for production.</p>',
+            observedDescriptionTransform: (html) => html.replace('ucg-page', 'ucg-pagx'),
+        });
+        await world.run(['establish-ownership',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--evidence-digest', `sha256:${'a'.repeat(64)}`,
+        ]);
+        await world.run(['preflight', ...targetArguments(world.revision.revisionDigest),
+            '--description-template', 'ucg-branded-v1']);
+        const manifestDigest = lastJson(world.stdout).manifestDigest;
+        await world.run(['dispatch', ...targetArguments(world.revision.revisionDigest),
+            '--description-template', 'ucg-branded-v1',
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        const dispatched = lastJson(world.stdout);
+        expect(dispatched).toMatchObject({
+            command: 'dispatch',
+            status: 'dispatched-unresolved',
+            effect: 'partial',
+            resolution: null,
+            providerDispatchReported: true,
+            externalCommerceWritesAttempted: 1,
+        });
+        await world.run(['reconcile', ...targetArguments(world.revision.revisionDigest),
+            '--description-template', 'ucg-branded-v1',
+            '--migration-store', world.migrationDatabasePath,
+            '--job-id', dispatched.jobId,
+            '--attempt-id', dispatched.attemptId,
+            '--accept-absent',]);
+        expect(lastJson(world.stdout)).toMatchObject({
+            command: 'reconcile', status: 'unresolved', effect: 'partial', resolution: null,
+        });
     });
     it('denies merchant_location overrides on a trading target as unsupported', async () => {
         const world = await createTradingWorld({ title: null, merchantLocation: 'warehouse-9' });

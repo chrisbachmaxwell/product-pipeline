@@ -284,7 +284,13 @@ export type ListingReviseComparison = Readonly<{
   effect: 'revised_state_observed' | 'revised_state_absent' | 'partial';
   matchedFields: readonly ListingFieldName[];
   unmatchedFields: readonly ListingFieldName[];
+  beforeFields: readonly ListingFieldName[];
+  driftedFields: readonly ListingFieldName[];
 }>;
+
+function canonicalProviderText(value: string | null): string | null {
+  return value === null ? null : value.replace(/\r\n?/gu, '\n');
+}
 
 /**
  * Post-dispatch comparison: classify the live observed values against the
@@ -295,21 +301,48 @@ export type ListingReviseComparison = Readonly<{
 export function compareDispatchedState(input: {
   manifest: ListingReviseManifest;
   freshBasis: ListingDraftBasis;
+  freshDescriptionHtml: string | null;
 }): ListingReviseComparison {
   const matched: ListingFieldName[] = [];
   const unmatched: ListingFieldName[] = [];
+  const before: ListingFieldName[] = [];
+  const drifted: ListingFieldName[] = [];
   for (const change of input.manifest.changes) {
+    if (change.field === 'description') {
+      const rawObserved = canonicalProviderText(input.freshDescriptionHtml);
+      if (rawObserved === canonicalProviderText(change.after)) {
+        matched.push(change.field);
+      } else {
+        unmatched.push(change.field);
+        // The draft basis intentionally stores only a plain-text projection
+        // of an eBay description. It therefore cannot prove a non-null raw
+        // HTML before-state byte-for-byte. Treat any such non-after value as
+        // drift, never as absence that an operator could terminalize.
+        if (rawObserved === null && change.before === null) before.push(change.field);
+        else drifted.push(change.field);
+      }
+      continue;
+    }
     const observed = input.freshBasis.observed[change.field] ?? null;
-    if (observed === change.after) matched.push(change.field);
-    else unmatched.push(change.field);
+    if (observed === change.after) {
+      matched.push(change.field);
+    } else {
+      unmatched.push(change.field);
+      if (observed === change.before) before.push(change.field);
+      else drifted.push(change.field);
+    }
   }
-  const effect = unmatched.length === 0
+  const effect = matched.length === input.manifest.changes.length
     ? 'revised_state_observed' as const
-    : matched.length === 0 ? 'revised_state_absent' as const : 'partial' as const;
+    : before.length === input.manifest.changes.length
+      ? 'revised_state_absent' as const
+      : 'partial' as const;
   return Object.freeze({
     effect,
     matchedFields: Object.freeze(matched),
     unmatchedFields: Object.freeze(unmatched),
+    beforeFields: Object.freeze(before),
+    driftedFields: Object.freeze(drifted),
   });
 }
 

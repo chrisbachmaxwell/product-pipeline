@@ -175,6 +175,13 @@ iframes, forms, event handlers, `javascript:` urls, external styles, or
    resolution. The output includes the job id, attempt id, effect, and
    resolution.
 
+   Description reconciliation compares the exact raw description HTML
+   returned by the provider (with XML line endings canonicalized only) to the
+   exact approved manifest HTML. It never compares against the editor's
+   plain-text projection or uses visible-text equivalence. A raw description
+   that matches neither a provable before-state nor the exact after-state is
+   `partial` and cannot be terminalized with `--accept-absent`.
+
 3. **Observation window** — during the following hours, re-run `preflight`
    (expect `REVISE_BASE_STALE`, which now proves the revised state is the
    observed base) or view the item in the Listings workspace, and confirm
