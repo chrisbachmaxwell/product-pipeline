@@ -350,6 +350,7 @@ Test files: `src/services/__tests__/`
 - Remaining G10 gate is observation-only: confirm Marketplace Connect leaves the listing's price and quantity correct for 24 hours.
 - Ran G13's zero-write 24-hour production shadow check: 11 eBay orders were observed, but the tag-only join falsely marked all unmatched. A signed-in Shopify spot check proved Marketplace Connect stores the exact eBay Order ID as Shopify's `sourceIdentifier` and uses only generic tags.
 - Shadow parity, import dedup, and post-dispatch verification now exact-check both Shopify `source_identifier:<orderId>` and ProductPipeline's durable `eBay-<orderId>` tag. Fuzzy echoes, unexpected pagination, lookup failures, or conflicting GIDs block the run; ProductPipeline-created orders carry both markers. No watermark, ownership, order observation, order link, Shopify order, or historical import was created during the live check.
+- Deployed merge `88ff33a5c4c7c94fc5b0abd7d5bd56a8e62aff77` passed health and the corrected zero-write report: 10 of 11 orders matched exactly, one remained unmatched, and zero lookups were blocked or ambiguous. A same-SKU/time eBay-channel Shopify order lacks the exact eBay external ID, so it remains an investigation item and the report does not start the clean-day count.
 
 ### 2026-08-26: Exact Raw-HTML Listing Reconciliation
 
