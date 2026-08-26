@@ -6,7 +6,7 @@ not-listed Shopify item, Inventory/Offer model — the pattern proven by the
 CAN3570-U119 canary) or exactly one listing END (end an active listing,
 either management model), with a server-independent one-action, exact-target
 operator approval at execution time, durable idempotent dispatch through the
-migration-state store (schema v3), immediate post-action reconciliation, an
+migration-state store (schema v4), immediate post-action reconciliation, an
 observation window, and a defined recovery path.
 
 **Building this slice authorizes no dispatch.** Every actual dispatch is a
@@ -41,7 +41,7 @@ workspace row.
   listing-revise slice, minted from the existing eBay refresh grant
   (`sell.inventory` covers all inventory calls; the Trading call uses the IAF
   header); it is never persisted, logged, or returned.
-- The migration store (schema v3) enforces durably: production intents for
+- The migration store (schema v4) enforces durably: production intents for
   `create_ebay_listing` and `end_or_relist_ebay_listing`, Class-A
   paused-genesis ownership chains for `listingCreate` and `listingEndRelist`,
   a single-use exact-target approval expiring in at most 10 minutes, one job
@@ -81,7 +81,8 @@ workspace row.
 
    ```
    node dist/listing-lifecycle-admin/index.js preflight-create \
-     --catalog-id <row id> --sku <sku> --revision-digest <sha256>
+     --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
+     --description-template ucg-branded-v1
    ```
 
    The target must be a clean not-listed item: any eBay listing, offer,
@@ -91,7 +92,12 @@ workspace row.
    Shopify-sourced initial price/quantity — and any Shopify or eBay drift
    since the draft was saved denies as `CREATE_BASE_STALE` (reopen and
    re-save the draft). It prints the manifest summary and the
-   **manifest digest**.
+   **manifest digest**. `--description-template ucg-branded-v1` is the only
+   supported template and is opt-in. It deterministically replaces only the
+   approved description in the manifest before that digest is computed; omit
+   the flag to preserve the approved description byte-for-byte. If the draft
+   description is absent, the flag reports `applied: false` and the digest is
+   unchanged.
 
 2. **Dispatch** — the one action. Passing the exact target plus the manifest
    digest from preflight *is* the operator approval:
@@ -99,6 +105,7 @@ workspace row.
    ```
    node dist/listing-lifecycle-admin/index.js dispatch-create \
      --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
+     --description-template ucg-branded-v1 \
      --manifest-digest <sha256> --migration-store <path>
    ```
 
@@ -111,6 +118,10 @@ workspace row.
    reconciliation run + target-effect observation, and (when the new listing
    is visible and bound) the terminal resolution. The output includes the
    job id, attempt id, intent key, manifest digest, offerId, and listingId.
+   The template flag must exactly match the preflight that produced the
+   manifest digest. Reconciliation compares the fresh provider's raw
+   description HTML byte-for-byte, allowing only CRLF/CR-to-LF normalization;
+   missing or altered markup stays unresolved.
 
 3. **Observation window** — during the following hours, view the item in the
    Listings workspace (expect an active listing bound to the returned
@@ -170,6 +181,7 @@ workspace row.
   ```
   node dist/listing-lifecycle-admin/index.js reconcile \
     --action create --catalog-id … --sku … --revision-digest <sha256> \
+    --description-template ucg-branded-v1 \
     --migration-store <path> --job-id <id> --attempt-id <id>
 
   node dist/listing-lifecycle-admin/index.js reconcile \
@@ -177,6 +189,10 @@ workspace row.
     --manifest-digest <sha256> \
     --migration-store <path> --job-id <id> --attempt-id <id>
   ```
+
+  For a templated create, repeat the same `--description-template` flag on
+  every reconcile so the CLI derives the original intent and exact expected
+  HTML. The flag is rejected for end reconciliation.
 
   A still-absent effect never auto-terminalizes (propagation delay must not
   fabricate a `confirmed_missing`); after the observation window the operator

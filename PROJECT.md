@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-08-24. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-08-26. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,12 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-08-26: Branded Description Support for Listing Create
+
+- Added opt-in \`--description-template ucg-branded-v1\` support to listing-lifecycle create preflight, dispatch, and recovery reconciliation. The rendered HTML replaces only the approved description before the deterministic manifest digest is computed; untemplated creates retain their prior bytes and digest behavior.
+- Create reconciliation now verifies the fresh provider's raw description HTML exactly, normalizing only XML line endings, and binds a raw-description digest into its evidence. Missing or one-byte-different markup remains unresolved; the template flag is rejected for end reconciliation.
+- Added fixture-backed CLI coverage for digest/flag binding, exact Inventory and Offer payload parity, raw-HTML success and drift rejection, absent-description pass-through, unsupported-template denial, and the unchanged server/provider isolation boundary. The slice remains operator-only and inert on deploy.
 
 ### 2026-08-26: Complete Price/Inventory Ceremony Regression Matrix
 

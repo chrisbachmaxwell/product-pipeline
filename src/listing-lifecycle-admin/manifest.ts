@@ -29,6 +29,11 @@ import {
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
+import {
+  LISTING_DESCRIPTION_TEMPLATE_VERSION,
+  ListingDescriptionTemplateError,
+  renderListingDescription,
+} from '../server/listing-description-template.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 
 export class ListingLifecycleManifestError extends Error {
@@ -39,6 +44,9 @@ export class ListingLifecycleManifestError extends Error {
     | 'CREATE_IDENTITY_MISMATCH'
     | 'CREATE_BASE_STALE'
     | 'CREATE_PAYLOAD_INVALID'
+    | 'CREATE_TEMPLATE_UNSUPPORTED'
+    | 'CREATE_TEMPLATE_INPUT_INVALID'
+    | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE'
     | 'END_TARGET_NOT_ACTIVE'
     | 'END_REASON_UNSUPPORTED',
   readonly field: ListingFieldName | null = null) {
@@ -124,6 +132,12 @@ export type ListingCreateManifest = Readonly<{
 export type DerivedListingCreateManifest = Readonly<{
   manifest: ListingCreateManifest;
   manifestDigest: Digest;
+}>;
+
+export type TemplatedListingCreateManifest = Readonly<{
+  manifest: ListingCreateManifest;
+  manifestDigest: Digest;
+  descriptionTemplateApplied: boolean;
 }>;
 
 export type ListingEndManifest = Readonly<{
@@ -266,6 +280,56 @@ export function deriveListingCreateManifest(
     }),
   });
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
+}
+
+/**
+ * Opt-in create templating mirrors the listing-revise ceremony: the rendered
+ * HTML derives only from the approved revision/manifest, replaces only the
+ * proposed description, and is therefore bound into a new deterministic
+ * manifest digest. An absent description passes through unchanged so the
+ * operator-visible `descriptionTemplateApplied` note cannot imply work that
+ * did not occur.
+ */
+export function applyListingCreateDescriptionTemplate(input: {
+  derived: DerivedListingCreateManifest;
+  revision: ListingRevision;
+  templateVersion: string;
+}): TemplatedListingCreateManifest {
+  if (input.templateVersion !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+    deny('CREATE_TEMPLATE_UNSUPPORTED');
+  }
+  const { manifest, manifestDigest } = input.derived;
+  if (manifest.proposed.description === null) {
+    return Object.freeze({ manifest, manifestDigest, descriptionTemplateApplied: false });
+  }
+  let rendered = '';
+  try {
+    rendered = renderListingDescription({
+      templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+      title: manifest.proposed.title,
+      bodyHtml: manifest.proposed.description,
+      conditionId: manifest.proposed.conditionId,
+      conditionNote: manifest.proposed.conditionDescription,
+      imageUrls: manifest.proposed.images,
+      sku: input.revision.identity.rawSku,
+    });
+  } catch (error) {
+    if (error instanceof ListingDescriptionTemplateError) {
+      deny(error.code === 'OUTPUT_TOO_LARGE'
+        ? 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE'
+        : 'CREATE_TEMPLATE_INPUT_INVALID');
+    }
+    throw error;
+  }
+  const templatedManifest: ListingCreateManifest = Object.freeze({
+    ...manifest,
+    proposed: Object.freeze({ ...manifest.proposed, description: rendered }),
+  });
+  return Object.freeze({
+    manifest: templatedManifest,
+    manifestDigest: sha256Digest(templatedManifest),
+    descriptionTemplateApplied: true,
+  });
 }
 
 function identitiesMatch(left: ListingIdentity, right: ListingIdentity): boolean {
@@ -413,6 +477,7 @@ export type LifecycleOutcome = Readonly<{
 
 function workspaceRowDigest(workspace: ListingWorkspaceDto): Digest {
   const row = workspace.catalog;
+  const rawDescription = workspace.ebayDetail?.actual.content.descriptionHtml ?? null;
   return sha256Digest({
     schemaVersion: 1,
     lifecycleStatus: row.lifecycleStatus,
@@ -422,6 +487,10 @@ function workspaceRowDigest(workspace: ListingWorkspaceDto): Digest {
     inventoryItemCount: row.ebay.inventoryItemCount,
     offerCount: row.ebay.offerCount,
     unpublishedArtifactCount: row.ebay.unpublishedArtifactCount,
+    rawDescriptionDigest: sha256Digest({
+      state: rawDescription === null ? 'unavailable' : 'value',
+      value: rawDescription === null ? null : rawDescription.replace(/\r\n?/gu, '\n'),
+    }),
     observedAtUtc: workspace.evidence.catalogObservedAtUtc,
   });
 }
@@ -450,6 +519,7 @@ export function classifyCreateOutcome(input: {
   workspace: ListingWorkspaceDto;
   sku: string;
   expectedListingId: string | null;
+  expectedDescriptionHtml: string | null;
 }): LifecycleOutcome {
   const { workspace } = input;
   if (!captureBound(workspace, input.sku)) return outcome(workspace, 'unverified');
@@ -458,9 +528,21 @@ export function classifyCreateOutcome(input: {
     && row.ebay.listingId !== null
     && row.ebay.offerId !== null
     && row.ebay.activeMatchCount === 1) {
-    return input.expectedListingId === null || row.ebay.listingId === input.expectedListingId
-      ? outcome(workspace, 'observed')
-      : outcome(workspace, 'unverified');
+    if (input.expectedListingId !== null && row.ebay.listingId !== input.expectedListingId) {
+      return outcome(workspace, 'unverified');
+    }
+    if (workspace.ebayDetail === null) return outcome(workspace, 'unverified');
+    const rawDescription = workspace.ebayDetail.actual.content.descriptionHtml;
+    const normalizedRaw = rawDescription === null
+      ? null
+      : rawDescription.replace(/\r\n?/gu, '\n');
+    const normalizedExpected = input.expectedDescriptionHtml === null
+      ? null
+      : input.expectedDescriptionHtml.replace(/\r\n?/gu, '\n');
+    if (normalizedRaw !== normalizedExpected) {
+      return outcome(workspace, 'unverified');
+    }
+    return outcome(workspace, 'observed');
   }
   if (row.ebay.unpublishedArtifactCount > 0 || row.ebay.offerCount > 0) {
     return outcome(workspace, 'artifact');
