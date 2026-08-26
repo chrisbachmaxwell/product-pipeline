@@ -24,7 +24,8 @@ import { openListingControlStoreReadOnly, sha256Digest, } from '../listing-contr
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import { deriveListingDraftBasis, ListingDraftServiceError, } from '../server/listing-draft-service.js';
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
-import { assertFreshBasisMatchesCreateRevision, buildListingCreatePayloads, classifyCreateOutcome, classifyEndOutcome, deriveListingCreateManifest, deriveListingEndManifest, ListingLifecycleManifestError, } from './manifest.js';
+import { applyListingCreateDescriptionTemplate, assertFreshBasisMatchesCreateRevision, buildListingCreatePayloads, classifyCreateOutcome, classifyEndOutcome, deriveListingCreateManifest, deriveListingEndManifest, ListingLifecycleManifestError, } from './manifest.js';
+import { LISTING_DESCRIPTION_TEMPLATE_VERSION } from '../server/listing-description-template.js';
 import { createListingCreateDispatchAdapter, createProductionDispatchTokenProvider, ListingCreateDispatchError, } from './create-dispatch-adapter.js';
 import { createInventoryWithdrawDispatchAdapter, createTradingEndDispatchAdapter, ListingEndDispatchError, } from './end-dispatch-adapter.js';
 const APPROVAL_TTL_MS = 10 * 60_000;
@@ -175,6 +176,10 @@ function loadLatestRevision(dependencies, shopifyVariantGid, revisionDigest) {
     return revision;
 }
 async function deriveCreateTarget(dependencies, options) {
+    if (options.descriptionTemplate !== undefined
+        && options.descriptionTemplate !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+        deny('CREATE_TEMPLATE_UNSUPPORTED');
+    }
     const workspaceDto = await dependencies.readWorkspace(options.catalogId);
     const basis = deriveListingDraftBasis(workspaceDto);
     if (basis.identity.rawSku !== options.sku)
@@ -187,9 +192,22 @@ async function deriveCreateTarget(dependencies, options) {
         deny('CREATE_TARGET_ALREADY_LISTED');
     }
     const revision = loadLatestRevision(dependencies, basis.identity.shopifyVariantGid, options.revisionDigest);
-    const derived = deriveListingCreateManifest(revision);
+    let derived = deriveListingCreateManifest(revision);
     assertFreshBasisMatchesCreateRevision({ revision, freshBasis: basis });
-    return { basis, revision, derived };
+    let descriptionTemplate = null;
+    if (options.descriptionTemplate !== undefined) {
+        const templated = applyListingCreateDescriptionTemplate({
+            derived,
+            revision,
+            templateVersion: options.descriptionTemplate,
+        });
+        derived = { manifest: templated.manifest, manifestDigest: templated.manifestDigest };
+        descriptionTemplate = {
+            templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+            applied: templated.descriptionTemplateApplied,
+        };
+    }
+    return { basis, revision, derived, descriptionTemplate };
 }
 async function deriveEndTarget(dependencies, options) {
     const workspaceDto = await dependencies.readWorkspace(options.catalogId);
@@ -227,6 +245,9 @@ function createManifestSummary(target) {
             price: manifest.proposed.price,
             quantity: manifest.proposed.quantity,
         },
+        ...(target.descriptionTemplate === null
+            ? {}
+            : { descriptionTemplate: target.descriptionTemplate }),
         externalWritesPerformed: 0,
     };
 }
@@ -439,7 +460,8 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
     const withCreateTargetOptions = (command) => command
         .requiredOption('--catalog-id <id>', 'Exact listings catalog row id')
         .requiredOption('--sku <sku>', 'Exact raw SKU of the one not-listed target')
-        .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest');
+        .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest')
+        .option('--description-template <version>', `Create only: opt in to the exact ${LISTING_DESCRIPTION_TEMPLATE_VERSION} description template`);
     const withEndTargetOptions = (command) => command
         .requiredOption('--catalog-id <id>', 'Exact listings catalog row id')
         .requiredOption('--sku <sku>', 'Exact raw SKU of the one active target')
@@ -626,7 +648,10 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     manifestDigest: target.derived.manifestDigest,
                     authorityEvidenceDigest: target.derived.manifest.baseEbayObservationDigest,
                     classify: (workspace) => classifyCreateOutcome({
-                        workspace, sku, expectedListingId: listingId,
+                        workspace,
+                        sku,
+                        expectedListingId: listingId,
+                        expectedDescriptionHtml: target.derived.manifest.proposed.description,
                     }),
                     // Absence may auto-confirm only when the provider reported the
                     // dispatch failed AND no offer artifact was ever created — an
@@ -642,6 +667,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     attemptId: ceremony.attemptId,
                     intentKey: ceremony.intentKey,
                     manifestDigest: target.derived.manifestDigest,
+                    ...(target.descriptionTemplate === null
+                        ? {}
+                        : { descriptionTemplate: target.descriptionTemplate }),
                     offerId,
                     listingId,
                     providerDispatchReported: !dispatchFailed,
@@ -803,6 +831,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
         .requiredOption('--job-id <id>', 'Exact job id printed by dispatch')
         .requiredOption('--attempt-id <id>', 'Exact attempt id printed by dispatch')
         .option('--revision-digest <sha256>', 'Create only: exact approved draft revision digest')
+        .option('--description-template <version>', `Create only: opt in to the exact ${LISTING_DESCRIPTION_TEMPLATE_VERSION} description template`)
         .option('--listing-id <id>', 'End only: exact eBay listing id of the one target')
         .option('--manifest-digest <sha256>', 'End only: exact manifest digest printed by preflight-end')
         .option('--accept-absent', 'Explicitly accept a still-absent effect as the terminal confirmed_missing outcome. '
@@ -812,6 +841,14 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
         try {
             if (options.action !== 'create' && options.action !== 'end') {
                 deny('LIFECYCLE_ACTION_INVALID');
+            }
+            if (options.action === 'end' && options.descriptionTemplate !== undefined) {
+                deny('LIFECYCLE_DESCRIPTION_TEMPLATE_NOT_ALLOWED');
+            }
+            if (options.action === 'create'
+                && options.descriptionTemplate !== undefined
+                && options.descriptionTemplate !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+                deny('CREATE_TEMPLATE_UNSUPPORTED');
             }
             const workspaceDto = await readWorkspace(options.catalogId);
             const shopify = workspaceDto.catalog.shopify;
@@ -835,12 +872,25 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                 let manifestDigest;
                 let authorityEvidenceDigest;
                 let classify;
+                let descriptionTemplate = null;
                 if (options.action === 'create') {
                     if (typeof options.revisionDigest !== 'string') {
                         deny('CREATE_DRAFT_REVISION_MISMATCH');
                     }
                     const revision = loadLatestRevision(targetDependencies, variantGid, options.revisionDigest);
-                    const derived = deriveListingCreateManifest(revision);
+                    let derived = deriveListingCreateManifest(revision);
+                    if (options.descriptionTemplate !== undefined) {
+                        const templated = applyListingCreateDescriptionTemplate({
+                            derived,
+                            revision,
+                            templateVersion: options.descriptionTemplate,
+                        });
+                        derived = { manifest: templated.manifest, manifestDigest: templated.manifestDigest };
+                        descriptionTemplate = {
+                            templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+                            applied: templated.descriptionTemplateApplied,
+                        };
+                    }
                     responsibility = 'listingCreate';
                     manifestDigest = derived.manifestDigest;
                     authorityEvidenceDigest = derived.manifest.baseEbayObservationDigest;
@@ -855,7 +905,10 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     if (store.getIntent(intentKey) === null)
                         deny('CREATE_INTENT_NOT_FOUND');
                     classify = (workspace) => classifyCreateOutcome({
-                        workspace, sku: options.sku, expectedListingId: null,
+                        workspace,
+                        sku: options.sku,
+                        expectedListingId: null,
+                        expectedDescriptionHtml: derived.manifest.proposed.description,
                     });
                 }
                 else {
@@ -909,6 +962,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     unresolvedCode: reconciliation.unresolvedCode,
                     offerId: reconciliation.outcome.observedOfferId,
                     listingId: reconciliation.outcome.observedListingId,
+                    ...(descriptionTemplate === null ? {} : { descriptionTemplate }),
                     reconciliationRunId: reconciliation.runId,
                     externalWritesPerformed: 0,
                 }));

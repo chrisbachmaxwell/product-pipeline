@@ -25,9 +25,9 @@ import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 export declare class ListingLifecycleManifestError extends Error {
-    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
+    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
     readonly field: ListingFieldName | null;
-    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
+    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
 }
 /**
  * FIXED mapping from the draft model's numeric eBay condition IDs to the
@@ -76,6 +76,11 @@ export type DerivedListingCreateManifest = Readonly<{
     manifest: ListingCreateManifest;
     manifestDigest: Digest;
 }>;
+export type TemplatedListingCreateManifest = Readonly<{
+    manifest: ListingCreateManifest;
+    manifestDigest: Digest;
+    descriptionTemplateApplied: boolean;
+}>;
 export type ListingEndManifest = Readonly<{
     schemaVersion: 1;
     scope: typeof LISTING_DRAFT_SCOPE;
@@ -97,6 +102,19 @@ export type DerivedListingEndManifest = Readonly<{
  * already-listed.
  */
 export declare function deriveListingCreateManifest(revision: ListingRevision): DerivedListingCreateManifest;
+/**
+ * Opt-in create templating mirrors the listing-revise ceremony: the rendered
+ * HTML derives only from the approved revision/manifest, replaces only the
+ * proposed description, and is therefore bound into a new deterministic
+ * manifest digest. An absent description passes through unchanged so the
+ * operator-visible `descriptionTemplateApplied` note cannot imply work that
+ * did not occur.
+ */
+export declare function applyListingCreateDescriptionTemplate(input: {
+    derived: DerivedListingCreateManifest;
+    revision: ListingRevision;
+    templateVersion: string;
+}): TemplatedListingCreateManifest;
 /**
  * Pre-dispatch freshness gate for a create: the live workspace identity must
  * equal the revision identity, and both the observed values (all null for an
@@ -155,6 +173,7 @@ export declare function classifyCreateOutcome(input: {
     workspace: ListingWorkspaceDto;
     sku: string;
     expectedListingId: string | null;
+    expectedDescriptionHtml: string | null;
 }): LifecycleOutcome;
 export declare function classifyEndOutcome(input: {
     workspace: ListingWorkspaceDto;

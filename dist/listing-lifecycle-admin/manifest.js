@@ -22,6 +22,7 @@
  */
 import { sha256Digest, } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import { LISTING_DESCRIPTION_TEMPLATE_VERSION, ListingDescriptionTemplateError, renderListingDescription, } from '../server/listing-description-template.js';
 export class ListingLifecycleManifestError extends Error {
     code;
     field;
@@ -193,6 +194,52 @@ export function deriveListingCreateManifest(revision) {
     });
     return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
 }
+/**
+ * Opt-in create templating mirrors the listing-revise ceremony: the rendered
+ * HTML derives only from the approved revision/manifest, replaces only the
+ * proposed description, and is therefore bound into a new deterministic
+ * manifest digest. An absent description passes through unchanged so the
+ * operator-visible `descriptionTemplateApplied` note cannot imply work that
+ * did not occur.
+ */
+export function applyListingCreateDescriptionTemplate(input) {
+    if (input.templateVersion !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
+        deny('CREATE_TEMPLATE_UNSUPPORTED');
+    }
+    const { manifest, manifestDigest } = input.derived;
+    if (manifest.proposed.description === null) {
+        return Object.freeze({ manifest, manifestDigest, descriptionTemplateApplied: false });
+    }
+    let rendered = '';
+    try {
+        rendered = renderListingDescription({
+            templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
+            title: manifest.proposed.title,
+            bodyHtml: manifest.proposed.description,
+            conditionId: manifest.proposed.conditionId,
+            conditionNote: manifest.proposed.conditionDescription,
+            imageUrls: manifest.proposed.images,
+            sku: input.revision.identity.rawSku,
+        });
+    }
+    catch (error) {
+        if (error instanceof ListingDescriptionTemplateError) {
+            deny(error.code === 'OUTPUT_TOO_LARGE'
+                ? 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE'
+                : 'CREATE_TEMPLATE_INPUT_INVALID');
+        }
+        throw error;
+    }
+    const templatedManifest = Object.freeze({
+        ...manifest,
+        proposed: Object.freeze({ ...manifest.proposed, description: rendered }),
+    });
+    return Object.freeze({
+        manifest: templatedManifest,
+        manifestDigest: sha256Digest(templatedManifest),
+        descriptionTemplateApplied: true,
+    });
+}
 function identitiesMatch(left, right) {
     return left.shopifyProductGid === right.shopifyProductGid
         && left.shopifyVariantGid === right.shopifyVariantGid
@@ -305,6 +352,7 @@ export function deriveListingEndManifest(input) {
 }
 function workspaceRowDigest(workspace) {
     const row = workspace.catalog;
+    const rawDescription = workspace.ebayDetail?.actual.content.descriptionHtml ?? null;
     return sha256Digest({
         schemaVersion: 1,
         lifecycleStatus: row.lifecycleStatus,
@@ -314,6 +362,10 @@ function workspaceRowDigest(workspace) {
         inventoryItemCount: row.ebay.inventoryItemCount,
         offerCount: row.ebay.offerCount,
         unpublishedArtifactCount: row.ebay.unpublishedArtifactCount,
+        rawDescriptionDigest: sha256Digest({
+            state: rawDescription === null ? 'unavailable' : 'value',
+            value: rawDescription === null ? null : rawDescription.replace(/\r\n?/gu, '\n'),
+        }),
         observedAtUtc: workspace.evidence.catalogObservedAtUtc,
     });
 }
@@ -344,9 +396,22 @@ export function classifyCreateOutcome(input) {
         && row.ebay.listingId !== null
         && row.ebay.offerId !== null
         && row.ebay.activeMatchCount === 1) {
-        return input.expectedListingId === null || row.ebay.listingId === input.expectedListingId
-            ? outcome(workspace, 'observed')
-            : outcome(workspace, 'unverified');
+        if (input.expectedListingId !== null && row.ebay.listingId !== input.expectedListingId) {
+            return outcome(workspace, 'unverified');
+        }
+        if (workspace.ebayDetail === null)
+            return outcome(workspace, 'unverified');
+        const rawDescription = workspace.ebayDetail.actual.content.descriptionHtml;
+        const normalizedRaw = rawDescription === null
+            ? null
+            : rawDescription.replace(/\r\n?/gu, '\n');
+        const normalizedExpected = input.expectedDescriptionHtml === null
+            ? null
+            : input.expectedDescriptionHtml.replace(/\r\n?/gu, '\n');
+        if (normalizedRaw !== normalizedExpected) {
+            return outcome(workspace, 'unverified');
+        }
+        return outcome(workspace, 'observed');
     }
     if (row.ebay.unpublishedArtifactCount > 0 || row.ebay.offerCount > 0) {
         return outcome(workspace, 'artifact');

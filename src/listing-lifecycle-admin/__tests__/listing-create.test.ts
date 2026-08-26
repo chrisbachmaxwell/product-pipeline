@@ -26,7 +26,9 @@ import {
 } from '../../server/listing-draft-service.js';
 import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.js';
 import {
+  applyListingCreateDescriptionTemplate,
   buildListingCreatePayloads,
+  classifyCreateOutcome,
   deriveListingCreateManifest,
   ListingLifecycleManifestError,
 } from '../manifest.js';
@@ -97,7 +99,8 @@ function notListedWorkspace(): ListingWorkspaceDto {
 }
 
 /** The same item after a successful create: a fully bound active inventory listing. */
-function listedWorkspace(): ListingWorkspaceDto {
+function listedWorkspace(descriptionHtml: string | null = 'Clean plain text description'):
+ListingWorkspaceDto {
   return {
     schemaVersion: 1,
     evidence: {
@@ -147,7 +150,7 @@ function listedWorkspace(): ListingWorkspaceDto {
         lifecycle: { status: 'ACTIVE', active: true, format: 'FIXED_PRICE', duration: 'GTC',
           startAtUtc: null, endAtUtc: null },
         content: { title: 'Canon EF 24-70mm f/2.8L',
-          descriptionHtml: '<p>Clean plain text description</p>',
+          descriptionHtml,
           imageUrls: [IMAGE_URL] },
         category: { primary: { id: '3323', name: 'Lenses' }, secondary: null, storeCategories: [] },
         condition: { id: '3000', name: 'Used', description: 'Excellent glass', descriptors: [] },
@@ -304,7 +307,8 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
       adapterCalls.push('publishOffer');
       publishCalls.push(offerId);
       if (publishFails) throw new Error('provider publish failed');
-      current = listedWorkspace();
+      const description = offerPayloads.at(-1)?.listingDescription;
+      current = listedWorkspace(typeof description === 'string' ? description : null);
       return LISTING_ID;
     },
   });
@@ -482,6 +486,150 @@ describe('listing-lifecycle operator CLI — create', () => {
     ]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_TARGET_ALREADY_LISTED' });
     expect(world.adapterCalls.length).toBe(callsBefore);
+  });
+
+  it('binds the opt-in branded HTML to preflight, dispatch payloads, and reconciliation', async () => {
+    const world = await createWorld();
+    await world.run(establishArguments(world));
+
+    await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+    ]);
+    const preview = lastJson(world.stdout);
+    expect(preview).toMatchObject({
+      status: 'preview',
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+    });
+    const manifestDigest = preview.manifestDigest as string;
+
+    // A templated digest cannot authorize an untemplated dispatch.
+    await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_MANIFEST_DIGEST_MISMATCH' });
+    expect(world.adapterCalls).toHaveLength(0);
+
+    await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({
+      status: 'dispatched-and-reconciled',
+      effect: 'created_state_observed',
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+    });
+    const itemDescription = (world.itemPayloads[0]?.product as Record<string, unknown>)
+      .description;
+    const offerDescription = world.offerPayloads[0]?.listingDescription;
+    expect(itemDescription).toBe(offerDescription);
+    expect(itemDescription).toContain('<!-- template:ucg-branded-v1 -->');
+  });
+
+  it('re-derives the templated intent and exact HTML during recovery reconciliation', async () => {
+    const world = await createWorld();
+    await world.run(establishArguments(world));
+    await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+    ]);
+    const manifestDigest = lastJson(world.stdout).manifestDigest as string;
+    world.failPublish();
+    await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    const dispatched = lastJson(world.stdout);
+    expect(dispatched).toMatchObject({ status: 'dispatched-unresolved' });
+    const exactHtml = world.offerPayloads[0]?.listingDescription as string;
+    world.setWorkspace(listedWorkspace(exactHtml));
+
+    // Omitting the template derives a different desired-state intent.
+    await world.run(['reconcile',
+      '--action', 'create', '--catalog-id', CATALOG_ID, '--sku', SKU,
+      '--revision-digest', world.revision.revisionDigest,
+      '--migration-store', world.migrationDatabasePath,
+      '--job-id', dispatched.jobId as string, '--attempt-id', dispatched.attemptId as string,
+    ]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_INTENT_NOT_FOUND' });
+
+    await world.run(['reconcile',
+      '--action', 'create', '--catalog-id', CATALOG_ID, '--sku', SKU,
+      '--revision-digest', world.revision.revisionDigest,
+      '--description-template', 'ucg-branded-v1',
+      '--migration-store', world.migrationDatabasePath,
+      '--job-id', dispatched.jobId as string, '--attempt-id', dispatched.attemptId as string,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({
+      status: 'reconciled',
+      effect: 'created_state_observed',
+      resolution: 'resolved_existing',
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+    });
+  });
+
+  it('fails closed for unsupported templates and requires exact raw HTML after create', async () => {
+    const world = await createWorld();
+    await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v2',
+    ]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_TEMPLATE_UNSUPPORTED' });
+    expect(world.adapterCalls).toHaveLength(0);
+
+    const derived = deriveListingCreateManifest(world.revision);
+    const templated = applyListingCreateDescriptionTemplate({
+      derived,
+      revision: world.revision,
+      templateVersion: 'ucg-branded-v1',
+    });
+    const exactHtml = templated.manifest.proposed.description as string;
+    expect(classifyCreateOutcome({
+      workspace: listedWorkspace(exactHtml.replace(/\n/gu, '\r\n')),
+      sku: SKU,
+      expectedListingId: LISTING_ID,
+      expectedDescriptionHtml: exactHtml,
+    }).kind).toBe('observed');
+    expect(classifyCreateOutcome({
+      workspace: listedWorkspace(`${exactHtml} `),
+      sku: SKU,
+      expectedListingId: LISTING_ID,
+      expectedDescriptionHtml: exactHtml,
+    }).kind).toBe('unverified');
+  });
+
+  it('leaves a missing description byte-identical when the template is requested', async () => {
+    const world = await createWorld({ description: null });
+    const derived = deriveListingCreateManifest(world.revision);
+    const templated = applyListingCreateDescriptionTemplate({
+      derived,
+      revision: world.revision,
+      templateVersion: 'ucg-branded-v1',
+    });
+    expect(templated).toMatchObject({
+      manifestDigest: derived.manifestDigest,
+      descriptionTemplateApplied: false,
+    });
+    expect(classifyCreateOutcome({
+      workspace: listedWorkspace('unexpected provider description'),
+      sku: SKU,
+      expectedListingId: LISTING_ID,
+      expectedDescriptionHtml: null,
+    }).kind).toBe('unverified');
+    expect(classifyCreateOutcome({
+      workspace: listedWorkspace(null),
+      sku: SKU,
+      expectedListingId: LISTING_ID,
+      expectedDescriptionHtml: null,
+    }).kind).toBe('observed');
+
+    await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
+      '--description-template', 'ucg-branded-v1',
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({
+      manifestDigest: derived.manifestDigest,
+      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: false },
+    });
   });
 
   it('fails closed on already-listed targets, missing ownership, and wrong targets', async () => {
