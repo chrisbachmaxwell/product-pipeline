@@ -1,0 +1,11 @@
+{
+  "kind": "product-pipeline-control-state-backup-v1",
+  "sourceVolumeRoot": "/replace-with-source-volume",
+  "destinationRoot": "/replace-with-separate-off-volume-mount",
+  "sources": {
+    "appDatabase": "/replace-with-source-volume/ebaysync.db",
+    "listingControlDatabase": "/replace-with-source-volume/product-pipeline/listing-control.sqlite",
+    "migrationStoreDatabase": "/replace-with-source-volume/migration-state/product-pipeline-migration-v1.sqlite",
+    "shadowReportsDirectory": "/replace-with-source-volume/shadow-reports"
+  }
+}
