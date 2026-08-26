@@ -83,8 +83,11 @@ function createWorld() {
         ebayBehavior: { mode: 'success' },
         ebayUrls: [],
         shopifyBehavior: { mode: 'success' },
+        shopifyHasNextPage: false,
+        shopifySourceEchoOverride: null,
         shopifyOperations: [],
         ordersByTag: new Map(),
+        ordersBySourceIdentifier: new Map(),
         migrationOpenCalls: 0,
         stateReaderOpenCalls: 0,
         stdout: [],
@@ -124,7 +127,20 @@ function createWorld() {
         if (body.operationName === 'OrderImportOrdersByTag') {
             const match = /^tag:'(.+)'$/.exec(String(body.variables.query));
             const gids = match ? world.ordersByTag.get(match[1]) ?? [] : [];
-            return jsonResponse({ data: { orders: { nodes: gids.map((id) => ({ id })) } } });
+            return jsonResponse({ data: { orders: {
+                        nodes: gids.map((id) => ({ id, tags: [match[1]], sourceIdentifier: null })),
+                        pageInfo: { hasNextPage: world.shopifyHasNextPage },
+                    } } });
+        }
+        if (body.operationName === 'OrderImportOrdersBySourceIdentifier') {
+            const match = /^source_identifier:(.+)$/.exec(String(body.variables.query));
+            const gids = match ? world.ordersBySourceIdentifier.get(match[1]) ?? [] : [];
+            return jsonResponse({ data: { orders: {
+                        nodes: gids.map((id) => ({
+                            id, tags: [], sourceIdentifier: world.shopifySourceEchoOverride ?? match[1],
+                        })),
+                        pageInfo: { hasNextPage: world.shopifyHasNextPage },
+                    } } });
         }
         throw new Error(`unexpected Shopify operation: ${body.operationName}`);
     };
@@ -169,7 +185,7 @@ describe('shadow-poll (read-only shadow parity mode)', () => {
             ebayOrderFixture(MATCHED_ORDER_ID, '2026-08-20T10:00:00.000Z'),
             ebayOrderFixture(UNMATCHED_ORDER_ID, '2026-08-20T11:00:00.000Z'),
         ];
-        world.ordersByTag.set(`eBay-${MATCHED_ORDER_ID}`, [MATCHED_GID]);
+        world.ordersBySourceIdentifier.set(MATCHED_ORDER_ID, [MATCHED_GID]);
         await world.run(shadowArgv());
         const report = world.lastStdout();
         expect(report).toEqual({
@@ -181,7 +197,9 @@ describe('shadow-poll (read-only shadow parity mode)', () => {
                     ebayOrderId: MATCHED_ORDER_ID,
                     createdAtUtc: '2026-08-20T10:00:00.000Z',
                     lineItemSkus: [SKU],
-                    shopifyMatch: { found: true, orderName: MATCHED_GID },
+                    shopifyMatch: {
+                        found: true, orderName: MATCHED_GID, matchedBy: 'source_identifier',
+                    },
                 },
                 {
                     ebayOrderId: UNMATCHED_ORDER_ID,
@@ -194,6 +212,9 @@ describe('shadow-poll (read-only shadow parity mode)', () => {
                 observedCount: 2,
                 matchedCount: 1,
                 unmatchedCount: 1,
+                blockedCount: 0,
+                lookupFailedCount: 0,
+                ambiguousCount: 0,
                 unmatchedEbayOrderIds: [UNMATCHED_ORDER_ID],
             },
             externalWritesPerformed: 0,
@@ -202,8 +223,10 @@ describe('shadow-poll (read-only shadow parity mode)', () => {
         // The eBay filter is the lookback window (now - 24h), not a watermark.
         expect(world.ebayUrls[0]).toContain('filter=creationdate:%5B2026-08-19T12:00:00.000Z..%5D');
         expect(world.ebayUrls[0]).toContain('limit=10');
-        // Shopify saw ONLY the read-only tag lookup — no preflight, no mutation.
-        expect(new Set(world.shopifyOperations)).toEqual(new Set(['OrderImportOrdersByTag']));
+        // Shopify saw ONLY the two exact read-only identity lookups — no preflight or mutation.
+        expect(new Set(world.shopifyOperations)).toEqual(new Set([
+            'OrderImportOrdersBySourceIdentifier', 'OrderImportOrdersByTag',
+        ]));
         // The migration store and its reader were never opened.
         expect(world.migrationOpenCalls).toBe(0);
         expect(world.stateReaderOpenCalls).toBe(0);
@@ -243,9 +266,48 @@ describe('shadow-poll (read-only shadow parity mode)', () => {
             observedCount: 1,
             matchedCount: 0,
             unmatchedCount: 1,
+            blockedCount: 1,
+            lookupFailedCount: 1,
+            ambiguousCount: 0,
             unmatchedEbayOrderIds: [MATCHED_ORDER_ID],
         });
         expect(world.stderr).toEqual([]);
+        expect(world.exitCodes).toEqual([1]);
+    });
+    it('fails a conflicting source-id/tag result closed as ambiguous', async () => {
+        const world = createWorld();
+        world.ebayListOrders = [ebayOrderFixture(MATCHED_ORDER_ID, '2026-08-20T10:00:00.000Z')];
+        world.ordersBySourceIdentifier.set(MATCHED_ORDER_ID, [MATCHED_GID]);
+        world.ordersByTag.set(`eBay-${MATCHED_ORDER_ID}`, ['gid://shopify/Order/8888']);
+        await world.run(shadowArgv());
+        expect(world.lastStdout()).toMatchObject({
+            observed: [{
+                    ebayOrderId: MATCHED_ORDER_ID,
+                    shopifyMatch: { found: false, orderName: null, ambiguous: true },
+                }],
+            summary: { matchedCount: 0, unmatchedCount: 1 },
+            externalWritesPerformed: 0,
+        });
+        expect(world.exitCodes).toEqual([1]);
+    });
+    it('blocks non-exact Shopify search echoes and unexpected pagination', async () => {
+        for (const mode of ['nonexact', 'pagination']) {
+            const world = createWorld();
+            world.ebayListOrders = [
+                ebayOrderFixture(MATCHED_ORDER_ID, '2026-08-20T10:00:00.000Z'),
+            ];
+            world.ordersBySourceIdentifier.set(MATCHED_ORDER_ID, [MATCHED_GID]);
+            if (mode === 'nonexact')
+                world.shopifySourceEchoOverride = UNMATCHED_ORDER_ID;
+            if (mode === 'pagination')
+                world.shopifyHasNextPage = true;
+            await world.run(shadowArgv());
+            expect(world.lastStdout()).toMatchObject({
+                observed: [{ shopifyMatch: { found: false, lookupFailed: true } }],
+                summary: { blockedCount: 1, lookupFailedCount: 1 },
+            });
+            expect(world.exitCodes).toEqual([1]);
+        }
     });
     it('fails the whole run cleanly on an eBay read failure', async () => {
         const world = createWorld();

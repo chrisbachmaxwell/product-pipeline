@@ -825,6 +825,21 @@ export function buildListingReviseAdminProgram(
             desiredStateDigest: derived.manifestDigest,
           });
           if (store.getIntent(intentKey) === null) deny('REVISE_INTENT_NOT_FOUND');
+          const jobStatus = store.getJobStatus(options.jobId);
+          if (jobStatus === null) deny('REVISE_RECONCILIATION_TARGET_MISMATCH');
+          const existingJob = jobStatus as NonNullable<typeof jobStatus>;
+          if (existingJob.intentKey !== intentKey
+            || existingJob.responsibility !== 'listingRevise') {
+            deny('REVISE_RECONCILIATION_TARGET_MISMATCH');
+          }
+          if (existingJob.state === 'resolved_existing'
+            || existingJob.state === 'confirmed_missing') {
+            deny('REVISE_ATTEMPT_ALREADY_RESOLVED');
+          }
+          if (existingJob.state !== 'reconciliation_required'
+            || existingJob.attemptOutcome !== 'outcome_unknown') {
+            deny('REVISE_RECONCILIATION_NOT_REQUIRED');
+          }
           const reconciliation = await runReconciliation({
             store,
             target: {

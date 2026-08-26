@@ -171,6 +171,25 @@ function orderTag(orderId: string): string {
   return `eBay-${orderId}`;
 }
 
+async function findShopifyOrderGids(
+  shopify: ShopifyOrderAdapter,
+  orderId: string,
+): Promise<{
+  sourceIdentifierGids: string[];
+  tagGids: string[];
+  unionGids: string[];
+}> {
+  const [sourceIdentifierGids, taggedGids] = await Promise.all([
+    shopify.findOrderGidsBySourceIdentifier(orderId),
+    shopify.findOrderGidsByTag(orderTag(orderId)),
+  ]);
+  return {
+    sourceIdentifierGids: [...sourceIdentifierGids].sort(),
+    tagGids: [...taggedGids].sort(),
+    unionGids: [...new Set([...sourceIdentifierGids, ...taggedGids])].sort(),
+  };
+}
+
 function requireOrderId(value: string): string {
   if (typeof value !== 'string' || !SAFE_ORDER_ID.test(value)) {
     deny('IMPORT_ORDER_ID_INVALID');
@@ -186,7 +205,7 @@ type PostVerifyResult =
 
 /**
  * The authoritative zero-write post-dispatch verification: re-query Shopify
- * by the durable `eBay-<orderId>` tag, record one production_canary
+ * by both the originating-platform order id and durable `eBay-<orderId>` tag, record one production_canary
  * reconciliation run whose target is the intent's approval target (the eBay
  * order identity), and resolve the outcome-unknown attempt only on exact
  * evidence. `confirmed_missing` is a terminal claim and is recorded only
@@ -202,42 +221,44 @@ async function runOrderPostVerify(input: {
   ebayOrderIdentityKey: MigrationDigest;
   jobId: string;
   attemptId: string;
-  createdOrderGid: string | null;
   acceptAbsent: boolean;
   clock: () => string;
   uuid: () => string;
 }): Promise<PostVerifyResult> {
   const tag = orderTag(input.orderId);
   const startedAtUtc = input.clock();
+  let identityMatches: Awaited<ReturnType<typeof findShopifyOrderGids>>;
   let foundGids: string[];
   try {
-    foundGids = await input.shopify.findOrderGidsByTag(tag);
+    identityMatches = await findShopifyOrderGids(input.shopify, input.orderId);
+    foundGids = identityMatches.unionGids;
   } catch {
     return { outcome: 'verify_failed', exceptionCode: 'ORDER_IMPORT_POST_VERIFY_READ_FAILED' };
   }
   const completedAtUtc = input.clock();
   let matchedGid: string | null = null;
   let ambiguous = false;
-  if (input.createdOrderGid !== null && foundGids.includes(input.createdOrderGid)) {
-    matchedGid = input.createdOrderGid;
-  } else if (foundGids.length === 1) {
+  if (foundGids.length === 1) {
     matchedGid = foundGids[0]!;
   } else if (foundGids.length > 1) {
     ambiguous = true;
   }
   const sortedGids = [...foundGids].sort();
   const resultDigest = sha256Digest({
-    schemaVersion: 1,
+    schemaVersion: 2,
     type: 'order_import_post_verify',
     orderId: input.orderId,
     tag,
+    sourceIdentifier: input.orderId,
+    sourceIdentifierOrderGids: identityMatches.sourceIdentifierGids,
+    taggedOrderGids: identityMatches.tagGids,
     foundOrderGids: sortedGids,
     matchedOrderGid: matchedGid,
   });
   const runId = `order-import-run:${input.uuid()}`;
   const resolvable = matchedGid !== null || (foundGids.length === 0 && input.acceptAbsent);
   const exceptionCode = ambiguous
-    ? 'ORDER_IMPORT_AMBIGUOUS_TAG_MATCHES'
+    ? 'ORDER_IMPORT_AMBIGUOUS_IDENTITY_MATCHES'
     : 'ORDER_IMPORT_STATE_NOT_YET_OBSERVED';
   const exceptions = resolvable ? [] : [{
     exceptionId: `order-import-exception:${input.uuid()}`,
@@ -253,23 +274,27 @@ async function runOrderPostVerify(input: {
     mode: 'production_canary',
     status: 'passed',
     sourceSnapshotDigest: sha256Digest({
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'ebay_order_source',
       orderId: input.orderId,
     }),
     targetSnapshotDigest: sha256Digest({
-      schemaVersion: 1,
-      type: 'shopify_tag_query',
+      schemaVersion: 2,
+      type: 'shopify_external_identity_query',
       tag,
+      sourceIdentifier: input.orderId,
+      sourceIdentifierOrderGids: identityMatches.sourceIdentifierGids,
+      taggedOrderGids: identityMatches.tagGids,
       foundOrderGids: sortedGids,
     }),
     resultDigest,
     authoritative: resolvable,
     authorityEvidenceDigest: sha256Digest({
-      schemaVersion: 1,
-      type: 'shopify_admin_tag_query_authority',
+      schemaVersion: 2,
+      type: 'shopify_admin_external_identity_query_authority',
       storeDomain: MIGRATION_SCOPE.shopifyStoreDomain,
       tag,
+      sourceIdentifier: input.orderId,
     }),
     externalWritesObserved: 0,
     startedAtUtc,
@@ -810,23 +835,48 @@ export function buildOrderImportAdminProgram(
           ebayOrderId: string;
           createdAtUtc: string;
           lineItemSkus: Array<string | null>;
-          shopifyMatch: { found: boolean; orderName: string | null; lookupFailed?: true };
+          shopifyMatch: {
+            found: boolean;
+            orderName: string | null;
+            matchedBy?: 'source_identifier' | 'tag' | 'both';
+            lookupFailed?: true;
+            ambiguous?: true;
+          };
         }> = [];
         const unmatchedEbayOrderIds: string[] = [];
         let matchedCount = 0;
+        let lookupFailedCount = 0;
+        let ambiguousCount = 0;
         for (const order of fetched) {
           // Chosen partial-failure behavior: a failed per-order Shopify
           // lookup is reported on that order as lookupFailed (and counted
           // unmatched) instead of discarding the rest of the run.
-          let shopifyMatch: { found: boolean; orderName: string | null; lookupFailed?: true };
+          let shopifyMatch: {
+            found: boolean;
+            orderName: string | null;
+            matchedBy?: 'source_identifier' | 'tag' | 'both';
+            lookupFailed?: true;
+            ambiguous?: true;
+          };
           try {
-            const gids = await shopify.findOrderGidsByTag(orderTag(order.orderId));
-            shopifyMatch = gids.length > 0
-              ? { found: true, orderName: gids[0]! }
-              : { found: false, orderName: null };
+            const matches = await findShopifyOrderGids(shopify, order.orderId);
+            const gids = matches.unionGids;
+            const onlyGid = gids.length === 1 ? gids[0]! : null;
+            const matchedBy = onlyGid !== null
+              ? matches.sourceIdentifierGids.includes(onlyGid)
+                ? matches.tagGids.includes(onlyGid) ? 'both' as const : 'source_identifier' as const
+                : 'tag' as const
+              : null;
+            shopifyMatch = onlyGid !== null
+              ? { found: true, orderName: onlyGid, matchedBy: matchedBy! }
+              : gids.length > 1
+                ? { found: false, orderName: null, ambiguous: true }
+                : { found: false, orderName: null };
           } catch {
             shopifyMatch = { found: false, orderName: null, lookupFailed: true };
           }
+          if (shopifyMatch.lookupFailed === true) lookupFailedCount += 1;
+          if (shopifyMatch.ambiguous === true) ambiguousCount += 1;
           if (shopifyMatch.found) {
             matchedCount += 1;
           } else {
@@ -852,6 +902,9 @@ export function buildOrderImportAdminProgram(
             observedCount: observed.length,
             matchedCount,
             unmatchedCount: unmatchedEbayOrderIds.length,
+            blockedCount: lookupFailedCount + ambiguousCount,
+            lookupFailedCount,
+            ambiguousCount,
             unmatchedEbayOrderIds,
           },
           externalWritesPerformed: 0,
@@ -880,6 +933,7 @@ export function buildOrderImportAdminProgram(
           }
         }
         io.stdout(serialized);
+        if (lookupFailedCount > 0 || ambiguousCount > 0) io.setExitCode(1);
       } catch (error) {
         fail('shadow-poll', error);
       }
@@ -889,7 +943,7 @@ export function buildOrderImportAdminProgram(
     .command('import')
     .description(
       'Import EXACTLY ONE eligible post-watermark eBay order into Shopify: dedup pre-check by '
-      + 'tag, write-scope preflight, durable one-intent/one-approval/one-job ceremony, one '
+      + 'source identifier and tag, write-scope preflight, durable one-intent/one-approval/one-job ceremony, one '
       + 'bounded orderCreate, then immediate authoritative post-verification. Every created '
       + 'Shopify order is a real Lightspeed POS event',
     )
@@ -938,16 +992,21 @@ export function buildOrderImportAdminProgram(
           }
           if (observed.resolved) deny('IMPORT_ALREADY_RESOLVED');
 
-          // (b) Shopify dedup pre-check by durable tag — before any intent.
+          // (b) Shopify dedup pre-check by incumbent source id and durable tag — before any intent.
           const shopify = createShopifyAdapter();
-          const existingGids = await shopify.findOrderGidsByTag(tag);
+          const existingMatches = await findShopifyOrderGids(shopify, orderId);
+          const existingGids = existingMatches.unionGids;
+          if (existingGids.length > 1) deny('IMPORT_SHOPIFY_DUPLICATE_AMBIGUOUS');
           if (existingGids.length > 0) {
             const existingGid = existingGids[0]!;
             const dedupEvidence = sha256Digest({
-              schemaVersion: 1,
+              schemaVersion: 2,
               type: 'order_import_dedup',
               orderId,
               tag,
+              sourceIdentifier: orderId,
+              sourceIdentifierOrderGids: existingMatches.sourceIdentifierGids,
+              taggedOrderGids: existingMatches.tagGids,
               foundOrderGids: [...existingGids].sort(),
             });
             const shopifyOrderIdentityKey = ensureIdentity(
@@ -1024,6 +1083,7 @@ export function buildOrderImportAdminProgram(
             tags: ['eBay', tag],
             note: `Imported from eBay order ${orderId} by ProductPipeline order-import-admin`,
             sourceName: 'ebay',
+            sourceIdentifier: orderId,
             financialStatus,
           };
           const shipping = fresh.shippingPassthrough;
@@ -1049,12 +1109,13 @@ export function buildOrderImportAdminProgram(
           // The desired-state evidence digest deliberately covers only the
           // non-PII manifest: order id, tag, resolved lines, status, totals.
           const manifestDigest = sha256Digest({
-            schemaVersion: 1,
+            schemaVersion: 2,
             type: 'order_import_manifest',
             orderId,
             tag,
             financialStatus,
             sourceName: 'ebay',
+            sourceIdentifier: orderId,
             total: fresh.total,
             lineItems: resolvedLines.map((line) => ({
               sku: line.sku,
@@ -1130,12 +1191,10 @@ export function buildOrderImportAdminProgram(
           });
 
           // The ONE bounded provider mutation of this invocation.
-          let createdOrderGid: string | null = null;
           let userErrorsReported = false;
           let providerDispatchReported = false;
           try {
             const created = await shopify.createOrder(orderInput);
-            createdOrderGid = created.orderGid;
             userErrorsReported = created.userErrorsPresent;
             providerDispatchReported = created.orderGid !== null && !created.userErrorsPresent;
           } catch {
@@ -1162,7 +1221,6 @@ export function buildOrderImportAdminProgram(
             ebayOrderIdentityKey,
             jobId,
             attemptId,
-            createdOrderGid,
             // Never auto-terminalize an order job: `confirmed_missing`
             // requires the explicit `reconcile --accept-absent` ceremony.
             acceptAbsent: false,
@@ -1256,7 +1314,6 @@ export function buildOrderImportAdminProgram(
             ebayOrderIdentityKey,
             jobId: options.jobId,
             attemptId: options.attemptId,
-            createdOrderGid: null,
             acceptAbsent: options.acceptAbsent === true,
             clock,
             uuid,

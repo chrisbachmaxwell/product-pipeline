@@ -106,6 +106,7 @@ function createWorld() {
         ebayUrls: [],
         shopifyScopes: ['read_products', 'read_orders', 'read_inventory', 'write_orders'],
         ordersByTag: new Map(),
+        ordersBySourceIdentifier: new Map(),
         variantsBySku: new Map(),
         orderCreateCalls: [],
         orderCreateBehavior: { mode: 'success' },
@@ -157,7 +158,18 @@ function createWorld() {
         if (body.operationName === 'OrderImportOrdersByTag') {
             const match = /^tag:'(.+)'$/.exec(String(body.variables.query));
             const gids = match ? world.ordersByTag.get(match[1]) ?? [] : [];
-            return jsonResponse({ data: { orders: { nodes: gids.map((id) => ({ id })) } } });
+            return jsonResponse({ data: { orders: {
+                        nodes: gids.map((id) => ({ id, tags: [match[1]], sourceIdentifier: null })),
+                        pageInfo: { hasNextPage: false },
+                    } } });
+        }
+        if (body.operationName === 'OrderImportOrdersBySourceIdentifier') {
+            const match = /^source_identifier:(.+)$/.exec(String(body.variables.query));
+            const gids = match ? world.ordersBySourceIdentifier.get(match[1]) ?? [] : [];
+            return jsonResponse({ data: { orders: {
+                        nodes: gids.map((id) => ({ id, tags: [], sourceIdentifier: match[1] })),
+                        pageInfo: { hasNextPage: false },
+                    } } });
         }
         if (body.operationName === 'OrderImportVariantBySku') {
             const match = /^sku:'(.+)'$/.exec(String(body.variables.query));
@@ -188,6 +200,11 @@ function createWorld() {
                 const tags = body.variables.order.tags;
                 const tag = tags.find((value) => value.startsWith('eBay-'));
                 world.ordersByTag.set(tag, [...(world.ordersByTag.get(tag) ?? []), gid]);
+                const sourceIdentifier = body.variables.order
+                    .sourceIdentifier;
+                world.ordersBySourceIdentifier.set(sourceIdentifier, [
+                    ...(world.ordersBySourceIdentifier.get(sourceIdentifier) ?? []), gid,
+                ]);
             }
             return jsonResponse({ data: { orderCreate: { order: { id: gid }, userErrors: [] } } });
         }
@@ -413,6 +430,7 @@ describe('order-import operator CLI', () => {
         expect(world.orderCreateCalls).toHaveLength(1);
         const createInput = world.orderCreateCalls[0];
         expect(createInput.tags).toEqual(['eBay', `eBay-${ORDER_ID}`]);
+        expect(createInput.sourceIdentifier).toBe(ORDER_ID);
         expect(createInput.financialStatus).toBe('PAID');
         expect(createInput.sourceName).toBe('ebay');
         expect(String(createInput.note)).toContain(ORDER_ID);
@@ -489,7 +507,7 @@ describe('order-import operator CLI', () => {
             writable.close();
         }
     });
-    it('links an existing tagged Shopify order without any intent and denies later imports', async () => {
+    it('links a Marketplace Connect source-identified Shopify order without any intent', async () => {
         const world = createWorld();
         await establishOwnership(world);
         await establishWatermark(world);
@@ -500,7 +518,7 @@ describe('order-import operator CLI', () => {
         await world.run(['poll', '--migration-store', world.migrationDatabasePath,
             '--max-orders', '10']);
         // Marketplace Connect (or anything else) already created this order.
-        world.ordersByTag.set(`eBay-${ORDER_ID}`, ['gid://shopify/Order/7777']);
+        world.ordersBySourceIdentifier.set(ORDER_ID, ['gid://shopify/Order/7777']);
         await world.run(['import', '--migration-store', world.migrationDatabasePath,
             '--order-id', ORDER_ID, '--confirm-lightspeed']);
         expect(world.lastStdout()).toMatchObject({
@@ -538,6 +556,30 @@ describe('order-import operator CLI', () => {
         await world.run(['import', '--migration-store', world.migrationDatabasePath,
             '--order-id', ORDER_ID, '--confirm-lightspeed']);
         expect(world.lastStderr()).toMatchObject({ code: 'IMPORT_ALREADY_LINKED' });
+    });
+    it('denies conflicting source-id and tag matches before any intent or write', async () => {
+        const world = createWorld();
+        await establishOwnership(world);
+        await establishWatermark(world);
+        world.setClock('2026-08-19T18:05:00.000Z');
+        world.ebayListOrders = [ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z')];
+        world.ebayOrderDetails.set(ORDER_ID, ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z'));
+        await world.run(['poll', '--migration-store', world.migrationDatabasePath,
+            '--max-orders', '10']);
+        world.ordersBySourceIdentifier.set(ORDER_ID, ['gid://shopify/Order/7777']);
+        world.ordersByTag.set(`eBay-${ORDER_ID}`, ['gid://shopify/Order/8888']);
+        await world.run(['import', '--migration-store', world.migrationDatabasePath,
+            '--order-id', ORDER_ID, '--confirm-lightspeed']);
+        expect(world.lastStderr()).toMatchObject({
+            command: 'import', code: 'IMPORT_SHOPIFY_DUPLICATE_AMBIGUOUS',
+        });
+        expect(world.orderCreateCalls).toHaveLength(0);
+        const store = openMigrationStoreReadOnly({
+            databasePath: world.migrationDatabasePath,
+            expectedScope: MIGRATION_SCOPE,
+        });
+        expect(store.getCounts()).toMatchObject({ idempotency_intents: 0, execution_jobs: 0 });
+        store.close();
     });
     it('fails closed before any intent when write_orders is missing', async () => {
         const world = createWorld();

@@ -343,6 +343,14 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: G10 Reconciled and G13 Production Identity Repaired
+
+- Completed G10's first live listing-revise ceremony for eBay listing `147232036779`: the approved branded description is live, price and quantity were preserved, and the original job/attempt is durably `revised_state_observed` / `resolved_existing`. Exactly one provider write occurred; the recovery reconciliation performed zero external writes and the migration-store audit chain verifies.
+- Added a terminal replay guard so re-running `reconcile` for an already-resolved attempt fails as `REVISE_ATTEMPT_ALREADY_RESOLVED` before another reconciliation run or target observation can be recorded. Regression coverage proves migration-store counts and the audit head remain unchanged.
+- Remaining G10 gate is observation-only: confirm Marketplace Connect leaves the listing's price and quantity correct for 24 hours.
+- Ran G13's zero-write 24-hour production shadow check: 11 eBay orders were observed, but the tag-only join falsely marked all unmatched. A signed-in Shopify spot check proved Marketplace Connect stores the exact eBay Order ID as Shopify's `sourceIdentifier` and uses only generic tags.
+- Shadow parity, import dedup, and post-dispatch verification now exact-check both Shopify `source_identifier:<orderId>` and ProductPipeline's durable `eBay-<orderId>` tag. Fuzzy echoes, unexpected pagination, lookup failures, or conflicting GIDs block the run; ProductPipeline-created orders carry both markers. No watermark, ownership, order observation, order link, Shopify order, or historical import was created during the live check.
+
 ### 2026-08-26: Exact Raw-HTML Listing Reconciliation
 
 - Corrected the first production G10 revise's reconciliation defect: the approved branded manifest contains raw HTML, while the draft/editor basis intentionally contains plain text. Listing-revise reconciliation now compares descriptions against the fresh provider's exact raw HTML with XML line-ending normalization only, and binds the raw-description digest into its result evidence.
