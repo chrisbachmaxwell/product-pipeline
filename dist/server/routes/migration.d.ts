@@ -73,7 +73,7 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
         })[];
     };
     responsibilityEvidence: ({
-        responsibility: "price" | "orderImport" | "inventory";
+        responsibility: "price" | "inventory" | "orderImport";
         acceptedOwner: string;
         observedOwner: string;
         evidenceStatus: string;
@@ -82,7 +82,7 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
         canaryReady: boolean;
         summary: string;
     } | {
-        responsibility: "listingCreate" | "listingRevise" | "listingEndRelist" | "mapping" | "fulfillment" | "feedback" | "reconciliation";
+        responsibility: "fulfillment" | "listingCreate" | "listingRevise" | "listingEndRelist" | "mapping" | "feedback" | "reconciliation";
         acceptedOwner: string;
         observedOwner: null;
         evidenceStatus: string;
