@@ -20,6 +20,7 @@ Legend: ☐ = pending · [USER] = only the user/operator can do it · [AGENT] = 
 Prove every listing lifecycle write end-to-end while MC still owns price/inventory/orders. No MC changes in this phase.
 
 - ☐ [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise, optionally `--description-template ucg-branded-v1`); verify on ebay.com
+- **Current gate (2026-08-26):** Draft 1 for listing `147232036779` is saved and its exact `ucg-branded-v1` preflight passed with price `$164.95` and quantity `5` preserved and zero writes. Dispatch waits on the explicit Production migration-store v3→v4 upgrade and its post-upgrade verification, then the human operator's one-action approval.
 - ☐ [USER] Re-run preflight → expect `REVISE_BASE_STALE` (proof the revised state is live); confirm MC price/quantity sync still behaves on that listing over 24h
 - ☐ [USER] G16a: create one new SKU end-to-end (branded template) via `listing-lifecycle-admin`; verify live listing
 - ☐ [USER] G16b: end (or end+relist) one low-stakes listing; verify
@@ -46,6 +47,7 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 ## Phase 4 — Fulfillment/tracking sync (G17) — REQUIRED before MC removal
 
 - [x] [AGENT] Build the inert fulfillment slice: schema-v4 allowance for exactly `fulfillment`, standalone full-order ceremony CLI (eBay createShippingFulfillment, `sell.fulfillment` scope already held), observations + reconciliation, tests, runbook (source candidate 2026-08-25; no dispatch)
+- ☐ [USER] Back up the Production migration store off-volume; run the exact-scope schema-v4 `verify → upgrade → verify` ceremony before any new ownership or dispatch action
 - ☐ [USER] Record MC's fulfillment behavior off (with its order sync already off in Phase 3, capture evidence of the residual state) → establish-ownership (fulfillment)
 - ☐ [USER] Ship a real order in Shopify → ceremony pushes tracking → verify tracking + carrier visible on the eBay order
 - **Exit check:** 3+ real shipments tracked on eBay via ProductPipeline; buyer-visible status correct.

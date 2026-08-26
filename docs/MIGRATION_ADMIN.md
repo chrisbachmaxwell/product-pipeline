@@ -1,13 +1,14 @@
 # Migration-State Administration
 
-`migration-admin` is a separate, local-only command for creating one inert migration-state database and verifying it without mutation. It is not the legacy CLI, the offline reconciliation CLI, a schema upgrader, a platform client, or a cutover control.
+`migration-admin` is a separate, local-only command for creating one inert migration-state database, upgrading its reviewed schema, and verifying it without provider access. It is not the legacy CLI, the offline reconciliation CLI, a platform client, or a cutover control.
 
 The command surface is intentionally limited to:
 
 - `init`: preview by default; initialize once only after the operator repeats the exact account-scope digest.
+- `upgrade`: upgrade one existing verified store only after the operator repeats the exact account-scope digest and supplies a fresh canonical UTC instant.
 - `verify`: open an existing store read-only, verify schema/account/integrity/audit invariants, and emit a redacted local-state projection.
 
-There is no `force`, reset, migrate, sync, import, watermark, ownership, approval, job, canary, or write command. Neither command loads credentials, contacts Shopify/eBay/Marketplace Connect, reads the legacy application database, or changes production data.
+There is no `force`, reset, sync, import, watermark, ownership, approval, job, canary, or provider-write command. None of these commands loads credentials, contacts Shopify/eBay/Marketplace Connect, reads the legacy application database, or changes commerce data. `upgrade` changes only the dedicated migration-state schema in one verified transaction.
 
 ## Configuration
 
@@ -29,7 +30,7 @@ The strict schema requires:
 - explicit false assertions for platform access, external writes, historical backfill, ownership transfer, and credential use;
 - a null cutover watermark.
 
-Unknown fields, wildcard identities, the shipped invalid placeholder and common placeholder prefixes, credential-like material, symlink/hard-link paths, path traversal, oversized files, and SQLite sidecars fail closed. Error output names only stable validation categories; it does not echo rejected values or paths. The working `config/migration-state.json` path is ignored by Git; only the deliberately invalid example is tracked.
+Unknown fields, wildcard identities, the shipped invalid placeholder and common placeholder prefixes, credential-like material, symlink/hard-link paths, path traversal, oversized files, and SQLite sidecars fail closed. Error output names only stable validation categories; it does not echo rejected values or paths. The working `config/migration-state.json` path is ignored by Git. The tracked `config/migration-state.production.json` is the one nonsecret, exact-scope Railway configuration; it contains no authority or customer data.
 
 ## Preview, initialize, and verify
 
@@ -65,6 +66,47 @@ npm run migration-admin -- verify \
 
 Verification exits `0` only for a locally valid store. It preserves the database bytes, size, mode, modification time, and directory entries. Missing, legacy, tampered, cross-account, unsafe-permission, linked, or sidecar-bearing state exits `1` without creating or repairing anything.
 
+## Railway production verify and schema upgrade
+
+The Docker image creates a mode-`0700` `.git` root marker because Railway excludes
+Git history from the build context. The existing package-name, configuration,
+scope, durable-path, permission, schema, catalog, and audit-chain checks remain
+unchanged. The image also points the authenticated read-only web projection at
+the tracked production configuration; startup still never opens or upgrades the
+store.
+
+Before an in-place upgrade, stop all ceremony commands, take a verified
+off-volume backup, and retain it until post-upgrade verification passes. Never
+restore a pre-order-cutover backup after real order imports begin because doing
+so could discard durable deduplication evidence.
+
+Run on the Railway production service from `/app`:
+
+```bash
+node dist/migration-admin/index.js verify \
+  --repo-root /app \
+  --config config/migration-state.production.json \
+  --json
+
+node dist/migration-admin/index.js upgrade \
+  --repo-root /app \
+  --config config/migration-state.production.json \
+  --applied-at '<fresh-canonical-UTC>' \
+  --confirm-scope sha256:f1f798163d3f7c7042825d998c9f2b6f3f0ad5f75794a9d12dd887daa7e8f54c \
+  --json
+
+node dist/migration-admin/index.js verify \
+  --repo-root /app \
+  --config config/migration-state.production.json \
+  --json
+```
+
+The first `verify` is expected to fail closed with `SCHEMA_MISMATCH` when the
+deployed code requires a newer reviewed schema. That expected mismatch is not
+permission to skip the backup or the exact-scope confirmation. The final
+`verify` must report the current schema, a valid audit chain, and zero external
+writes before any ownership or dispatch ceremony continues.
+
 ## Web projection
 
 The mounted application reads migration state only when `MIGRATION_STATE_CONFIG_PATH` explicitly names the strict repository-local configuration. The reader runs only when authenticated `/api/migration/status` is requested; server startup does not open, create, initialize, or migrate the store.
@@ -80,6 +122,6 @@ gates. A verified local projection is not Shopify/eBay/Marketplace Connect evide
 
 ## Exit codes
 
-- `0`: initialization completed with inert postconditions, or an existing store verified locally.
+- `0`: initialization or schema upgrade completed with verified postconditions, an already-current store was confirmed, or an existing store verified locally.
 - `1`: configuration, path, confirmation, creation, or integrity verification denied.
 - `2`: safe initialization preview; no filesystem state was created.

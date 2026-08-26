@@ -343,6 +343,13 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-26: Railway-Safe Schema-v4 Activation Path
+
+- Packaged the existing reviewed migration-admin root marker in the Railway Docker image and added one strict nonsecret production configuration pinned to `/data/migration-state/product-pipeline-migration-v1.sqlite`, `usedcameragear.myshopify.com`, seller `usedcameragear`, and `EBAY_US`. The authenticated read-only migration projection now receives that exact config path; server startup still never opens or upgrades the store.
+- Preserved every existing configuration, exact-scope confirmation, durable-path, permission, schema/catalog, audit-chain, and provider-isolation check. Added focused coverage for the shipped production config/root marker and for a populated schema-v3 → v4 upgrade that preserves order ownership, watermark, cursor, observation, resolution, link, intent/job/attempt/reconciliation, and target-effect state while retaining the one-hour clamp, strictly-greater eligibility, duplicate denials, and failure atomicity.
+- Corrected the migration/order runbooks for schema v4 and documented the Railway backup → verify → exact-scope upgrade → verify ceremony. G10 Draft 1 and its exact branded-description preflight are complete with zero writes; live dispatch remains a separate human operator action after the production store is backed up and verified at v4.
+- Verification: focused migration-admin/schema-upgrade tests passed (26/26), `tsc --noEmit` passed, the complete Vitest suite passed (76 files / 832 tests), and the tracked production build completed successfully.
+
 ### 2026-08-25: Inert G17 Fulfillment/Tracking Ceremony
 
 - Added explicit migration-store schema v4, widening Production for exactly the Class-B `fulfillment` responsibility while `mapping` and `feedback` remain denied. Fulfillment requires the durable Marketplace Connect → paused → ProductPipeline evidence chain; target-effect observations and attempt resolution now bind fulfillment reconciliation.

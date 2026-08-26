@@ -201,7 +201,7 @@ Steps, all fail-closed, in order:
 
 ## Structural no-backfill guarantees (layered)
 
-Schema/store layer (`src/migration-store/`, schema v3 — every one of these is
+Schema/store layer (`src/migration-store/`, schema v4 — every one of these is
 enforced by SQL triggers and the store guards, not by CLI politeness):
 
 - **One-hour clamp**: a production watermark boundary at most one hour before

@@ -374,6 +374,19 @@ The value is append-only local draft state. It does not update eBay, and this re
 That procedure can invoke exactly one descriptor-bound file-mode change to \`0600\`. It has no automatic rollback, restore, or second permission-write path and cannot edit database content, read or rotate a token, contact Shopify, or change any product, listing, order, price, or inventory state. If its outcome is interrupted or uncertain, stop: run the documented option-free read-only diagnostic, health check, and expected DB-backed app read, and never retry the repair blindly. Never use a generic \`chmod\` command or paste credentials into ProductPipeline.`,
     },
     {
+        question: 'How is the production migration store upgraded?',
+        category: 'Settings',
+        sort_order: 7,
+        answer: `The migration store is never upgraded by an app deploy, web request, scheduler, or worker. An authorized operator runs the standalone \`migration-admin\` ceremony on the Railway production service.
+
+1. Stop all migration ceremonies and take a verified off-volume backup of the migration database.
+2. Run the read-only \`verify\` command with \`config/migration-state.production.json\`.
+3. Run exactly one \`upgrade\` command with a fresh canonical UTC instant and the exact reviewed scope digest.
+4. Run \`verify\` again and stop unless the current schema and audit chain are valid.
+
+The upgrade changes only the dedicated local migration-state schema. It has no provider client and cannot change Shopify, eBay, Marketplace Connect, Lightspeed, listings, prices, inventory, orders, or fulfillment. Never bypass a schema mismatch, skip the backup, or restore a pre-cutover backup after real order imports begin. See \`docs/MIGRATION_ADMIN.md\` for the exact commands.`,
+    },
+    {
         question: 'How does fulfillment tracking reach eBay?',
         category: 'eBay',
         sort_order: 7,
