@@ -107,6 +107,8 @@ export type ListingReviseComparison = Readonly<{
     effect: 'revised_state_observed' | 'revised_state_absent' | 'partial';
     matchedFields: readonly ListingFieldName[];
     unmatchedFields: readonly ListingFieldName[];
+    beforeFields: readonly ListingFieldName[];
+    driftedFields: readonly ListingFieldName[];
 }>;
 /**
  * Post-dispatch comparison: classify the live observed values against the
@@ -117,6 +119,7 @@ export type ListingReviseComparison = Readonly<{
 export declare function compareDispatchedState(input: {
     manifest: ListingReviseManifest;
     freshBasis: ListingDraftBasis;
+    freshDescriptionHtml: string | null;
 }): ListingReviseComparison;
 export declare class ListingRevisePayloadError extends Error {
     readonly code: 'REVISE_RAW_BINDING_MISMATCH' | 'REVISE_RAW_PRESERVATION_VIOLATED' | 'REVISE_RAW_PAYLOAD_INVALID';

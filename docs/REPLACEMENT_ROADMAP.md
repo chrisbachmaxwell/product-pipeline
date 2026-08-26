@@ -20,7 +20,7 @@ Legend: ☐ = pending · [USER] = only the user/operator can do it · [AGENT] = 
 Prove every listing lifecycle write end-to-end while MC still owns price/inventory/orders. No MC changes in this phase.
 
 - ☐ [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise, optionally `--description-template ucg-branded-v1`); verify on ebay.com
-- **Current gate (2026-08-26):** Draft 1 for listing `147232036779` is saved and its exact `ucg-branded-v1` preflight passed with price `$164.95` and quantity `5` preserved and zero writes. Dispatch waits on the explicit Production migration-store v3→v4 upgrade and its post-upgrade verification, then the human operator's one-action approval.
+- **Current gate (2026-08-26):** Production is schema v4 and the human operator dispatched Draft 1 for listing `147232036779`. The branded description is publicly live and byte-identical to the approved raw HTML; eBay still shows price `$164.95` and quantity `5`. The job remains `reconciliation_required` because the deployed comparator incorrectly compared that raw HTML with the editor's plain-text projection. Recovery is fix/deploy the raw-HTML comparator, then reconcile the existing job without another dispatch; see Brain L14.
 - ☐ [USER] Re-run preflight → expect `REVISE_BASE_STALE` (proof the revised state is live); confirm MC price/quantity sync still behaves on that listing over 24h
 - ☐ [USER] G16a: create one new SKU end-to-end (branded template) via `listing-lifecycle-admin`; verify live listing
 - ☐ [USER] G16b: end (or end+relist) one low-stakes listing; verify

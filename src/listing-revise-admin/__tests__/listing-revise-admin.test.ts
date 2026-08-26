@@ -55,7 +55,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function workspace(options: { ebayTitle?: string } = {}): ListingWorkspaceDto {
+function workspace(options: { ebayTitle?: string; descriptionHtml?: string } = {}): ListingWorkspaceDto {
   const productId = 'gid://shopify/Product/10310708035875';
   return {
     schemaVersion: 1,
@@ -105,7 +105,7 @@ function workspace(options: { ebayTitle?: string } = {}): ListingWorkspaceDto {
         lifecycle: { status: 'ACTIVE', active: true, format: 'FIXED_PRICE', duration: 'GTC',
           startAtUtc: null, endAtUtc: null },
         content: { title: options.ebayTitle ?? 'eBay Old',
-          descriptionHtml: '<p>Safe &amp; clean</p>',
+          descriptionHtml: options.descriptionHtml ?? '<p>Safe &amp; clean</p>',
           imageUrls: ['https://i.ebayimg.com/images/g/abc/s-l1600.jpg'] },
         category: { primary: { id: '3323', name: 'Lenses' }, secondary: null, storeCategories: [] },
         condition: { id: '3000', name: 'Used', description: 'Excellent', descriptors: [] },
@@ -245,6 +245,11 @@ async function createWorld(): Promise<World> {
       adapterCalls.push('putOffer');
       if (putsFail) throw new Error('provider write failed');
       putOfferPayloads.push(payload);
+      current = workspace({
+        descriptionHtml: typeof payload.listingDescription === 'string'
+          ? payload.listingDescription
+          : undefined,
+      });
     },
   });
 
@@ -586,6 +591,9 @@ describe('listing-revise operator CLI', () => {
     const dispatched = lastJson(world.stdout);
     expect(dispatched).toMatchObject({
       command: 'dispatch',
+      status: 'dispatched-and-reconciled',
+      effect: 'revised_state_observed',
+      resolution: 'resolved_existing',
       providerDispatchReported: true,
       manifestDigest: templatedDigest,
       descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },

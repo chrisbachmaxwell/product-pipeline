@@ -27,6 +27,7 @@ import {
 } from '../migration-store/index.js';
 import {
   openListingControlStoreReadOnly,
+  sha256Digest,
   type ListingRevision,
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
@@ -329,19 +330,29 @@ async function runReconciliation(input: {
   const startedAtUtc = input.clock();
   const freshDto = await input.readWorkspace(input.catalogId);
   const freshBasis = deriveListingDraftBasis(freshDto);
+  const freshDescriptionHtml = freshDto.ebayDetail?.actual.content.descriptionHtml ?? null;
   const comparison = compareDispatchedState({
     manifest: input.target.derived.manifest,
     freshBasis,
+    freshDescriptionHtml,
   });
   const completedAtUtc = input.clock();
   const runId = `listing-revise-run:${input.uuid()}`;
-  const resultDigest = (await import('../listing-control-store/index.js')).sha256Digest({
+  const resultDigest = sha256Digest({
     schemaVersion: 1,
     manifestDigest: input.target.derived.manifestDigest,
     effect: comparison.effect,
     matchedFields: comparison.matchedFields,
     unmatchedFields: comparison.unmatchedFields,
+    beforeFields: comparison.beforeFields,
+    driftedFields: comparison.driftedFields,
     freshEbayDigest: freshBasis.ebayDigest,
+    freshRawDescriptionDigest: freshDescriptionHtml === null
+      ? null
+      : sha256Digest({
+          schemaVersion: 1,
+          descriptionHtml: freshDescriptionHtml.replace(/\r\n?/gu, '\n'),
+        }),
   });
   const resolvable = comparison.effect === 'revised_state_observed'
     || (comparison.effect === 'revised_state_absent' && input.resolveAbsent);

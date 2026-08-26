@@ -213,6 +213,9 @@ export function assertFreshBasisMatchesRevision(input) {
             deny('REVISE_BASE_STALE');
     }
 }
+function canonicalProviderText(value) {
+    return value === null ? null : value.replace(/\r\n?/gu, '\n');
+}
 /**
  * Post-dispatch comparison: classify the live observed values against the
  * manifest's expected after-values. `partial` means some but not all changes
@@ -222,20 +225,50 @@ export function assertFreshBasisMatchesRevision(input) {
 export function compareDispatchedState(input) {
     const matched = [];
     const unmatched = [];
+    const before = [];
+    const drifted = [];
     for (const change of input.manifest.changes) {
+        if (change.field === 'description') {
+            const rawObserved = canonicalProviderText(input.freshDescriptionHtml);
+            if (rawObserved === canonicalProviderText(change.after)) {
+                matched.push(change.field);
+            }
+            else {
+                unmatched.push(change.field);
+                // The draft basis intentionally stores only a plain-text projection
+                // of an eBay description. It therefore cannot prove a non-null raw
+                // HTML before-state byte-for-byte. Treat any such non-after value as
+                // drift, never as absence that an operator could terminalize.
+                if (rawObserved === null && change.before === null)
+                    before.push(change.field);
+                else
+                    drifted.push(change.field);
+            }
+            continue;
+        }
         const observed = input.freshBasis.observed[change.field] ?? null;
-        if (observed === change.after)
+        if (observed === change.after) {
             matched.push(change.field);
-        else
+        }
+        else {
             unmatched.push(change.field);
+            if (observed === change.before)
+                before.push(change.field);
+            else
+                drifted.push(change.field);
+        }
     }
-    const effect = unmatched.length === 0
+    const effect = matched.length === input.manifest.changes.length
         ? 'revised_state_observed'
-        : matched.length === 0 ? 'revised_state_absent' : 'partial';
+        : before.length === input.manifest.changes.length
+            ? 'revised_state_absent'
+            : 'partial';
     return Object.freeze({
         effect,
         matchedFields: Object.freeze(matched),
         unmatchedFields: Object.freeze(unmatched),
+        beforeFields: Object.freeze(before),
+        driftedFields: Object.freeze(drifted),
     });
 }
 export class ListingRevisePayloadError extends Error {

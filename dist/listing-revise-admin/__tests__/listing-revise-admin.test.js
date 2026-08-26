@@ -80,7 +80,7 @@ function workspace(options = {}) {
                 lifecycle: { status: 'ACTIVE', active: true, format: 'FIXED_PRICE', duration: 'GTC',
                     startAtUtc: null, endAtUtc: null },
                 content: { title: options.ebayTitle ?? 'eBay Old',
-                    descriptionHtml: '<p>Safe &amp; clean</p>',
+                    descriptionHtml: options.descriptionHtml ?? '<p>Safe &amp; clean</p>',
                     imageUrls: ['https://i.ebayimg.com/images/g/abc/s-l1600.jpg'] },
                 category: { primary: { id: '3323', name: 'Lenses' }, secondary: null, storeCategories: [] },
                 condition: { id: '3000', name: 'Used', description: 'Excellent', descriptors: [] },
@@ -198,6 +198,11 @@ async function createWorld() {
             if (putsFail)
                 throw new Error('provider write failed');
             putOfferPayloads.push(payload);
+            current = workspace({
+                descriptionHtml: typeof payload.listingDescription === 'string'
+                    ? payload.listingDescription
+                    : undefined,
+            });
         },
     });
     const stdout = [];
@@ -508,6 +513,9 @@ describe('listing-revise operator CLI', () => {
         const dispatched = lastJson(world.stdout);
         expect(dispatched).toMatchObject({
             command: 'dispatch',
+            status: 'dispatched-and-reconciled',
+            effect: 'revised_state_observed',
+            resolution: 'resolved_existing',
             providerDispatchReported: true,
             manifestDigest: templatedDigest,
             descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
