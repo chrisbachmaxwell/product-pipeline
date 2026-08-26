@@ -10,6 +10,7 @@ import {
   type Digest,
   type IntegrationScope,
   type OwnershipOwner,
+  type OperationalStoreMonitoring,
   type Responsibility,
 } from './types.js';
 
@@ -72,6 +73,7 @@ export type MigrationStoreProjection = {
     recordCount: number;
     headHash: string | null;
   };
+  monitoring: OperationalStoreMonitoring | null;
   readiness: {
     canaryReady: false;
     cutoverReady: false;
@@ -102,6 +104,7 @@ function deniedProjection(status: 'unavailable' | 'invalid'): MigrationStoreProj
       historicalBackfillAllowed: false,
     },
     audit: { valid: false, recordCount: 0, headHash: null },
+    monitoring: null,
     readiness: {
       canaryReady: false,
       cutoverReady: false,
@@ -148,6 +151,7 @@ function fixedCounts(counts: Record<string, number>): MigrationStoreProjectionCo
 export function inspectMigrationStoreReadOnly(input: {
   databasePath: string;
   expectedScope: IntegrationScope;
+  nowUtc?: string;
 }): MigrationStoreProjection {
   try {
     if (
@@ -248,6 +252,9 @@ export function inspectMigrationStoreReadOnly(input: {
       }
       const watermark = storedWatermark;
       const audit = store.verifyAuditChain();
+      const monitoring = store.getOperationalMonitoring(
+        input.nowUtc ?? new Date().toISOString(),
+      );
       const blockers = [
         ...ownership
           .filter((entry) => !entry.configured)
@@ -280,6 +287,7 @@ export function inspectMigrationStoreReadOnly(input: {
           recordCount: audit.recordCount,
           headHash: audit.headHash,
         },
+        monitoring,
         readiness: {
           canaryReady: false,
           cutoverReady: false,

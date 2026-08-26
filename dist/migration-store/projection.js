@@ -25,6 +25,7 @@ function deniedProjection(status) {
             historicalBackfillAllowed: false,
         },
         audit: { valid: false, recordCount: 0, headHash: null },
+        monitoring: null,
         readiness: {
             canaryReady: false,
             cutoverReady: false,
@@ -152,6 +153,7 @@ export function inspectMigrationStoreReadOnly(input) {
             }
             const watermark = storedWatermark;
             const audit = store.verifyAuditChain();
+            const monitoring = store.getOperationalMonitoring(input.nowUtc ?? new Date().toISOString());
             const blockers = [
                 ...ownership
                     .filter((entry) => !entry.configured)
@@ -183,6 +185,7 @@ export function inspectMigrationStoreReadOnly(input) {
                     recordCount: audit.recordCount,
                     headHash: audit.headHash,
                 },
+                monitoring,
                 readiness: {
                     canaryReady: false,
                     cutoverReady: false,

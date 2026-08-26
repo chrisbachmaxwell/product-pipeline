@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type ListingReviseObservationInput, type TargetEffectObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
+import { type AttemptResolution, type AuditContext, type AuditVerification, type Digest, type ExternalIdentity, type ExternalIdentityInput, type IntegrationScope, type IntentAction, type OwnershipOwner, type OperationalStoreMonitoring, type ListingReviseObservationInput, type TargetEffectObservationInput, type ReconciliationExceptionInput, type ReconciliationMode, type ReconciliationStatus, type Responsibility } from './types.js';
 /** The seven writer responsibilities enabled through the schema-v4 fulfillment slice. */
 export declare const PRODUCTION_ENABLED_RESPONSIBILITIES: readonly Responsibility[];
 type Sqlite = InstanceType<typeof Database>;
@@ -239,6 +239,15 @@ declare class MigrationStoreImpl {
     }): string;
     verifyAuditChain(): AuditVerification;
     getCounts(): Record<string, number>;
+    /**
+     * Aggregate-only operational monitoring. It returns no identity, job,
+     * attempt, exception code, digest, or provider/customer value. The window
+     * is the previous completed UTC day. Every write bucket uses the same
+     * dispatch-attempt cohort. Only resolutions recorded before the cohort
+     * window closes classify an attempt as succeeded/failed; later resolution
+     * leaves it truthfully unresolved in this immutable daily view.
+     */
+    getOperationalMonitoring(nowUtc: string): OperationalStoreMonitoring;
     /**
      * Counts every execution-authority row (intent, approval, consumption, job,
      * event, attempt, resolution) whose responsibility is not the given one.

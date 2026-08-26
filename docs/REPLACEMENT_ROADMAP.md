@@ -58,10 +58,11 @@ One responsibility at a time. Reversible (ownership back to `paused` + MC toggle
 
 The deliberate policy change: routine writes stop requiring a ceremony each. Each worker is enabled only by an explicit recorded user approval; the kill switch and quarantine layers stay.
 
-- ☐ [AGENT] G19: monitoring + daily digest (failures, reconciliation exceptions, counts) — build first so automation is observable from day one
+- [x] [AGENT] G19: monitoring + daily digest (failures, reconciliation exceptions, counts) — read-only dashboard/API/health source candidate built 2026-08-26; deployment and live digest observation remain separate proof
 - ☐ [AGENT] G18: bounded workers behind disabled flags: quantity alignment, price alignment, order poll+import, tracking push — delta-only, per-run caps, journaled to the migration store, single kill switch
 - ☐ [USER] Enable workers one at a time (suggested order: quantity → price → orders → tracking), each after 2–3 clean supervised days of the previous
-- ☐ [AGENT] G20: scheduled `/data` backups off-volume + one documented restore rehearsal
+- [x] [AGENT] G20: standalone off-volume snapshot and isolated restore-rehearsal tooling built inertly; no schedule or Production restore was enabled
+- ☐ [USER] G20: provision protected independent storage, configure and observe the external schedule/retention alerts, and complete one documented restore rehearsal
 - **Exit check:** ≥14 consecutive days fully hands-off with green daily digests and zero unexplained exceptions.
 
 ## Phase 6 — Decommission Marketplace Connect (G21)

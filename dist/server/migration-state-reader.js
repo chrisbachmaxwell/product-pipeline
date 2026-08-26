@@ -34,6 +34,7 @@ function unavailableProjection(status, errorCode) {
             recordCount: 0,
             headHash: null,
         },
+        monitoring: null,
         readiness: {
             canaryReady: false,
             cutoverReady: false,
@@ -79,6 +80,9 @@ function isExactUtc(value) {
         return false;
     }
 }
+function nonnegativeInteger(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+}
 function normalizeVerifiedProjection(projection) {
     if (projection.status === 'unavailable')
         return unavailableProjection('unavailable');
@@ -92,6 +96,21 @@ function normalizeVerifiedProjection(projection) {
     const orders = projection.orders;
     const readiness = projection.readiness;
     const access = projection.access;
+    const monitoring = projection.monitoring;
+    const monitoringValid = monitoring !== null
+        && /^\d{4}-\d{2}-\d{2}$/.test(monitoring.previousUtcDay.dateUtc)
+        && isExactUtc(monitoring.previousUtcDay.windowStartUtc)
+        && isExactUtc(monitoring.previousUtcDay.windowEndUtc)
+        && new Date(monitoring.previousUtcDay.windowEndUtc).getTime()
+            - new Date(monitoring.previousUtcDay.windowStartUtc).getTime() === 86_400_000
+        && Object.values(monitoring.currentJobs).every(nonnegativeInteger)
+        && Object.values(monitoring.previousUtcDay.writes).every(nonnegativeInteger)
+        && monitoring.previousUtcDay.writes.performed
+            === monitoring.previousUtcDay.writes.succeeded
+                + monitoring.previousUtcDay.writes.failed
+                + monitoring.previousUtcDay.writes.unresolved
+        && Object.values(monitoring.previousUtcDay.reconciliations).every(nonnegativeInteger)
+        && Object.values(monitoring.previousUtcDay.exceptions).every(nonnegativeInteger);
     const ownershipValid = ownership.length === expectedResponsibilities.length &&
         ownership.every((entry, index) => entry.responsibility === expectedResponsibilities[index] &&
             typeof entry.configured === 'boolean' &&
@@ -141,6 +160,7 @@ function normalizeVerifiedProjection(projection) {
         audit.recordCount > 0 &&
         typeof audit.headHash === 'string' &&
         DIGEST.test(audit.headHash) &&
+        monitoringValid &&
         readiness.canaryReady === false &&
         readiness.cutoverReady === false &&
         blockersValid;
@@ -206,6 +226,36 @@ function normalizeVerifiedProjection(projection) {
             recordCount: audit.recordCount,
             headHash: audit.headHash,
         },
+        monitoring: {
+            currentJobs: {
+                reserved: monitoring.currentJobs.reserved,
+                dispatching: monitoring.currentJobs.dispatching,
+                reconciliationRequired: monitoring.currentJobs.reconciliationRequired,
+                resolvedExisting: monitoring.currentJobs.resolvedExisting,
+                confirmedMissing: monitoring.currentJobs.confirmedMissing,
+            },
+            previousUtcDay: {
+                dateUtc: monitoring.previousUtcDay.dateUtc,
+                windowStartUtc: monitoring.previousUtcDay.windowStartUtc,
+                windowEndUtc: monitoring.previousUtcDay.windowEndUtc,
+                writes: {
+                    performed: monitoring.previousUtcDay.writes.performed,
+                    succeeded: monitoring.previousUtcDay.writes.succeeded,
+                    failed: monitoring.previousUtcDay.writes.failed,
+                    unresolved: monitoring.previousUtcDay.writes.unresolved,
+                },
+                reconciliations: {
+                    passed: monitoring.previousUtcDay.reconciliations.passed,
+                    blocked: monitoring.previousUtcDay.reconciliations.blocked,
+                    failed: monitoring.previousUtcDay.reconciliations.failed,
+                },
+                exceptions: {
+                    info: monitoring.previousUtcDay.exceptions.info,
+                    warning: monitoring.previousUtcDay.exceptions.warning,
+                    critical: monitoring.previousUtcDay.exceptions.critical,
+                },
+            },
+        },
         readiness: {
             canaryReady: false,
             cutoverReady: false,
@@ -238,6 +288,7 @@ export async function readConfiguredMigrationState(options = {}) {
         const projection = (options.inspectStore ?? inspectMigrationStoreReadOnly)({
             databasePath: loaded.databaseAbsolutePath,
             expectedScope: loaded.config.scope,
+            nowUtc: (options.now ?? (() => new Date()))().toISOString(),
         });
         return normalizeVerifiedProjection(projection);
     }

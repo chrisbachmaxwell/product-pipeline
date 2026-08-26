@@ -352,6 +352,13 @@ only an isolated new-directory restore rehearsal with digest and SQLite-integrit
 Production storage, scheduling, retention, and the first real rehearsal remain operator-gated; no
 Production backup, restore, deployment, credential access, provider call, or commerce write occurred.
 
+### 2026-08-26: G19 Read-Only Operational Monitoring and Daily Digest
+
+- Added aggregate-only monitoring over the verified migration database: current job states and one prior-completed-UTC-day dispatch-attempt cohort whose successful, failed, and unresolved buckets exactly sum to performed even when resolution crosses midnight. No identity, target, order, SKU, exception detail, credential, or path is projected.
+- Added a descriptor-bound, size-bounded summary reader for the latest exact 24-hour order shadow report and generic catalog-read health from the existing in-memory cache status. The shadow directory must be absolute, service-owned, non-symlinked, and exact mode `0700`; each report remains `0600`. Monitoring never refreshes the catalog cache or calls a provider; malformed, inconsistent, wrong-window, swapped, symlinked, oversized, missing, and stale report evidence fails visibly, and filesystem time is exposed only as `arrivedAtUtc`. Generic cache failures are counted as `catalogReadFailures`, never misdiagnosed as authentication failures.
+- Added authenticated `GET /api/monitoring/digest`, a bounded redacted health cache, and an Issues-page daily digest. Public `/health` never inspects SQLite or the filesystem and reports unavailable before authenticated warm-up or stale after five minutes. The digest records skipped writes as unavailable until G18 has a worker run journal; no scheduler, worker, notification, external write, or automatic persistence was enabled.
+- Added focused store/projection/API/health tests, operator documentation and Help, and rebuilt tracked distribution artifacts. Source/build proof is separate from deployment and live digest observation.
+
 ### 2026-08-26: Branded Description Support for Listing Create
 
 - Added opt-in \`--description-template ucg-branded-v1\` support to listing-lifecycle create preflight, dispatch, and recovery reconciliation. The rendered HTML replaces only the approved description before the deterministic manifest digest is computed; untemplated creates retain their prior bytes and digest behavior.

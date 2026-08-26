@@ -24,6 +24,7 @@ export type UnavailableMigrationStateProjection = {
         recordCount: 0;
         headHash: null;
     };
+    monitoring: null;
     readiness: {
         canaryReady: false;
         cutoverReady: false;
@@ -60,6 +61,36 @@ export type MigrationStateApiProjection = {
         recordCount: number;
         headHash: string;
     };
+    monitoring: {
+        currentJobs: {
+            reserved: number;
+            dispatching: number;
+            reconciliationRequired: number;
+            resolvedExisting: number;
+            confirmedMissing: number;
+        };
+        previousUtcDay: {
+            dateUtc: string;
+            windowStartUtc: string;
+            windowEndUtc: string;
+            writes: {
+                performed: number;
+                succeeded: number;
+                failed: number;
+                unresolved: number;
+            };
+            reconciliations: {
+                passed: number;
+                blocked: number;
+                failed: number;
+            };
+            exceptions: {
+                info: number;
+                warning: number;
+                critical: number;
+            };
+        };
+    };
     readiness: {
         canaryReady: false;
         cutoverReady: false;
@@ -78,5 +109,6 @@ export declare function readConfiguredMigrationState(options?: {
     repositoryRoot?: string;
     loadConfig?: ConfigLoader;
     inspectStore?: StoreInspector;
+    now?: () => Date;
 }): Promise<MigrationStateApiProjection>;
 export {};

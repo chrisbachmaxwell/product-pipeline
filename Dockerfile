@@ -17,6 +17,7 @@ RUN mkdir -p .git && chmod 700 .git
 # opens it only for an authenticated read-only status request; schema changes
 # still require the standalone operator CLI and exact scope confirmation.
 ENV MIGRATION_STATE_CONFIG_PATH=/app/config/migration-state.production.json
+ENV SHADOW_REPORT_DIRECTORY=/data/shadow-reports
 
 # Build (TypeScript + Vite client bundle)
 RUN npm run build

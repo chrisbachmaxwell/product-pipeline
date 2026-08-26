@@ -31,9 +31,14 @@ import {
   LISTING_DESCRIPTION_TEMPLATE_VERSION,
   renderListingDescription,
 } from '../listing-description-template.js';
+import {
+  readOperationalMonitoring,
+  type OperationalMonitoringProjection,
+} from '../operational-monitoring.js';
 
 export const SHADOW_API_GET_PATHS = Object.freeze([
   '/api/migration/status',
+  '/api/monitoring/digest',
   '/api/authoritative-listings',
   '/api/listing-workspace',
   '/api/listing-editor-metadata',
@@ -122,6 +127,7 @@ export function createShadowApiRouter(
      */
     facetSweep?: EditorFacetSweep;
     searchEbayCategories?: EbayCategorySearch;
+    readMonitoring?: () => Promise<OperationalMonitoringProjection>;
   }> = {
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
@@ -135,6 +141,7 @@ const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
 const getListingDraft = dependencies.getListingDraft
   ?? ((catalogId: string) => createListingDraftService().get(catalogId));
 const categorySearch = dependencies.searchEbayCategories ?? searchEbayCategories;
+const monitoringReader = dependencies.readMonitoring ?? readOperationalMonitoring;
 
 function boundedInteger(
   value: unknown,
@@ -153,6 +160,11 @@ router.use((_req, res, next) => {
 });
 
 router.get('/api/migration/status', migrationStatusHandler);
+
+/** GET /api/monitoring/digest — redacted, request-time, zero-provider-read operations digest. */
+router.get('/api/monitoring/digest', async (_req: Request, res: Response) => {
+  res.json(await monitoringReader());
+});
 
 /** GET /api/authoritative-listings — complete live Shopify/eBay read-only census. */
 router.get('/api/authoritative-listings', async (req: Request, res: Response) => {
@@ -388,6 +400,14 @@ router.get('/api/capabilities', (_req: Request, res: Response) => {
         externalWrite: false,
         evidenceKind: 'live_read',
         editMode: 'read_only',
+      },
+      {
+        id: 'operational-monitoring',
+        method: 'GET',
+        endpoint: '/api/monitoring/digest',
+        remoteRead: false,
+        externalWrite: false,
+        evidenceKind: 'redacted_local_aggregate',
       },
       {
         id: 'local-listings',

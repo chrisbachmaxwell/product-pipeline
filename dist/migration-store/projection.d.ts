@@ -1,5 +1,5 @@
 import { CURRENT_SCHEMA_VERSION } from './schema.js';
-import { type Digest, type IntegrationScope, type OwnershipOwner, type Responsibility } from './types.js';
+import { type Digest, type IntegrationScope, type OwnershipOwner, type OperationalStoreMonitoring, type Responsibility } from './types.js';
 export type MigrationStoreProjectionCounts = {
     externalIdentities: number;
     orderWatermarks: number;
@@ -57,6 +57,7 @@ export type MigrationStoreProjection = {
         recordCount: number;
         headHash: string | null;
     };
+    monitoring: OperationalStoreMonitoring | null;
     readiness: {
         canaryReady: false;
         cutoverReady: false;
@@ -71,4 +72,5 @@ export type MigrationStoreProjection = {
 export declare function inspectMigrationStoreReadOnly(input: {
     databasePath: string;
     expectedScope: IntegrationScope;
+    nowUtc?: string;
 }): MigrationStoreProjection;

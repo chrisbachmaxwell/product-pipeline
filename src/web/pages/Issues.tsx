@@ -19,6 +19,7 @@ import {
   listingDisplayTitle,
   listingSkuLabel,
 } from '../operator-ui';
+import { OperationalMonitoring } from '../components/OperationalMonitoring';
 
 const PAGE_SIZE = 25;
 
@@ -36,6 +37,8 @@ const Issues: React.FC = () => {
 
   return (
     <Page title="Issues" fullWidth>
+      <BlockStack gap="500">
+      <OperationalMonitoring />
       {listings.isLoading ? (
         <Card><SkeletonBodyText lines={5} /></Card>
       ) : unavailable ? (
@@ -91,6 +94,7 @@ const Issues: React.FC = () => {
           )}
         </BlockStack>
       )}
+      </BlockStack>
     </Page>
   );
 };

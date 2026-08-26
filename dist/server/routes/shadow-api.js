@@ -9,8 +9,10 @@ import { editorFacetSweep } from '../listing-editor-facet-sweep.js';
 import { EbayCategorySearchError, searchEbayCategories, } from '../ebay-category-search.js';
 import { createListingDraftService, ListingDraftServiceError, } from '../listing-draft-service.js';
 import { LISTING_DESCRIPTION_TEMPLATE_VERSION, renderListingDescription, } from '../listing-description-template.js';
+import { readOperationalMonitoring, } from '../operational-monitoring.js';
 export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/migration/status',
+    '/api/monitoring/digest',
     '/api/authoritative-listings',
     '/api/listing-workspace',
     '/api/listing-editor-metadata',
@@ -84,6 +86,7 @@ export function createShadowApiRouter(dependencies = {
     const getListingDraft = dependencies.getListingDraft
         ?? ((catalogId) => createListingDraftService().get(catalogId));
     const categorySearch = dependencies.searchEbayCategories ?? searchEbayCategories;
+    const monitoringReader = dependencies.readMonitoring ?? readOperationalMonitoring;
     function boundedInteger(value, fallback, minimum, maximum) {
         const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
         if (!Number.isFinite(parsed))
@@ -95,6 +98,10 @@ export function createShadowApiRouter(dependencies = {
         next();
     });
     router.get('/api/migration/status', migrationStatusHandler);
+    /** GET /api/monitoring/digest — redacted, request-time, zero-provider-read operations digest. */
+    router.get('/api/monitoring/digest', async (_req, res) => {
+        res.json(await monitoringReader());
+    });
     /** GET /api/authoritative-listings — complete live Shopify/eBay read-only census. */
     router.get('/api/authoritative-listings', async (req, res) => {
         const rawStatus = String(req.query.status ?? '').trim().toLowerCase();
@@ -314,6 +321,14 @@ export function createShadowApiRouter(dependencies = {
                     externalWrite: false,
                     evidenceKind: 'live_read',
                     editMode: 'read_only',
+                },
+                {
+                    id: 'operational-monitoring',
+                    method: 'GET',
+                    endpoint: '/api/monitoring/digest',
+                    remoteRead: false,
+                    externalWrite: false,
+                    evidenceKind: 'redacted_local_aggregate',
                 },
                 {
                     id: 'local-listings',

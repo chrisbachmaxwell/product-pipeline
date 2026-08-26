@@ -36,6 +36,7 @@ export type UnavailableMigrationStateProjection = {
     recordCount: 0;
     headHash: null;
   };
+  monitoring: null;
   readiness: {
     canaryReady: false;
     cutoverReady: false;
@@ -77,6 +78,23 @@ export type MigrationStateApiProjection =
         valid: true;
         recordCount: number;
         headHash: string;
+      };
+      monitoring: {
+        currentJobs: {
+          reserved: number;
+          dispatching: number;
+          reconciliationRequired: number;
+          resolvedExisting: number;
+          confirmedMissing: number;
+        };
+        previousUtcDay: {
+          dateUtc: string;
+          windowStartUtc: string;
+          windowEndUtc: string;
+          writes: { performed: number; succeeded: number; failed: number; unresolved: number };
+          reconciliations: { passed: number; blocked: number; failed: number };
+          exceptions: { info: number; warning: number; critical: number };
+        };
       };
       readiness: {
         canaryReady: false;
@@ -122,6 +140,7 @@ function unavailableProjection(
       recordCount: 0,
       headHash: null,
     },
+    monitoring: null,
     readiness: {
       canaryReady: false,
       cutoverReady: false,
@@ -172,6 +191,10 @@ function isExactUtc(value: string): boolean {
   }
 }
 
+function nonnegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 function normalizeVerifiedProjection(
   projection: MigrationStoreProjection,
 ): MigrationStateApiProjection {
@@ -186,6 +209,21 @@ function normalizeVerifiedProjection(
   const orders = projection.orders;
   const readiness = projection.readiness;
   const access = projection.access;
+  const monitoring = projection.monitoring;
+  const monitoringValid = monitoring !== null
+    && /^\d{4}-\d{2}-\d{2}$/.test(monitoring.previousUtcDay.dateUtc)
+    && isExactUtc(monitoring.previousUtcDay.windowStartUtc)
+    && isExactUtc(monitoring.previousUtcDay.windowEndUtc)
+    && new Date(monitoring.previousUtcDay.windowEndUtc).getTime()
+      - new Date(monitoring.previousUtcDay.windowStartUtc).getTime() === 86_400_000
+    && Object.values(monitoring.currentJobs).every(nonnegativeInteger)
+    && Object.values(monitoring.previousUtcDay.writes).every(nonnegativeInteger)
+    && monitoring.previousUtcDay.writes.performed
+      === monitoring.previousUtcDay.writes.succeeded
+        + monitoring.previousUtcDay.writes.failed
+        + monitoring.previousUtcDay.writes.unresolved
+    && Object.values(monitoring.previousUtcDay.reconciliations).every(nonnegativeInteger)
+    && Object.values(monitoring.previousUtcDay.exceptions).every(nonnegativeInteger);
   const ownershipValid =
     ownership.length === expectedResponsibilities.length &&
     ownership.every((entry, index) =>
@@ -250,6 +288,7 @@ function normalizeVerifiedProjection(
     audit.recordCount > 0 &&
     typeof audit.headHash === 'string' &&
     DIGEST.test(audit.headHash) &&
+    monitoringValid &&
     readiness.canaryReady === false &&
     readiness.cutoverReady === false &&
     blockersValid;
@@ -323,6 +362,36 @@ function normalizeVerifiedProjection(
       recordCount: audit.recordCount,
       headHash: audit.headHash,
     },
+    monitoring: {
+      currentJobs: {
+        reserved: monitoring!.currentJobs.reserved,
+        dispatching: monitoring!.currentJobs.dispatching,
+        reconciliationRequired: monitoring!.currentJobs.reconciliationRequired,
+        resolvedExisting: monitoring!.currentJobs.resolvedExisting,
+        confirmedMissing: monitoring!.currentJobs.confirmedMissing,
+      },
+      previousUtcDay: {
+        dateUtc: monitoring!.previousUtcDay.dateUtc,
+        windowStartUtc: monitoring!.previousUtcDay.windowStartUtc,
+        windowEndUtc: monitoring!.previousUtcDay.windowEndUtc,
+        writes: {
+          performed: monitoring!.previousUtcDay.writes.performed,
+          succeeded: monitoring!.previousUtcDay.writes.succeeded,
+          failed: monitoring!.previousUtcDay.writes.failed,
+          unresolved: monitoring!.previousUtcDay.writes.unresolved,
+        },
+        reconciliations: {
+          passed: monitoring!.previousUtcDay.reconciliations.passed,
+          blocked: monitoring!.previousUtcDay.reconciliations.blocked,
+          failed: monitoring!.previousUtcDay.reconciliations.failed,
+        },
+        exceptions: {
+          info: monitoring!.previousUtcDay.exceptions.info,
+          warning: monitoring!.previousUtcDay.exceptions.warning,
+          critical: monitoring!.previousUtcDay.exceptions.critical,
+        },
+      },
+    },
     readiness: {
       canaryReady: false,
       cutoverReady: false,
@@ -341,6 +410,7 @@ export async function readConfiguredMigrationState(options: {
   repositoryRoot?: string;
   loadConfig?: ConfigLoader;
   inspectStore?: StoreInspector;
+  now?: () => Date;
 } = {}): Promise<MigrationStateApiProjection> {
   const environment = options.environment ?? process.env;
   const requestedConfigPath = environment.MIGRATION_STATE_CONFIG_PATH;
@@ -362,6 +432,7 @@ export async function readConfiguredMigrationState(options: {
     const projection = (options.inspectStore ?? inspectMigrationStoreReadOnly)({
       databasePath: loaded.databaseAbsolutePath,
       expectedScope: loaded.config.scope,
+      nowUtc: (options.now ?? (() => new Date()))().toISOString(),
     });
     return normalizeVerifiedProjection(projection);
   } catch {
