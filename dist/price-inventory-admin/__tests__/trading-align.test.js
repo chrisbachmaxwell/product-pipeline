@@ -41,6 +41,8 @@ afterEach(() => {
 function tradingWorkspace(options = {}) {
     const shopifyAvailable = options.shopifyAvailable ?? 3;
     const ebayQuantity = options.ebayQuantity ?? 1;
+    const shopifyPrice = options.shopifyPrice ?? '129.95';
+    const ebayPrice = options.ebayPrice ?? '129.95';
     return {
         schemaVersion: 1,
         evidence: {
@@ -55,7 +57,7 @@ function tradingWorkspace(options = {}) {
                 productId: PRODUCT_GID, variantId: VARIANT_GID, sku: SKU, title: 'Shopify New',
                 variantTitle: 'Default', productStatus: 'ACTIVE', primaryImageUrl: null,
                 imageCount: 1, available: shopifyAvailable,
-                price: { amount: '129.95', currency: 'USD' },
+                price: { amount: shopifyPrice, currency: 'USD' },
             },
             ebay: {
                 sku: SKU, state: 'active', listingId: LISTING_ID, offerId: null,
@@ -96,7 +98,7 @@ function tradingWorkspace(options = {}) {
                 condition: { id: '3000', name: 'Used', description: 'Excellent', descriptors: [] },
                 aspects: { Mount: ['Nikon F'], Brand: ['Nikon'] },
                 identifiers: { brand: 'Nikon', mpn: null, upc: [], ean: [], isbn: [], epid: null },
-                commerce: { price: { value: '129.95', currency: 'USD' }, totalQuantity: ebayQuantity,
+                commerce: { price: { value: ebayPrice, currency: 'USD' }, totalQuantity: ebayQuantity,
                     soldQuantity: 0, availableQuantity: ebayQuantity,
                     availableQuantityBasis: 'reported', bestOfferEnabled: false },
                 policies: { fulfillmentPolicyId: '6055555000', paymentPolicyId: '6066666000',
@@ -124,8 +126,8 @@ function createTradingWorld() {
         createdAtUtc: '2026-08-01T00:00:00.000Z',
     }).close();
     // The real bounded Trading adapter over a captured, network-free
-    // transport. On Ack Success the observed eBay quantity flips to the
-    // Shopify available quantity (unless propagation delay is simulated).
+    // transport. On Ack Success only the dispatched eBay field flips to the
+    // Shopify source value (unless propagation delay is simulated).
     const requests = [];
     let responseAck = 'Success';
     let flipOnSuccess = true;
@@ -136,8 +138,15 @@ function createTradingWorld() {
             body: String(init?.body ?? ''),
         });
         if (responseAck === 'Success' && flipOnSuccess) {
-            const available = current.catalog.shopify.available;
-            current = tradingWorkspace({ shopifyAvailable: available, ebayQuantity: available });
+            const shopify = current.catalog.shopify;
+            const commerce = current.ebayDetail.actual.commerce;
+            const priceDispatch = String(init?.body ?? '').includes('<StartPrice ');
+            current = tradingWorkspace({
+                shopifyAvailable: shopify.available,
+                ebayQuantity: priceDispatch ? commerce.availableQuantity : shopify.available,
+                shopifyPrice: shopify.price.amount,
+                ebayPrice: priceDispatch ? shopify.price.amount : commerce.price.value,
+            });
         }
         return new Response('<?xml version="1.0" encoding="UTF-8"?>'
             + '<ReviseInventoryStatusResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
@@ -276,6 +285,86 @@ describe('trading-model price/inventory alignment dispatch', () => {
         store.close();
         // The alignment landed: no drift remains and no replay can plan.
         await world.run(['plan', ...targetArguments('quantity')]);
+        expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
+        expect(world.requests).toHaveLength(1);
+    });
+    it('dispatches one price alignment without quantity contamination', async () => {
+        const world = createTradingWorld();
+        world.setWorkspace(tradingWorkspace({
+            shopifyAvailable: 3,
+            ebayQuantity: 3,
+            shopifyPrice: '139.95',
+            ebayPrice: '129.95',
+        }));
+        await world.run(establishArguments('price', world.migrationDatabasePath));
+        expect(lastJson(world.stdout)).toMatchObject({
+            status: 'established', responsibility: 'price', version: 3,
+        });
+        await world.run(['plan', ...targetArguments('price')]);
+        const preview = lastJson(world.stdout);
+        expect(preview).toMatchObject({
+            command: 'plan',
+            status: 'preview',
+            field: 'price',
+            responsibility: 'price',
+            drift: {
+                before: JSON.stringify({ amount: '129.95', currency: 'USD' }),
+                after: JSON.stringify({ amount: '139.95', currency: 'USD' }),
+            },
+            externalWritesPerformed: 0,
+        });
+        expect(world.exitCodes.at(-1)).toBe(2);
+        expect(world.requests).toHaveLength(0);
+        const manifestDigest = preview.manifestDigest;
+        await world.run(['dispatch', ...targetArguments('price'),
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        const dispatched = lastJson(world.stdout);
+        expect(dispatched).toMatchObject({
+            command: 'dispatch',
+            status: 'dispatched-and-reconciled',
+            field: 'price',
+            responsibility: 'price',
+            effect: 'effect_observed',
+            resolution: 'resolved_existing',
+            providerDispatchReported: true,
+            externalCommerceWritesAttempted: 1,
+        });
+        expect(world.inventoryAdapterCalls).toHaveLength(0);
+        expect(world.requests).toHaveLength(1);
+        const request = world.requests[0];
+        expect(request.url).toBe('https://api.ebay.com/ws/api.dll');
+        expect(request.headers['X-EBAY-API-CALL-NAME']).toBe('ReviseInventoryStatus');
+        expect(request.headers['X-EBAY-API-COMPATIBILITY-LEVEL']).toBe('1349');
+        expect(request.headers['X-EBAY-API-SITEID']).toBe('0');
+        expect(request.headers['X-EBAY-API-IAF-TOKEN']).toBe('test-iaf-token');
+        expect(request.body).toContain(`<InventoryStatus><ItemID>${LISTING_ID}</ItemID>`
+            + '<StartPrice currencyID="USD">139.95</StartPrice></InventoryStatus>');
+        expect((request.body.match(/<InventoryStatus>/g) ?? []).length).toBe(1);
+        expect(request.body).not.toMatch(NO_QUANTITY);
+        const store = openMigrationStoreReadOnly({
+            databasePath: world.migrationDatabasePath,
+            expectedScope: MIGRATION_SCOPE,
+        });
+        expect(store.getCurrentOwnership('price')).toMatchObject({
+            owner: 'product_pipeline', version: 3, singleWriterVerified: true,
+        });
+        expect(store.getJobStatus(dispatched.jobId)).toMatchObject({
+            state: 'resolved_existing', responsibility: 'price',
+        });
+        expect(store.getCounts()).toMatchObject({
+            idempotency_intents: 1,
+            action_approvals: 1,
+            approval_consumptions: 1,
+            execution_jobs: 1,
+            intent_attempts: 1,
+            attempt_resolutions: 1,
+            target_effect_observations: 1,
+        });
+        expect(store.verifyAuditChain()).toMatchObject({ valid: true });
+        store.close();
+        await world.run(['plan', ...targetArguments('price')]);
         expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
         expect(world.requests).toHaveLength(1);
     });

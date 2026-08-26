@@ -349,6 +349,16 @@ Test files: `src/services/__tests__/`
 - Create reconciliation now verifies the fresh provider's raw description HTML exactly, normalizing only XML line endings, and binds a raw-description digest into its evidence. Missing or one-byte-different markup remains unresolved; the template flag is rejected for end reconciliation.
 - Added fixture-backed CLI coverage for digest/flag binding, exact Inventory and Offer payload parity, raw-HTML success and drift rejection, absent-description pass-through, unsupported-template denial, and the unchanged server/provider isolation boundary. The slice remains operator-only and inert on deploy.
 
+### 2026-08-26: Complete Price/Inventory Ceremony Regression Matrix
+
+Added full successful ceremony coverage for the two previously missing
+management-model/field combinations: Inventory-API quantity alignment and
+Trading-API price alignment. Both regressions use isolated on-disk control
+stores and fake provider transports, prove the exact responsibility ownership
+chain and durable reconciliation outcome, and assert that the serialized
+single-field request cannot contaminate the untouched price or quantity field.
+No runtime path, provider authority, or automation flag changed.
+
 ### 2026-08-26: G10 Reconciled and G13 Production Identity Repaired
 
 - Completed G10's first live listing-revise ceremony for eBay listing `147232036779`: the approved branded description is live, price and quantity were preserved, and the original job/attempt is durably `revised_state_observed` / `resolved_existing`. Exactly one provider write occurred; the recovery reconciliation performed zero external writes and the migration-store audit chain verifies.
