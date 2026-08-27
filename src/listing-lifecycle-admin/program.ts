@@ -438,7 +438,7 @@ async function runLifecycleReconciliation(input: {
   classify: (workspace: ListingWorkspaceDto) => LifecycleOutcome;
   /**
    * `confirmed_missing` is a terminal claim. It may be recorded only when the
-   * provider itself reported the dispatch failed before any durable artifact
+   * the first provider PUT was definitely rejected before any durable artifact
    * could exist (immediate post-dispatch path) or when the operator
    * explicitly accepts absence after the observation window
    * (`reconcile --accept-absent`). An absent state without that authority

@@ -906,7 +906,9 @@ describe('listing-lifecycle operator CLI — create', () => {
       ]);
       expect(lastJson(world.stdout)).toMatchObject({
         status: 'unresolved',
+        effect: 'unverified',
         resolution: null,
+        unresolvedCode: 'CREATE_STATE_UNVERIFIED',
         externalWritesPerformed: 0,
       });
       expect(world.adapterCalls).toHaveLength(callsBefore);
