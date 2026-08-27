@@ -99,48 +99,43 @@ audit chain, and zero external writes before anything below runs.
 
 ## Step 3 — `recover-create` for orphaned offer 247267392011
 
-**This step needs four values I could not derive without store access.**
-Collect them first (see "Deriving the missing values" below), then paste.
+All nine required arguments are now **resolved and verified** (L39). They were
+recovered from the off-volume backup, not from lost console output:
 
-Known-fixed values (Brain §16, L34, `docs/LISTING_LIFECYCLE_DISPATCH.md`):
+| Flag | Value | Source |
+| --- | --- | --- |
+| `--job-id` | `listing-create-job:ec897152-ad2c-43f9-8d8c-a6942503bfa1` | Brain §16 / L34 |
+| `--attempt-id` | `listing-create-attempt:214fc4fe-79c3-416e-ad16-9a2c81117285` | Brain §16 / L34 |
+| `--evidence-digest` | `sha256:567bacafad0421ff0545a70fe35b7a3104b38828704f4959342f8d81bc059dbc` | Draft 5 manifest |
+| `--offer-id` | `247267392011` | recorded `CREATE_OFFER_UNPUBLISHED` evidence |
+| `--intent-key` | `sha256:d81338dee6bac3f8e75600df44e6424ae97f257a16a20ac6aedb04e80da4b675` | `intent_attempts` in the backup |
+| `--sku` | `PIPELINE-TEST-20260826` | `external_identities` `ebay-inventory-sku:` binding |
+| `--catalog-id` | `shopify-variant:gid://shopify/ProductVariant/55519196250403` | `live-listing-catalog.ts:425` id form |
+| `--confirm-scope` | `sha256:f1f798163d3f7c7042825d998c9f2b6f3f0ad5f75794a9d12dd887daa7e8f54c` | production scope key |
+| `--migration-store` | `/data/migration-state/product-pipeline-migration-v1.sqlite` | production config |
 
-- job id: `listing-create-job:ec897152-ad2c-43f9-8d8c-a6942503bfa1`
-- attempt id: `listing-create-attempt:214fc4fe-79c3-416e-ad16-9a2c81117285`
-- evidence digest (Draft 5 manifest):
-  `sha256:567bacafad0421ff0545a70fe35b7a3104b38828704f4959342f8d81bc059dbc`
-- offer id: `247267392011`
+Run from `/app`:
 
 ```bash
 cd /app
 node dist/listing-lifecycle-admin/index.js recover-create \
   --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite \
-  --confirm-scope <exact production scope key> \
-  --catalog-id <the test item's catalog row id> \
-  --sku <the test item's raw SKU> \
+  --confirm-scope sha256:f1f798163d3f7c7042825d998c9f2b6f3f0ad5f75794a9d12dd887daa7e8f54c \
+  --catalog-id 'shopify-variant:gid://shopify/ProductVariant/55519196250403' \
+  --sku PIPELINE-TEST-20260826 \
   --job-id listing-create-job:ec897152-ad2c-43f9-8d8c-a6942503bfa1 \
   --attempt-id listing-create-attempt:214fc4fe-79c3-416e-ad16-9a2c81117285 \
-  --intent-key <intentKey printed by the Draft 5 dispatch output> \
+  --intent-key sha256:d81338dee6bac3f8e75600df44e6424ae97f257a16a20ac6aedb04e80da4b675 \
   --evidence-digest sha256:567bacafad0421ff0545a70fe35b7a3104b38828704f4959342f8d81bc059dbc \
   --offer-id 247267392011
 ```
 
-**Success prints** `recovered-and-reconciled` with two
-`resolved_residue_removed` resolutions (recovery job + original job).
+**Success prints** `recovered-and-reconciled` with two `resolved_residue_removed`
+resolutions (recovery job + original job).
 
 Do **not** redispatch the original create, do **not** pass `--accept-absent`
 while the artifact exists, and do **not** point the Sandbox recovery CLI at
 Production.
-
-### Deriving the missing values
-
-- `--confirm-scope`: the exact production scope key digest. The `verify --json`
-  output in Step 2 reports the scope; use the digest it prints.
-- `--intent-key`: printed as `intentKey` by the original Draft 5
-  `dispatch-create` run. It is **not** recorded anywhere in the repo. Recover it
-  from your saved Draft 5 dispatch output, or read it from the store's intent
-  row bound to the job id above.
-- `--catalog-id` / `--sku`: the test item's exact workspace catalog row id and
-  raw SKU (the Draft 5 target).
 
 ### If it does not cleanly succeed
 
