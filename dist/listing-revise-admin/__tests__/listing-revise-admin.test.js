@@ -156,7 +156,7 @@ async function createWorld() {
         expectedRevisionDigest: null,
         base: { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest },
         draft: { title: 'Operator Title', category: null, condition: null,
-            conditionDescription: null, description: null, images: null,
+            conditionDescription: null, description: null, images: null, itemSpecifics: null,
             fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
             merchantLocation: null },
     }), 'shopify-user:operator');
@@ -448,6 +448,7 @@ describe('listing-revise operator CLI', () => {
             base: { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest },
             draft: { title: null, category: null, condition: null, conditionDescription: null,
                 description: '<p>Freshly serviced &amp; film tested.</p>', images: null,
+                itemSpecifics: null,
                 fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
                 merchantLocation: null },
         }), 'shopify-user:operator');

@@ -134,6 +134,7 @@ async function createTradingWorld(draft = { title: 'Trading Operator Title', mer
         base: { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest },
         draft: { title: draft.title, category: null, condition: null,
             conditionDescription: null, description: draft.description ?? null, images: null,
+            itemSpecifics: null,
             fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
             merchantLocation: draft.merchantLocation },
     }), 'shopify-user:operator');

@@ -25,9 +25,9 @@ import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 export declare class ListingLifecycleManifestError extends Error {
-    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
+    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
     readonly field: ListingFieldName | null;
-    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
+    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
 }
 /**
  * FIXED mapping from the draft model's numeric eBay condition IDs to the
@@ -41,12 +41,16 @@ export declare const CREATE_CONDITION_ENUM_BY_ID: Readonly<Record<string, string
  * `quantity` additionally requires an integer of at least one, and `price` a
  * parseable {amount, currency} money value.
  */
-export declare const CREATE_REQUIRED_FIELDS: readonly ["title", "category", "condition", "price", "quantity", "fulfillment_policy", "payment_policy", "return_policy", "merchant_location", "images"];
+export declare const CREATE_REQUIRED_FIELDS: readonly ["title", "category", "condition", "description", "item_specifics", "price", "quantity", "fulfillment_policy", "payment_policy", "return_policy", "merchant_location", "images"];
 export declare const END_SUPPORTED_REASON: "not-available";
+/** eBay Inventory API Product.description maximum, including markup. */
+export declare const MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH = 4000;
+export declare const MAX_OFFER_LISTING_DESCRIPTION_LENGTH = 500000;
 export type ListingCreateManifest = Readonly<{
-    schemaVersion: 1;
+    schemaVersion: 2;
     scope: typeof LISTING_DRAFT_SCOPE;
     action: 'create_ebay_listing';
+    descriptionPlacement: 'inventory_product_and_offer_listing_split';
     identity: ListingIdentity;
     revisionId: string;
     revisionNumber: number;
@@ -59,8 +63,17 @@ export type ListingCreateManifest = Readonly<{
         conditionId: string;
         conditionEnum: string;
         conditionDescription: string | null;
-        description: string | null;
+        /** Exact full buyer-facing HTML serialized only as Offer.listingDescription. */
+        description: string;
+        /**
+         * Exact approved pre-template product description serialized as
+         * InventoryItem.product.description. It is separately bounded by eBay's
+         * 4,000-character Inventory contract and is never derived by truncating
+         * the buyer-facing listing HTML.
+         */
+        inventoryProductDescription: string;
         images: readonly string[];
+        aspects: Readonly<Record<string, readonly string[]>>;
         fulfillmentPolicyId: string;
         paymentPolicyId: string;
         returnPolicyId: string;
@@ -70,6 +83,7 @@ export type ListingCreateManifest = Readonly<{
             currency: string;
         }>;
         quantity: number;
+        listingDuration: 'GTC';
     }>;
 }>;
 export type DerivedListingCreateManifest = Readonly<{
@@ -105,10 +119,10 @@ export declare function deriveListingCreateManifest(revision: ListingRevision): 
 /**
  * Opt-in create templating mirrors the listing-revise ceremony: the rendered
  * HTML derives only from the approved revision/manifest, replaces only the
- * proposed description, and is therefore bound into a new deterministic
- * manifest digest. An absent description passes through unchanged so the
- * operator-visible `descriptionTemplateApplied` note cannot imply work that
- * did not occur.
+ * buyer-facing proposed description, and is therefore bound into a new
+ * deterministic manifest digest. The separately bound Inventory product
+ * description remains the exact approved pre-template description; the
+ * template is never truncated into eBay's smaller Product.description field.
  */
 export declare function applyListingCreateDescriptionTemplate(input: {
     derived: DerivedListingCreateManifest;

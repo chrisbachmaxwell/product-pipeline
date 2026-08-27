@@ -64,6 +64,8 @@ export const CREATE_REQUIRED_FIELDS = Object.freeze([
     'title',
     'category',
     'condition',
+    'description',
+    'item_specifics',
     'price',
     'quantity',
     'fulfillment_policy',
@@ -73,6 +75,9 @@ export const CREATE_REQUIRED_FIELDS = Object.freeze([
     'images',
 ]);
 export const END_SUPPORTED_REASON = 'not-available';
+/** eBay Inventory API Product.description maximum, including markup. */
+export const MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH = 4_000;
+export const MAX_OFFER_LISTING_DESCRIPTION_LENGTH = 500_000;
 function revisionField(revision, field) {
     return revision.fields.find((candidate) => candidate.field === field) ?? null;
 }
@@ -98,6 +103,45 @@ function parseImageList(serialized) {
         return deny('CREATE_REQUIRED_FIELD_MISSING', 'images');
     }
     return parsed;
+}
+function parseItemSpecifics(serialized) {
+    let parsed;
+    try {
+        parsed = JSON.parse(serialized);
+    }
+    catch {
+        return deny('CREATE_ITEM_SPECIFICS_INVALID');
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return deny('CREATE_ITEM_SPECIFICS_INVALID');
+    }
+    const record = parsed;
+    const names = Object.keys(record);
+    if (names.length === 0 || names.length > 50 || names.join(',') !== [...names].sort().join(',')) {
+        return deny('CREATE_ITEM_SPECIFICS_INVALID');
+    }
+    const canonicalNames = new Set();
+    const result = {};
+    for (const name of names) {
+        const values = record[name];
+        const foldedName = name.toLocaleLowerCase('en-US');
+        if (name.length === 0 || name.length > 65 || name.trim() !== name
+            || canonicalNames.has(foldedName) || !Array.isArray(values)
+            || values.length === 0 || values.length > 30)
+            return deny('CREATE_ITEM_SPECIFICS_INVALID');
+        canonicalNames.add(foldedName);
+        const seenValues = new Set();
+        const checked = values.map((entry) => {
+            if (typeof entry !== 'string' || entry.length === 0 || entry.length > 65
+                || entry.trim() !== entry || seenValues.has(entry)) {
+                return deny('CREATE_ITEM_SPECIFICS_INVALID');
+            }
+            seenValues.add(entry);
+            return entry;
+        });
+        result[name] = Object.freeze(checked);
+    }
+    return Object.freeze(result);
 }
 function parseMoney(serialized) {
     let parsed;
@@ -130,6 +174,18 @@ function parseQuantity(serialized) {
     }
     return quantity;
 }
+function inventoryProductDescription(description) {
+    if (description.length > MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH) {
+        deny('CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE', 'description');
+    }
+    return description;
+}
+function listingDescription(description) {
+    if (description.length > MAX_OFFER_LISTING_DESCRIPTION_LENGTH) {
+        deny('CREATE_LISTING_DESCRIPTION_TOO_LARGE', 'description');
+    }
+    return description;
+}
 function assertUnmanagedIdentity(identity) {
     if (identity.managementModel !== 'unmanaged'
         || identity.ebayInventorySku !== null
@@ -158,6 +214,12 @@ export function deriveListingCreateManifest(revision) {
     const returnPolicyId = requireProposed(revision, 'return_policy');
     const merchantLocationKey = requireProposed(revision, 'merchant_location');
     const images = parseImageList(requireProposed(revision, 'images'));
+    const description = requireProposed(revision, 'description');
+    const aspects = parseItemSpecifics(requireProposed(revision, 'item_specifics'));
+    if (revision.identity.rawSku.length > 50)
+        deny('CREATE_IDENTITY_MISMATCH');
+    if (title.length > 80)
+        deny('CREATE_REQUIRED_FIELD_MISSING', 'title');
     const priceSource = revisionField(revision, 'price')?.sourceValue ?? null;
     if (priceSource === null)
         deny('CREATE_REQUIRED_FIELD_MISSING', 'price');
@@ -167,9 +229,10 @@ export function deriveListingCreateManifest(revision) {
         deny('CREATE_REQUIRED_FIELD_MISSING', 'quantity');
     const quantity = parseQuantity(quantitySource);
     const manifest = Object.freeze({
-        schemaVersion: 1,
+        schemaVersion: 2,
         scope: LISTING_DRAFT_SCOPE,
         action: 'create_ebay_listing',
+        descriptionPlacement: 'inventory_product_and_offer_listing_split',
         identity: revision.identity,
         revisionId: revision.revisionId,
         revisionNumber: revision.revisionNumber,
@@ -182,14 +245,17 @@ export function deriveListingCreateManifest(revision) {
             conditionId,
             conditionEnum,
             conditionDescription: proposedValue(revision, 'condition_description'),
-            description: proposedValue(revision, 'description'),
+            description: listingDescription(description),
+            inventoryProductDescription: inventoryProductDescription(description),
             images: Object.freeze(images),
+            aspects,
             fulfillmentPolicyId,
             paymentPolicyId,
             returnPolicyId,
             merchantLocationKey,
             price: Object.freeze(price),
             quantity,
+            listingDuration: 'GTC',
         }),
     });
     return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
@@ -197,19 +263,16 @@ export function deriveListingCreateManifest(revision) {
 /**
  * Opt-in create templating mirrors the listing-revise ceremony: the rendered
  * HTML derives only from the approved revision/manifest, replaces only the
- * proposed description, and is therefore bound into a new deterministic
- * manifest digest. An absent description passes through unchanged so the
- * operator-visible `descriptionTemplateApplied` note cannot imply work that
- * did not occur.
+ * buyer-facing proposed description, and is therefore bound into a new
+ * deterministic manifest digest. The separately bound Inventory product
+ * description remains the exact approved pre-template description; the
+ * template is never truncated into eBay's smaller Product.description field.
  */
 export function applyListingCreateDescriptionTemplate(input) {
     if (input.templateVersion !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
         deny('CREATE_TEMPLATE_UNSUPPORTED');
     }
-    const { manifest, manifestDigest } = input.derived;
-    if (manifest.proposed.description === null) {
-        return Object.freeze({ manifest, manifestDigest, descriptionTemplateApplied: false });
-    }
+    const { manifest } = input.derived;
     let rendered = '';
     try {
         rendered = renderListingDescription({
@@ -232,7 +295,7 @@ export function applyListingCreateDescriptionTemplate(input) {
     }
     const templatedManifest = Object.freeze({
         ...manifest,
-        proposed: Object.freeze({ ...manifest.proposed, description: rendered }),
+        proposed: Object.freeze({ ...manifest.proposed, description: listingDescription(rendered) }),
     });
     return Object.freeze({
         manifest: templatedManifest,
@@ -278,16 +341,16 @@ export function assertFreshBasisMatchesCreateRevision(input) {
  * manifest's proposed values is ever serialized.
  */
 export function buildListingCreatePayloads(manifest) {
-    if (manifest.schemaVersion !== 1 || manifest.action !== 'create_ebay_listing') {
+    if (manifest.schemaVersion !== 2 || manifest.action !== 'create_ebay_listing') {
         deny('CREATE_PAYLOAD_INVALID');
     }
     const { proposed } = manifest;
     const product = {
         title: proposed.title,
         imageUrls: [...proposed.images],
+        description: proposed.inventoryProductDescription,
+        aspects: proposed.aspects,
     };
-    if (proposed.description !== null)
-        product.description = proposed.description;
     const inventoryItemPayload = {
         product,
         condition: proposed.conditionEnum,
@@ -311,9 +374,9 @@ export function buildListingCreatePayloads(manifest) {
             price: { value: proposed.price.amount, currency: proposed.price.currency },
         },
         merchantLocationKey: proposed.merchantLocationKey,
+        listingDuration: proposed.listingDuration,
     };
-    if (proposed.description !== null)
-        offerPayload.listingDescription = proposed.description;
+    offerPayload.listingDescription = proposed.description;
     return Object.freeze({ inventoryItemPayload, offerPayload });
 }
 /**

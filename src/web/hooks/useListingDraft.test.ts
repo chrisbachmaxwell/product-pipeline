@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { ListingWorkspaceResponse } from './useListingWorkspace';
 import {
   canonicalDraftImages,
+  canonicalDraftItemSpecifics,
   effectiveDraftImages,
   isListingDraftBoundToWorkspace,
   isListingDraftResponse,
@@ -52,7 +53,7 @@ const draft = (): ListingDraftResponse => ({
       price: field(false), quantity: field(false),
     },
     content: {
-      description: field(), images: field(), itemSpecifics: field(false), identifiers: field(false),
+      description: field(), images: field(), itemSpecifics: field(), identifiers: field(false),
     },
     delivery: {
       fulfillmentPolicyId: field(), paymentPolicyId: field(), returnPolicyId: field(),
@@ -188,6 +189,7 @@ describe('local listing draft UI contract', () => {
       conditionDescription: null,
       description: null,
       images: null,
+      itemSpecifics: null,
       fulfillmentPolicyId: null,
       paymentPolicyId: null,
       returnPolicyId: null,
@@ -198,6 +200,14 @@ describe('local listing draft UI contract', () => {
     expect(payload).not.toHaveProperty('actor');
     expect(payload.base).not.toHaveProperty('catalogObservedAtUtc');
     expect(isListingDraftSaveInput(payload)).toBe(true);
+  });
+
+  it('canonicalizes bounded item specifics for exact draft approval', () => {
+    expect(canonicalDraftItemSpecifics('{"Type":["Lens"],"Brand":["Canon"]}')).toBe(
+      '{"Brand":["Canon"],"Type":["Lens"]}',
+    );
+    expect(canonicalDraftItemSpecifics('{}')).toBeNull();
+    expect(canonicalDraftItemSpecifics('{"Brand":[]}')).toBeNull();
   });
 
   it('preserves a saved image override during an unrelated scalar edit', () => {

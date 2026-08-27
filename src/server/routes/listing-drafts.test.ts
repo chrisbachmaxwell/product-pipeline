@@ -32,7 +32,8 @@ const requestBody = {
   schemaVersion: 1, action: 'save_local_draft', catalogId: 'row-1',
   expectedRevisionDigest: null, base: { sourceDigest: digest, ebayDigest: digest },
   draft: { title: 'New title', category: null, condition: null, conditionDescription: null,
-    description: null, images: null, fulfillmentPolicyId: null, paymentPolicyId: null,
+    description: null, images: null, itemSpecifics: null,
+    fulfillmentPolicyId: null, paymentPolicyId: null,
     returnPolicyId: null, merchantLocation: null },
 };
 

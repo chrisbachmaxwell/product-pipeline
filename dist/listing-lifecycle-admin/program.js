@@ -224,8 +224,10 @@ async function deriveEndTarget(dependencies, options) {
 function createManifestSummary(target) {
     const { manifest, manifestDigest } = target.derived;
     return {
+        manifestSchemaVersion: manifest.schemaVersion,
         manifestDigest,
         action: manifest.action,
+        descriptionPlacement: manifest.descriptionPlacement,
         revisionId: manifest.revisionId,
         revisionNumber: manifest.revisionNumber,
         revisionDigest: manifest.revisionDigest,
@@ -236,14 +238,17 @@ function createManifestSummary(target) {
             conditionId: manifest.proposed.conditionId,
             conditionEnum: manifest.proposed.conditionEnum,
             conditionDescription: preview(manifest.proposed.conditionDescription),
+            inventoryProductDescription: preview(manifest.proposed.inventoryProductDescription),
             description: preview(manifest.proposed.description),
             imageCount: manifest.proposed.images.length,
+            aspects: manifest.proposed.aspects,
             fulfillmentPolicyId: manifest.proposed.fulfillmentPolicyId,
             paymentPolicyId: manifest.proposed.paymentPolicyId,
             returnPolicyId: manifest.proposed.returnPolicyId,
             merchantLocationKey: manifest.proposed.merchantLocationKey,
             price: manifest.proposed.price,
             quantity: manifest.proposed.quantity,
+            listingDuration: manifest.proposed.listingDuration,
         },
         ...(target.descriptionTemplate === null
             ? {}
@@ -609,19 +614,28 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                 const sku = target.basis.identity.rawSku;
                 ceremony.markDispatching();
                 let dispatchFailed = false;
+                let dispatchFailureStage = null;
+                let dispatchFailureCode = null;
                 let offerId = null;
                 let listingId = null;
                 let externalCommerceWritesAttempted = 0;
                 try {
+                    dispatchFailureStage = 'put_inventory_item';
                     externalCommerceWritesAttempted = 1;
                     await adapter.putInventoryItem(sku, payloads.inventoryItemPayload);
+                    dispatchFailureStage = 'create_offer';
                     externalCommerceWritesAttempted = 2;
                     offerId = await adapter.createOffer(payloads.offerPayload);
+                    dispatchFailureStage = 'publish_offer';
                     externalCommerceWritesAttempted = 3;
                     listingId = await adapter.publishOffer(offerId);
+                    dispatchFailureStage = null;
                 }
-                catch {
+                catch (error) {
                     dispatchFailed = true;
+                    dispatchFailureCode = error instanceof ListingCreateDispatchError
+                        ? error.code
+                        : 'CREATE_DISPATCH_WRITE_FAILED';
                 }
                 const requiredAtUtc = clock();
                 store.requirePostDispatchReconciliation({
@@ -662,7 +676,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     command: 'dispatch-create',
                     status: reconciliation.resolution === 'resolved_existing'
                         ? 'dispatched-and-reconciled'
-                        : 'dispatched-unresolved',
+                        : reconciliation.resolution === 'confirmed_missing'
+                            ? 'dispatch-failed-confirmed-missing'
+                            : 'dispatched-unresolved',
                     jobId: ceremony.jobId,
                     attemptId: ceremony.attemptId,
                     intentKey: ceremony.intentKey,
@@ -673,6 +689,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     offerId,
                     listingId,
                     providerDispatchReported: !dispatchFailed,
+                    ...(dispatchFailed ? { dispatchFailureStage, dispatchFailureCode } : {}),
                     effect: reconciliation.effect,
                     resolution: reconciliation.resolution,
                     unresolvedCode: reconciliation.unresolvedCode,

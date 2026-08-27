@@ -15,6 +15,7 @@ import {
 } from '@shopify/polaris';
 import {
   canonicalDraftImages,
+  canonicalDraftItemSpecifics,
   draftFieldValue,
   effectiveDraftImages,
   inheritedFieldValue,
@@ -81,6 +82,7 @@ const initialValues = (draft: ListingDraftResponse): EditableValues => ({
   conditionDescription: draft.sections.listing.conditionDescription.draft,
   description: draft.sections.content.description.draft,
   images: draft.sections.content.images.draft,
+  itemSpecifics: draft.sections.content.itemSpecifics.draft,
   fulfillmentPolicyId: draft.sections.delivery.fulfillmentPolicyId.draft,
   paymentPolicyId: draft.sections.delivery.paymentPolicyId.draft,
   returnPolicyId: draft.sections.delivery.returnPolicyId.draft,
@@ -203,6 +205,7 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
   const conditionField = editBase.sections.listing.condition;
   const conditionDescriptionField = editBase.sections.listing.conditionDescription;
   const descriptionField = editBase.sections.content.description;
+  const itemSpecificsField = editBase.sections.content.itemSpecifics;
 
   // The eBay-provided current description is untrusted HTML: it is sanitized
   // here, before it can ever enter the contentEditable surface.
@@ -236,6 +239,7 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
     ['condition', 'Condition', conditionField],
     ['conditionDescription', 'Condition description', conditionDescriptionField],
     ['description', 'Description', descriptionField],
+    ['itemSpecifics', 'Item specifics', itemSpecificsField],
     ['fulfillmentPolicyId', 'Fulfillment policy', editBase.sections.delivery.fulfillmentPolicyId],
     ['paymentPolicyId', 'Payment policy', editBase.sections.delivery.paymentPolicyId],
     ['returnPolicyId', 'Return policy', editBase.sections.delivery.returnPolicyId],
@@ -514,6 +518,23 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
               </InlineStack>
             ))}
           </BlockStack>
+          <DraftTextField
+            label={(
+              <FieldLabel
+                text="Item specifics"
+                changed={changedFor('itemSpecifics', itemSpecificsField)}
+              />
+            )}
+            field={itemSpecificsField}
+            value={draftFieldValue({ ...itemSpecificsField, draft: values.itemSpecifics })}
+            error={values.itemSpecifics !== null
+              && canonicalDraftItemSpecifics(values.itemSpecifics) !== values.itemSpecifics
+              ? 'Use canonical JSON with 1–50 aspect names and string-array values'
+              : undefined}
+            multiline={3}
+            extraHelp={'Required for a new eBay listing. Example: {"Brand":["Canon"],"Type":["Lens"]}'}
+            onChange={(value) => set('itemSpecifics', value)}
+          />
         </BlockStack>
 
         <Divider />

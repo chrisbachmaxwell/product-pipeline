@@ -176,7 +176,8 @@ function saveBody(input: {
     schemaVersion: 1, action: 'save_local_draft', catalogId: CATALOG_ID,
     expectedRevisionDigest: input.expectedRevisionDigest, base: input.base,
     draft: { title: input.title, category: null, condition: null, conditionDescription: null,
-      description: null, images: null, fulfillmentPolicyId: null, paymentPolicyId: null,
+      description: null, images: null, itemSpecifics: null,
+      fulfillmentPolicyId: null, paymentPolicyId: null,
       returnPolicyId: null, merchantLocation: null },
   };
 }

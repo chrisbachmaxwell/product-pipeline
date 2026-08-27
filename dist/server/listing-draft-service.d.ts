@@ -71,6 +71,7 @@ export type SaveListingDraftRequest = Readonly<{
         conditionDescription: string | null;
         description: string | null;
         images: string | null;
+        itemSpecifics: string | null;
         fulfillmentPolicyId: string | null;
         paymentPolicyId: string | null;
         returnPolicyId: string | null;
