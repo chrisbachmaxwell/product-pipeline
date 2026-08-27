@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-27: G16 Publish Failure Contained and Handed Off
+
+Recorded the third exact Production create result after PR #46 deployed. The corrected Draft 5 request successfully created the eBay Inventory item and unpublished offer `247267392011`, but Publish Offer returned HTTP 400 / error `25019`. A later zero-write reconciliation confirmed `offer_unpublished` / `CREATE_OFFER_UNPUBLISHED`; no public listing exists, the original job remains unresolved, and the consumed create intent cannot replay. The next implementation is a separately approved Production recovery-cleanup ceremony bound to the exact source evidence, followed by a policy-compliant create/end target. Price and inventory takeover testing has not started; Marketplace Connect remains their writer.
+
 ### 2026-08-27: G16 Bounded Provider-Rejection Diagnostics
 
 Added a diagnostic-only refinement for listing-create provider rejections. A known non-2xx response can now expose only a fixed HTTP family, a bounded numeric status, and the first five sorted unique validated positive eBay REST `errorId` values; messages, parameters, response bodies, URLs, tokens, and exception text remain inaccessible. Only a first-PUT 4xx can be `definite_no_effect`; 5xx and ambiguous transport outcomes remain reconciliation-required. Corrected the outbound `Accept-Language` header spelling. The draft editor now explicitly distinguishes inheriting from omitting the optional condition description, preserves that provenance across later saves, and omits the field from the provider payload. This does not reopen the terminal v2 production intent: the next attempt requires the genuinely corrected draft with its unrelated test instruction omitted, never an identical draft re-save or blind version bump.

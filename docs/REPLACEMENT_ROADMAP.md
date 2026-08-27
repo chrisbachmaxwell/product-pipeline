@@ -23,12 +23,15 @@ Prove every listing lifecycle write end-to-end while MC still owns price/invento
 - **Current gate (2026-08-26):** Production is schema v4. Draft 1 for listing `147232036779` is publicly live and byte-identical to the approved raw HTML; eBay still shows price `$164.95` and quantity `5`. The existing job/attempt is authoritatively `revised_state_observed` / `resolved_existing`, with exactly one provider write and a valid migration-store audit chain. Brain L14 records the recovered comparator incident; L15 records the harmless denied replay.
 - ☐ [USER] Confirm MC price/quantity sync still behaves on that listing over 24h
 - ☐ [USER] G16a: create one new SKU end-to-end (branded template) via `listing-lifecycle-admin`; verify live listing
-  - 2026-08-27 state: v1 and v2 each stopped at the first Inventory PUT,
-    reconciled `confirmed_missing`, and left no eBay artifact; neither intent
-    can replay. Before another operator attempt, deploy the bounded diagnostic
-    and exact-header correction, explicitly omit the test-only condition
-    description in a newly reviewed draft, then preflight its genuinely new
-    manifest. Diagnostics or an identical draft re-save are not retry authority.
+  - 2026-08-27 state: the first two intents stopped at Inventory PUT and safely
+    terminalized absent. After the diagnostic/header/optional-field correction
+    deployed, Draft 5 progressed through Inventory PUT and Offer POST, then
+    Publish Offer failed HTTP 400 / eBay error `25019`. Unpublished offer
+    `247267392011` remains; zero-write reconciliation reports
+    `CREATE_OFFER_UNPUBLISHED`. Do not redispatch or accept absence. Before a
+    fresh create, build a separately approved Production recovery-cleanup slice,
+    remove and reconcile the exact residue, and select a policy-compliant target
+    (a genuine low-stakes item or eBay's designated Production test category).
 - ☐ [USER] G16b: end (or end+relist) one low-stakes listing; verify
 - **Exit check:** three dispatch types each `dispatched-and-reconciled` in the migration store; zero unexplained reconciliation exceptions; MC untouched.
 
