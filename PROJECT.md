@@ -343,6 +343,14 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-27: Drill-Down eBay Category Browser in the Listing Editor (L41)
+
+The category picker was search-only: `get_category_suggestions` answers "what matches this text" and cannot answer "what is under this node", so the UI had no data for a hierarchy and the merchant had to already know a search term. The only browsable element was the "Your categories" shortcut, which is sparse and frequently unnamed because the bulk Trading census omits `PrimaryCategory`.
+
+Adds top-down browsing: 34 top-level categories, drill-in, breadcrumb unwind, selectable leaves. The data strategy is one fetch, not per-level calls. eBay returns the entire EBAY_US tree in a single response on the same host, prefix, and token — measured in Production at 4.12 MB / 17,105 nodes / depth 6 in ~190ms — so it is fetched once, projected to a compact id/name/parent/leaf index, cached in-process like the tree id, and every subsequent level is served from memory at zero provider cost. `get_category_subtree` was rejected because it has no depth limit and a single large top-level branch can exceed the adapter's 2 MB bound. The raised 16 MB cap is scoped to the full-tree path only; suggestions keep 2 MB and a test pins the separation. Parsing was validated against the live tree, not the docs.
+
+Server adds `buildBrowseIndex` and `createEbayCategoryBrowse` reusing the existing bounded fetch, token provider, and redacted failure codes; the route is `GET /api/ebay-category-browse?parent=<id>`, allowlisted and in the capabilities projection. The web layer adds a `useEbayCategoryBrowse` hook and a Browse section in `CategoryPicker`. Search, used-category metadata, numeric-ID entry, and the degraded plain-text fallback are unchanged. 15 new tests; full suite 89 files / 976 tests green.
+
 ### 2026-08-27: `recover-create` Found Structurally Unsatisfiable in Production (L40)
 
 The zero-write `reconcile` resolved why the recovery ceremony denied, and the answer is a code defect rather than an operator or state error. `recover-create`'s residue guard (`program.ts:1581-1584`) denies unless the live capture's `observedOfferId` equals the passed offer id, and that value resolves to `workspace.catalog.ebay.offerId`. The live catalog only populates that field when an active published listing exists (`live-listing-catalog.ts:420-431`, where `matchingOffer` is computed solely inside the `activeListing ? ... : null` branch). An unpublished offer has no active listing, so the field is structurally null for precisely the residue class the ceremony exists to remove; the guard compares null against the real offer id and always denies `RECOVER_RESIDUE_STATE_MISMATCH`.
