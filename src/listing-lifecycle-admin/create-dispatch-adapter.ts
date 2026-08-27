@@ -21,6 +21,8 @@ import { createProductionDispatchTokenProvider } from '../listing-revise-admin/d
 
 export { createProductionDispatchTokenProvider };
 
+export type ListingCreateDispatchOutcomeClass = 'definite_no_effect' | 'outcome_unknown';
+
 const EBAY_API_HOST = 'https://api.ebay.com';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
@@ -34,14 +36,18 @@ export class ListingCreateDispatchError extends Error {
     | 'CREATE_DISPATCH_TARGET_INVALID'
     | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE'
     | 'CREATE_DISPATCH_WRITE_FAILED'
-    | 'CREATE_DISPATCH_RESPONSE_INVALID') {
+    | 'CREATE_DISPATCH_RESPONSE_INVALID',
+  readonly outcomeClass: ListingCreateDispatchOutcomeClass) {
     super('Listing create dispatch adapter failed');
     this.name = 'ListingCreateDispatchError';
   }
 }
 
-const deny = (code: ConstructorParameters<typeof ListingCreateDispatchError>[0]): never => {
-  throw new ListingCreateDispatchError(code);
+const deny = (
+  code: ConstructorParameters<typeof ListingCreateDispatchError>[0],
+  outcomeClass: ListingCreateDispatchOutcomeClass,
+): never => {
+  throw new ListingCreateDispatchError(code, outcomeClass);
 };
 
 type FetchLike = typeof fetch;
@@ -65,10 +71,10 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
     try {
       token = await dependencies.getAccessToken();
     } catch {
-      deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE');
+      deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE', 'definite_no_effect');
     }
     if (typeof token !== 'string' || token.length === 0 || token.length > 4_096) {
-      deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE');
+      deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE', 'definite_no_effect');
     }
     return {
       Authorization: `Bearer ${token}`,
@@ -93,16 +99,16 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       });
       const declaredLength = Number(response.headers.get('content-length') ?? '0');
       if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-        deny('CREATE_DISPATCH_WRITE_FAILED');
+        deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
       }
       const text = await response.text();
       if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
-        deny('CREATE_DISPATCH_WRITE_FAILED');
+        deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
       }
       return { status: response.status, text };
     } catch (error) {
       if (error instanceof ListingCreateDispatchError) throw error;
-      return deny('CREATE_DISPATCH_WRITE_FAILED');
+      return deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
     } finally {
       clearTimeout(timeout);
     }
@@ -111,7 +117,7 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
   function boundedBody(payload: Record<string, unknown>): string {
     const body = JSON.stringify(payload);
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
-      deny('CREATE_DISPATCH_PAYLOAD_TOO_LARGE');
+      deny('CREATE_DISPATCH_PAYLOAD_TOO_LARGE', 'definite_no_effect');
     }
     return body;
   }
@@ -120,17 +126,17 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
     try {
       const parsed = JSON.parse(text) as unknown;
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+        return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
       }
       return parsed as Record<string, unknown>;
     } catch (error) {
       if (error instanceof ListingCreateDispatchError) throw error;
-      return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+      return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
     }
   }
 
   async function putInventoryItem(sku: string, payload: Record<string, unknown>): Promise<void> {
-    if (!SAFE_SEGMENT.test(sku)) deny('CREATE_DISPATCH_TARGET_INVALID');
+    if (!SAFE_SEGMENT.test(sku)) deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
     const body = boundedBody(payload);
     const headers = await authorizedHeaders();
     const response = await boundedRequest(
@@ -138,7 +144,7 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       { method: 'PUT', headers, body },
     );
     if (response.status !== 200 && response.status !== 201 && response.status !== 204) {
-      deny('CREATE_DISPATCH_WRITE_FAILED');
+      deny('CREATE_DISPATCH_WRITE_FAILED', 'definite_no_effect');
     }
   }
 
@@ -149,27 +155,31 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       `${EBAY_API_HOST}/sell/inventory/v1/offer`,
       { method: 'POST', headers, body },
     );
-    if (response.status !== 200 && response.status !== 201) deny('CREATE_DISPATCH_WRITE_FAILED');
+    if (response.status !== 200 && response.status !== 201) {
+      deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+    }
     const parsed = parseJsonObject(response.text);
     const offerId = parsed.offerId;
     if (typeof offerId !== 'string' || !SAFE_SEGMENT.test(offerId)) {
-      return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+      return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
     }
     return offerId;
   }
 
   async function publishOffer(offerId: string): Promise<string> {
-    if (!SAFE_SEGMENT.test(offerId)) deny('CREATE_DISPATCH_TARGET_INVALID');
+    if (!SAFE_SEGMENT.test(offerId)) {
+      deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
+    }
     const headers = await authorizedHeaders();
     const response = await boundedRequest(
       `${EBAY_API_HOST}/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`,
       { method: 'POST', headers, body: '{}' },
     );
-    if (response.status !== 200) deny('CREATE_DISPATCH_WRITE_FAILED');
+    if (response.status !== 200) deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
     const parsed = parseJsonObject(response.text);
     const listingId = parsed.listingId;
     if (typeof listingId !== 'string' || !EXACT_LISTING_ID.test(listingId)) {
-      return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+      return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
     }
     return listingId;
   }

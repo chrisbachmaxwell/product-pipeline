@@ -104,6 +104,44 @@ function canonicalImages(value) {
         return invalid();
     return JSON.stringify(urls);
 }
+function canonicalItemSpecifics(value) {
+    const checked = boundedNullable(value, 20_000);
+    if (checked === null)
+        return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(checked);
+    }
+    catch {
+        return invalid();
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+        return invalid();
+    const record = parsed;
+    const names = Object.keys(record);
+    if (names.length === 0 || names.length > 50)
+        return invalid();
+    const canonicalNames = new Set();
+    const canonical = {};
+    for (const name of names.sort()) {
+        const values = record[name];
+        const foldedName = name.toLocaleLowerCase('en-US');
+        if (name.length === 0 || name.length > 65 || name.trim() !== name
+            || canonicalNames.has(foldedName) || !Array.isArray(values)
+            || values.length === 0 || values.length > 30)
+            return invalid();
+        canonicalNames.add(foldedName);
+        const seenValues = new Set();
+        canonical[name] = values.map((entry) => {
+            if (typeof entry !== 'string' || entry.length === 0 || entry.length > 65
+                || entry.trim() !== entry || seenValues.has(entry))
+                return invalid();
+            seenValues.add(entry);
+            return entry;
+        });
+    }
+    return JSON.stringify(canonical);
+}
 /** Strict browser contract. Unknown/provider/identity/provenance keys fail closed. */
 export function parseSaveListingDraftRequest(value) {
     let serialized = '';
@@ -127,7 +165,8 @@ export function parseSaveListingDraftRequest(value) {
         || typeof value.base.ebayDigest !== 'string' || !DIGEST.test(value.base.ebayDigest)
         || !exactKeys(value.draft, [
             'title', 'category', 'condition', 'conditionDescription', 'description', 'images',
-            'fulfillmentPolicyId', 'paymentPolicyId', 'returnPolicyId', 'merchantLocation',
+            'itemSpecifics', 'fulfillmentPolicyId', 'paymentPolicyId', 'returnPolicyId',
+            'merchantLocation',
         ]))
         return invalid();
     const draft = value.draft;
@@ -152,6 +191,7 @@ export function parseSaveListingDraftRequest(value) {
                 return description;
             })(),
             images: canonicalImages(draft.images),
+            itemSpecifics: canonicalItemSpecifics(draft.itemSpecifics),
             fulfillmentPolicyId: exactNumericId(draft.fulfillmentPolicyId),
             paymentPolicyId: exactNumericId(draft.paymentPolicyId),
             returnPolicyId: exactNumericId(draft.returnPolicyId),
@@ -332,7 +372,7 @@ const FIELD_DIGEST = {
 const EDITABLE = Object.freeze({
     title: true, category: true, condition: true, condition_description: true,
     price: false, quantity: false, description: true, images: true,
-    item_specifics: false, identifiers: false, fulfillment_policy: true,
+    item_specifics: true, identifiers: false, fulfillment_policy: true,
     payment_policy: true, return_policy: true, merchant_location: true,
 });
 function fieldsForRevision(basis, draft) {
@@ -496,6 +536,7 @@ export function createListingDraftService(dependencies = {}) {
                         condition: request.draft.condition,
                         condition_description: request.draft.conditionDescription,
                         description: request.draft.description, images: request.draft.images,
+                        item_specifics: request.draft.itemSpecifics,
                         fulfillment_policy: request.draft.fulfillmentPolicyId,
                         payment_policy: request.draft.paymentPolicyId,
                         return_policy: request.draft.returnPolicyId,

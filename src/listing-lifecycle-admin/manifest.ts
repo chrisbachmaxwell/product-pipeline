@@ -47,6 +47,9 @@ export class ListingLifecycleManifestError extends Error {
     | 'CREATE_TEMPLATE_UNSUPPORTED'
     | 'CREATE_TEMPLATE_INPUT_INVALID'
     | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE'
+    | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE'
+    | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE'
+    | 'CREATE_ITEM_SPECIFICS_INVALID'
     | 'END_TARGET_NOT_ACTIVE'
     | 'END_REASON_UNSUPPORTED',
   readonly field: ListingFieldName | null = null) {
@@ -91,6 +94,8 @@ export const CREATE_REQUIRED_FIELDS = Object.freeze([
   'title',
   'category',
   'condition',
+  'description',
+  'item_specifics',
   'price',
   'quantity',
   'fulfillment_policy',
@@ -102,10 +107,15 @@ export const CREATE_REQUIRED_FIELDS = Object.freeze([
 
 export const END_SUPPORTED_REASON = 'not-available' as const;
 
+/** eBay Inventory API Product.description maximum, including markup. */
+export const MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH = 4_000;
+export const MAX_OFFER_LISTING_DESCRIPTION_LENGTH = 500_000;
+
 export type ListingCreateManifest = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   scope: typeof LISTING_DRAFT_SCOPE;
   action: 'create_ebay_listing';
+  descriptionPlacement: 'inventory_product_and_offer_listing_split';
   identity: ListingIdentity;
   revisionId: string;
   revisionNumber: number;
@@ -118,14 +128,24 @@ export type ListingCreateManifest = Readonly<{
     conditionId: string;
     conditionEnum: string;
     conditionDescription: string | null;
-    description: string | null;
+    /** Exact full buyer-facing HTML serialized only as Offer.listingDescription. */
+    description: string;
+    /**
+     * Exact approved pre-template product description serialized as
+     * InventoryItem.product.description. It is separately bounded by eBay's
+     * 4,000-character Inventory contract and is never derived by truncating
+     * the buyer-facing listing HTML.
+     */
+    inventoryProductDescription: string;
     images: readonly string[];
+    aspects: Readonly<Record<string, readonly string[]>>;
     fulfillmentPolicyId: string;
     paymentPolicyId: string;
     returnPolicyId: string;
     merchantLocationKey: string;
     price: Readonly<{ amount: string; currency: string }>;
     quantity: number;
+    listingDuration: 'GTC';
   }>;
 }>;
 
@@ -182,6 +202,40 @@ function parseImageList(serialized: string): string[] {
   return parsed as string[];
 }
 
+function parseItemSpecifics(serialized: string): Readonly<Record<string, readonly string[]>> {
+  let parsed: unknown;
+  try { parsed = JSON.parse(serialized); } catch { return deny('CREATE_ITEM_SPECIFICS_INVALID'); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return deny('CREATE_ITEM_SPECIFICS_INVALID');
+  }
+  const record = parsed as Record<string, unknown>;
+  const names = Object.keys(record);
+  if (names.length === 0 || names.length > 50 || names.join(',') !== [...names].sort().join(',')) {
+    return deny('CREATE_ITEM_SPECIFICS_INVALID');
+  }
+  const canonicalNames = new Set<string>();
+  const result: Record<string, readonly string[]> = {};
+  for (const name of names) {
+    const values = record[name];
+    const foldedName = name.toLocaleLowerCase('en-US');
+    if (name.length === 0 || name.length > 65 || name.trim() !== name
+      || canonicalNames.has(foldedName) || !Array.isArray(values)
+      || values.length === 0 || values.length > 30) return deny('CREATE_ITEM_SPECIFICS_INVALID');
+    canonicalNames.add(foldedName);
+    const seenValues = new Set<string>();
+    const checked = values.map((entry) => {
+      if (typeof entry !== 'string' || entry.length === 0 || entry.length > 65
+        || entry.trim() !== entry || seenValues.has(entry)) {
+        return deny('CREATE_ITEM_SPECIFICS_INVALID');
+      }
+      seenValues.add(entry);
+      return entry;
+    });
+    result[name] = Object.freeze(checked);
+  }
+  return Object.freeze(result);
+}
+
 function parseMoney(serialized: string): { amount: string; currency: string } {
   let parsed: unknown;
   try {
@@ -211,6 +265,20 @@ function parseQuantity(serialized: string): number {
     deny('CREATE_REQUIRED_FIELD_MISSING', 'quantity');
   }
   return quantity;
+}
+
+function inventoryProductDescription(description: string): string {
+  if (description.length > MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH) {
+    deny('CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE', 'description');
+  }
+  return description;
+}
+
+function listingDescription(description: string): string {
+  if (description.length > MAX_OFFER_LISTING_DESCRIPTION_LENGTH) {
+    deny('CREATE_LISTING_DESCRIPTION_TOO_LARGE', 'description');
+  }
+  return description;
 }
 
 function assertUnmanagedIdentity(identity: ListingIdentity): void {
@@ -245,6 +313,10 @@ export function deriveListingCreateManifest(
   const returnPolicyId = requireProposed(revision, 'return_policy');
   const merchantLocationKey = requireProposed(revision, 'merchant_location');
   const images = parseImageList(requireProposed(revision, 'images'));
+  const description = requireProposed(revision, 'description');
+  const aspects = parseItemSpecifics(requireProposed(revision, 'item_specifics'));
+  if (revision.identity.rawSku.length > 50) deny('CREATE_IDENTITY_MISMATCH');
+  if (title.length > 80) deny('CREATE_REQUIRED_FIELD_MISSING', 'title');
 
   const priceSource = revisionField(revision, 'price')?.sourceValue ?? null;
   if (priceSource === null) deny('CREATE_REQUIRED_FIELD_MISSING', 'price');
@@ -254,9 +326,10 @@ export function deriveListingCreateManifest(
   const quantity = parseQuantity(quantitySource as string);
 
   const manifest: ListingCreateManifest = Object.freeze({
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     scope: LISTING_DRAFT_SCOPE,
     action: 'create_ebay_listing' as const,
+    descriptionPlacement: 'inventory_product_and_offer_listing_split' as const,
     identity: revision.identity,
     revisionId: revision.revisionId,
     revisionNumber: revision.revisionNumber,
@@ -269,14 +342,17 @@ export function deriveListingCreateManifest(
       conditionId,
       conditionEnum,
       conditionDescription: proposedValue(revision, 'condition_description'),
-      description: proposedValue(revision, 'description'),
+      description: listingDescription(description),
+      inventoryProductDescription: inventoryProductDescription(description),
       images: Object.freeze(images),
+      aspects,
       fulfillmentPolicyId,
       paymentPolicyId,
       returnPolicyId,
       merchantLocationKey,
       price: Object.freeze(price),
       quantity,
+      listingDuration: 'GTC' as const,
     }),
   });
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
@@ -285,10 +361,10 @@ export function deriveListingCreateManifest(
 /**
  * Opt-in create templating mirrors the listing-revise ceremony: the rendered
  * HTML derives only from the approved revision/manifest, replaces only the
- * proposed description, and is therefore bound into a new deterministic
- * manifest digest. An absent description passes through unchanged so the
- * operator-visible `descriptionTemplateApplied` note cannot imply work that
- * did not occur.
+ * buyer-facing proposed description, and is therefore bound into a new
+ * deterministic manifest digest. The separately bound Inventory product
+ * description remains the exact approved pre-template description; the
+ * template is never truncated into eBay's smaller Product.description field.
  */
 export function applyListingCreateDescriptionTemplate(input: {
   derived: DerivedListingCreateManifest;
@@ -298,10 +374,7 @@ export function applyListingCreateDescriptionTemplate(input: {
   if (input.templateVersion !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {
     deny('CREATE_TEMPLATE_UNSUPPORTED');
   }
-  const { manifest, manifestDigest } = input.derived;
-  if (manifest.proposed.description === null) {
-    return Object.freeze({ manifest, manifestDigest, descriptionTemplateApplied: false });
-  }
+  const { manifest } = input.derived;
   let rendered = '';
   try {
     rendered = renderListingDescription({
@@ -323,7 +396,7 @@ export function applyListingCreateDescriptionTemplate(input: {
   }
   const templatedManifest: ListingCreateManifest = Object.freeze({
     ...manifest,
-    proposed: Object.freeze({ ...manifest.proposed, description: rendered }),
+    proposed: Object.freeze({ ...manifest.proposed, description: listingDescription(rendered) }),
   });
   return Object.freeze({
     manifest: templatedManifest,
@@ -378,15 +451,16 @@ export type ListingCreatePayloads = Readonly<{
  * manifest's proposed values is ever serialized.
  */
 export function buildListingCreatePayloads(manifest: ListingCreateManifest): ListingCreatePayloads {
-  if (manifest.schemaVersion !== 1 || manifest.action !== 'create_ebay_listing') {
+  if (manifest.schemaVersion !== 2 || manifest.action !== 'create_ebay_listing') {
     deny('CREATE_PAYLOAD_INVALID');
   }
   const { proposed } = manifest;
   const product: Record<string, unknown> = {
     title: proposed.title,
     imageUrls: [...proposed.images],
+    description: proposed.inventoryProductDescription,
+    aspects: proposed.aspects,
   };
-  if (proposed.description !== null) product.description = proposed.description;
   const inventoryItemPayload: Record<string, unknown> = {
     product,
     condition: proposed.conditionEnum,
@@ -410,8 +484,9 @@ export function buildListingCreatePayloads(manifest: ListingCreateManifest): Lis
       price: { value: proposed.price.amount, currency: proposed.price.currency },
     },
     merchantLocationKey: proposed.merchantLocationKey,
+    listingDuration: proposed.listingDuration,
   };
-  if (proposed.description !== null) offerPayload.listingDescription = proposed.description;
+  offerPayload.listingDescription = proposed.description;
   return Object.freeze({ inventoryItemPayload, offerPayload });
 }
 

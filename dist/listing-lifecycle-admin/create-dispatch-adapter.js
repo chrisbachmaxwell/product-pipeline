@@ -27,14 +27,16 @@ const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXACT_LISTING_ID = /^[0-9]{1,19}$/;
 export class ListingCreateDispatchError extends Error {
     code;
-    constructor(code) {
+    outcomeClass;
+    constructor(code, outcomeClass) {
         super('Listing create dispatch adapter failed');
         this.code = code;
+        this.outcomeClass = outcomeClass;
         this.name = 'ListingCreateDispatchError';
     }
 }
-const deny = (code) => {
-    throw new ListingCreateDispatchError(code);
+const deny = (code, outcomeClass) => {
+    throw new ListingCreateDispatchError(code, outcomeClass);
 };
 export function createListingCreateDispatchAdapter(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
@@ -44,10 +46,10 @@ export function createListingCreateDispatchAdapter(dependencies) {
             token = await dependencies.getAccessToken();
         }
         catch {
-            deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE');
+            deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE', 'definite_no_effect');
         }
         if (typeof token !== 'string' || token.length === 0 || token.length > 4_096) {
-            deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE');
+            deny('CREATE_DISPATCH_AUTHORITY_UNAVAILABLE', 'definite_no_effect');
         }
         return {
             Authorization: `Bearer ${token}`,
@@ -68,18 +70,18 @@ export function createListingCreateDispatchAdapter(dependencies) {
             });
             const declaredLength = Number(response.headers.get('content-length') ?? '0');
             if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-                deny('CREATE_DISPATCH_WRITE_FAILED');
+                deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
             }
             const text = await response.text();
             if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
-                deny('CREATE_DISPATCH_WRITE_FAILED');
+                deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
             }
             return { status: response.status, text };
         }
         catch (error) {
             if (error instanceof ListingCreateDispatchError)
                 throw error;
-            return deny('CREATE_DISPATCH_WRITE_FAILED');
+            return deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
         }
         finally {
             clearTimeout(timeout);
@@ -88,7 +90,7 @@ export function createListingCreateDispatchAdapter(dependencies) {
     function boundedBody(payload) {
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
-            deny('CREATE_DISPATCH_PAYLOAD_TOO_LARGE');
+            deny('CREATE_DISPATCH_PAYLOAD_TOO_LARGE', 'definite_no_effect');
         }
         return body;
     }
@@ -96,50 +98,52 @@ export function createListingCreateDispatchAdapter(dependencies) {
         try {
             const parsed = JSON.parse(text);
             if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-                return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+                return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
             }
             return parsed;
         }
         catch (error) {
             if (error instanceof ListingCreateDispatchError)
                 throw error;
-            return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+            return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
         }
     }
     async function putInventoryItem(sku, payload) {
         if (!SAFE_SEGMENT.test(sku))
-            deny('CREATE_DISPATCH_TARGET_INVALID');
+            deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
         const body = boundedBody(payload);
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, { method: 'PUT', headers, body });
         if (response.status !== 200 && response.status !== 201 && response.status !== 204) {
-            deny('CREATE_DISPATCH_WRITE_FAILED');
+            deny('CREATE_DISPATCH_WRITE_FAILED', 'definite_no_effect');
         }
     }
     async function createOffer(payload) {
         const body = boundedBody(payload);
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer`, { method: 'POST', headers, body });
-        if (response.status !== 200 && response.status !== 201)
-            deny('CREATE_DISPATCH_WRITE_FAILED');
+        if (response.status !== 200 && response.status !== 201) {
+            deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+        }
         const parsed = parseJsonObject(response.text);
         const offerId = parsed.offerId;
         if (typeof offerId !== 'string' || !SAFE_SEGMENT.test(offerId)) {
-            return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+            return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
         }
         return offerId;
     }
     async function publishOffer(offerId) {
-        if (!SAFE_SEGMENT.test(offerId))
-            deny('CREATE_DISPATCH_TARGET_INVALID');
+        if (!SAFE_SEGMENT.test(offerId)) {
+            deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
+        }
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, { method: 'POST', headers, body: '{}' });
         if (response.status !== 200)
-            deny('CREATE_DISPATCH_WRITE_FAILED');
+            deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
         const parsed = parseJsonObject(response.text);
         const listingId = parsed.listingId;
         if (typeof listingId !== 'string' || !EXACT_LISTING_ID.test(listingId)) {
-            return deny('CREATE_DISPATCH_RESPONSE_INVALID');
+            return deny('CREATE_DISPATCH_RESPONSE_INVALID', 'outcome_unknown');
         }
         return listingId;
     }

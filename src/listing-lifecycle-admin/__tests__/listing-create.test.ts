@@ -17,6 +17,7 @@ import {
 import {
   initializeListingControlStore,
   openListingControlStoreReadOnly,
+  sha256Digest,
   type ListingRevision,
 } from '../../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
@@ -31,12 +32,17 @@ import {
   classifyCreateOutcome,
   deriveListingCreateManifest,
   ListingLifecycleManifestError,
+  MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH,
 } from '../manifest.js';
+import { renderListingDescription } from '../../server/listing-description-template.js';
 import {
   buildListingLifecycleAdminProgram,
   type ListingLifecycleAdminIo,
 } from '../program.js';
-import type { ListingCreateDispatchAdapter } from '../create-dispatch-adapter.js';
+import {
+  ListingCreateDispatchError,
+  type ListingCreateDispatchAdapter,
+} from '../create-dispatch-adapter.js';
 
 const MIGRATION_SCOPE: IntegrationScope = {
   shopifyStoreDomain: LISTING_DRAFT_SCOPE.shopifyStoreDomain,
@@ -203,6 +209,23 @@ function offerPendingWorkspace(): ListingWorkspaceDto {
   };
 }
 
+/** Inventory PUT succeeded, but no offer was returned or observed yet. */
+function inventoryOnlyWorkspace(): ListingWorkspaceDto {
+  const base = notListedWorkspace();
+  return {
+    ...base,
+    catalog: {
+      ...base.catalog,
+      ebay: {
+        ...base.catalog.ebay,
+        state: 'attention', inventoryItemCount: 1,
+      },
+      lifecycleStatus: 'attention',
+    },
+    mapping: { ...base.mapping, state: 'attention' },
+  };
+}
+
 type DraftValues = {
   title: string | null;
   category: string | null;
@@ -210,6 +233,7 @@ type DraftValues = {
   conditionDescription: string | null;
   description: string | null;
   images: string | null;
+  itemSpecifics: string | null;
   fulfillmentPolicyId: string | null;
   paymentPolicyId: string | null;
   returnPolicyId: string | null;
@@ -223,6 +247,7 @@ const DEFAULT_DRAFT: DraftValues = {
   conditionDescription: 'Excellent glass',
   description: 'Clean plain text description',
   images: JSON.stringify([IMAGE_URL]),
+  itemSpecifics: JSON.stringify({ Brand: ['Canon'], Type: ['Camera Lens'] }),
   fulfillmentPolicyId: '111',
   paymentPolicyId: '222',
   returnPolicyId: '333',
@@ -239,6 +264,8 @@ type World = {
   offerPayloads: Array<Record<string, unknown>>;
   publishCalls: string[];
   failItemPut: () => void;
+  loseItemPutResponse: () => void;
+  failOffer: () => void;
   failPublish: () => void;
   stdout: string[];
   stderr: string[];
@@ -289,16 +316,27 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
   const itemPayloads: Array<Record<string, unknown>> = [];
   const offerPayloads: Array<Record<string, unknown>> = [];
   const publishCalls: string[] = [];
-  let itemPutFails = false;
+  let itemPutFailure: 'definite_no_effect' | 'outcome_unknown' | null = null;
+  let offerFails = false;
   let publishFails = false;
   const adapter: ListingCreateDispatchAdapter = Object.freeze({
     putInventoryItem: async (_sku, payload) => {
       adapterCalls.push('putInventoryItem');
-      if (itemPutFails) throw new Error('provider write failed');
+      if (itemPutFailure === 'definite_no_effect') {
+        throw new ListingCreateDispatchError(
+          'CREATE_DISPATCH_WRITE_FAILED',
+          'definite_no_effect',
+        );
+      }
+      if (itemPutFailure === 'outcome_unknown') {
+        throw new Error('provider secret token=VERY_SECRET https://api.ebay.com/private raw-body');
+      }
       itemPayloads.push(payload);
+      current = inventoryOnlyWorkspace();
     },
     createOffer: async (payload) => {
       adapterCalls.push('createOffer');
+      if (offerFails) throw new Error('offer secret token=VERY_SECRET raw-body');
       offerPayloads.push(payload);
       current = offerPendingWorkspace();
       return OFFER_ID;
@@ -306,7 +344,7 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
     publishOffer: async (offerId) => {
       adapterCalls.push('publishOffer');
       publishCalls.push(offerId);
-      if (publishFails) throw new Error('provider publish failed');
+      if (publishFails) throw new Error('publish secret token=VERY_SECRET raw-body');
       const description = offerPayloads.at(-1)?.listingDescription;
       current = listedWorkspace(typeof description === 'string' ? description : null);
       return LISTING_ID;
@@ -339,7 +377,9 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
     itemPayloads,
     offerPayloads,
     publishCalls,
-    failItemPut: () => { itemPutFails = true; },
+    failItemPut: () => { itemPutFailure = 'definite_no_effect'; },
+    loseItemPutResponse: () => { itemPutFailure = 'outcome_unknown'; },
+    failOffer: () => { offerFails = true; },
     failPublish: () => { publishFails = true; },
     stdout,
     stderr,
@@ -433,6 +473,7 @@ describe('listing-lifecycle operator CLI — create', () => {
         title: 'Canon EF 24-70mm f/2.8L',
         imageUrls: [IMAGE_URL],
         description: 'Clean plain text description',
+        aspects: { Brand: ['Canon'], Type: ['Camera Lens'] },
       },
       condition: 'USED_EXCELLENT',
       conditionDescription: 'Excellent glass',
@@ -450,6 +491,7 @@ describe('listing-lifecycle operator CLI — create', () => {
       },
       pricingSummary: { price: { value: '149.95', currency: 'USD' } },
       merchantLocationKey: 'warehouse-1',
+      listingDuration: 'GTC',
       listingDescription: 'Clean plain text description',
     });
     expect(world.publishCalls).toEqual([OFFER_ID]);
@@ -523,8 +565,9 @@ describe('listing-lifecycle operator CLI — create', () => {
     const itemDescription = (world.itemPayloads[0]?.product as Record<string, unknown>)
       .description;
     const offerDescription = world.offerPayloads[0]?.listingDescription;
-    expect(itemDescription).toBe(offerDescription);
-    expect(itemDescription).toContain('<!-- template:ucg-branded-v1 -->');
+    expect(itemDescription).toBe('Clean plain text description');
+    expect(offerDescription).toContain('<!-- template:ucg-branded-v1 -->');
+    expect(offerDescription).not.toBe(itemDescription);
   });
 
   it('re-derives the templated intent and exact HTML during recovery reconciliation', async () => {
@@ -598,38 +641,98 @@ describe('listing-lifecycle operator CLI — create', () => {
     }).kind).toBe('unverified');
   });
 
-  it('leaves a missing description byte-identical when the template is requested', async () => {
+  it('requires a description before deriving either provider payload', async () => {
     const world = await createWorld({ description: null });
-    const derived = deriveListingCreateManifest(world.revision);
-    const templated = applyListingCreateDescriptionTemplate({
-      derived,
-      revision: world.revision,
-      templateVersion: 'ucg-branded-v1',
-    });
-    expect(templated).toMatchObject({
-      manifestDigest: derived.manifestDigest,
-      descriptionTemplateApplied: false,
-    });
-    expect(classifyCreateOutcome({
-      workspace: listedWorkspace('unexpected provider description'),
-      sku: SKU,
-      expectedListingId: LISTING_ID,
-      expectedDescriptionHtml: null,
-    }).kind).toBe('unverified');
-    expect(classifyCreateOutcome({
-      workspace: listedWorkspace(null),
-      sku: SKU,
-      expectedListingId: LISTING_ID,
-      expectedDescriptionHtml: null,
-    }).kind).toBe('observed');
-
     await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
       '--description-template', 'ucg-branded-v1',
     ]);
-    expect(lastJson(world.stdout)).toMatchObject({
-      manifestDigest: derived.manifestDigest,
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: false },
+    expect(lastJson(world.stderr)).toMatchObject({
+      status: 'denied',
+      code: 'CREATE_REQUIRED_FIELD_MISSING',
+      field: 'description',
     });
+    expect(world.adapterCalls).toHaveLength(0);
+  });
+
+  it('requires reviewed item specifics before deriving the Inventory payload', async () => {
+    const world = await createWorld({ itemSpecifics: null });
+    await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);
+    expect(lastJson(world.stderr)).toMatchObject({
+      status: 'denied',
+      code: 'CREATE_REQUIRED_FIELD_MISSING',
+      field: 'item_specifics',
+    });
+    expect(world.adapterCalls).toHaveLength(0);
+  });
+
+  it('accepts exactly 4,000 Inventory-description characters and denies 4,001', async () => {
+    const boundary = await createWorld({
+      description: 'x'.repeat(MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH),
+    });
+    const derived = deriveListingCreateManifest(boundary.revision);
+    expect(derived.manifest.proposed.inventoryProductDescription).toHaveLength(4_000);
+    const product = buildListingCreatePayloads(derived.manifest).inventoryItemPayload.product as
+      Record<string, unknown>;
+    expect(product.description as string).toHaveLength(4_000);
+
+    const over = await createWorld({
+      description: 'x'.repeat(MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH + 1),
+    });
+    await over.run(['preflight-create', ...targetArguments(over.revision.revisionDigest)]);
+    expect(lastJson(over.stderr)).toMatchObject({
+      status: 'denied',
+      code: 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE',
+      field: 'description',
+    });
+    expect(over.adapterCalls).toHaveLength(0);
+  });
+
+  it('keeps a 4,470-character branded listing intact while Inventory gets the exact base text',
+    async () => {
+      const renderInput = {
+        templateVersion: 'ucg-branded-v1' as const,
+        title: 'Canon EF 24-70mm f/2.8L',
+        bodyHtml: 'x',
+        conditionId: '3000',
+        conditionNote: 'Excellent glass',
+        imageUrls: [IMAGE_URL],
+        sku: SKU,
+      };
+      const oneCharacterLength = renderListingDescription(renderInput).length;
+      const baseDescription = 'x'.repeat(4_470 - oneCharacterLength + 1);
+      const world = await createWorld({ description: baseDescription });
+      const templated = applyListingCreateDescriptionTemplate({
+        derived: deriveListingCreateManifest(world.revision),
+        revision: world.revision,
+        templateVersion: 'ucg-branded-v1',
+      });
+      expect(templated.manifest.proposed.description).toHaveLength(4_470);
+      expect(templated.manifest.proposed.inventoryProductDescription).toBe(baseDescription);
+      const payloads = buildListingCreatePayloads(templated.manifest);
+      expect((payloads.inventoryItemPayload.product as Record<string, unknown>).description)
+        .toBe(baseDescription);
+      expect(payloads.offerPayload.listingDescription)
+        .toBe(templated.manifest.proposed.description);
+    });
+
+  it('uses manifest schema v2 so a legacy dual-description intent cannot collide', async () => {
+    const world = await createWorld();
+    const derived = deriveListingCreateManifest(world.revision);
+    const {
+      inventoryProductDescription: _descriptionRemoved,
+      aspects: _aspectsRemoved,
+      listingDuration: _durationRemoved,
+      ...legacyProposed
+    } =
+      derived.manifest.proposed;
+    const { descriptionPlacement: _placementRemoved, ...legacyBase } = derived.manifest;
+    const legacyManifest = {
+      ...legacyBase,
+      schemaVersion: 1,
+      proposed: legacyProposed,
+    };
+    expect(derived.manifest.schemaVersion).toBe(2);
+    expect(sha256Digest(legacyManifest)).not.toBe(derived.manifestDigest);
   });
 
   it('fails closed on already-listed targets, missing ownership, and wrong targets', async () => {
@@ -697,6 +800,14 @@ describe('listing-lifecycle operator CLI — create', () => {
     expect(payloads.inventoryItemPayload.condition).toBe('FOR_PARTS_OR_NOT_WORKING');
   });
 
+  it('denies a create SKU above eBay\'s 50-character maximum', async () => {
+    const world = await createWorld();
+    expect(() => deriveListingCreateManifest({
+      ...world.revision,
+      identity: { ...world.revision.identity, rawSku: 'x'.repeat(51) },
+    })).toThrowError(expect.objectContaining({ code: 'CREATE_IDENTITY_MISMATCH' }));
+  });
+
   it('records a provider-failed create (no offer) as a durable confirmed_missing outcome and denies replay', async () => {
     const world = await createWorld();
     await world.run(establishArguments(world));
@@ -711,14 +822,21 @@ describe('listing-lifecycle operator CLI — create', () => {
     const dispatched = lastJson(world.stdout);
     expect(dispatched).toMatchObject({
       command: 'dispatch-create',
-      status: 'dispatched-unresolved',
+      status: 'dispatch-failed-confirmed-missing',
       providerDispatchReported: false,
+      dispatchFailureStage: 'put_inventory_item',
+      dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+      dispatchFailureOutcomeClass: 'definite_no_effect',
       offerId: null,
       listingId: null,
       effect: 'created_state_absent',
       resolution: 'confirmed_missing',
       externalCommerceWritesAttempted: 1,
     });
+    const redactedOutput = JSON.stringify([...world.stdout, ...world.stderr]);
+    expect(redactedOutput).not.toContain('VERY_SECRET');
+    expect(redactedOutput).not.toContain('api.ebay.com/private');
+    expect(redactedOutput).not.toContain('raw-body');
     expect(world.exitCodes.at(-1)).toBe(1);
 
     const store = openMigrationStoreReadOnly({
@@ -742,6 +860,96 @@ describe('listing-lifecycle operator CLI — create', () => {
     expect(world.adapterCalls.length).toBe(callsBefore);
   });
 
+  it('keeps a response-lost Inventory PUT unresolved through absence and later residue',
+    async () => {
+      const world = await createWorld();
+      await world.run(establishArguments(world));
+      await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);
+      const manifestDigest = lastJson(world.stdout).manifestDigest as string;
+
+      world.loseItemPutResponse();
+      await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+        '--manifest-digest', manifestDigest,
+        '--migration-store', world.migrationDatabasePath,
+      ]);
+      const dispatched = lastJson(world.stdout);
+      expect(dispatched).toMatchObject({
+        status: 'dispatched-unresolved',
+        providerDispatchReported: false,
+        dispatchFailureStage: 'put_inventory_item',
+        dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+        dispatchFailureOutcomeClass: 'outcome_unknown',
+        effect: 'created_state_absent',
+        resolution: null,
+        externalCommerceWritesAttempted: 1,
+      });
+      const redactedOutput = JSON.stringify([...world.stdout, ...world.stderr]);
+      expect(redactedOutput).not.toContain('VERY_SECRET');
+      expect(redactedOutput).not.toContain('api.ebay.com/private');
+      expect(redactedOutput).not.toContain('raw-body');
+
+      const callsBefore = world.adapterCalls.length;
+      await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+        '--manifest-digest', manifestDigest,
+        '--migration-store', world.migrationDatabasePath,
+      ]);
+      expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_INTENT_ALREADY_RECORDED' });
+      expect(world.adapterCalls).toHaveLength(callsBefore);
+
+      world.setWorkspace(inventoryOnlyWorkspace());
+      await world.run(['reconcile',
+        '--action', 'create', '--catalog-id', CATALOG_ID, '--sku', SKU,
+        '--revision-digest', world.revision.revisionDigest,
+        '--migration-store', world.migrationDatabasePath,
+        '--job-id', dispatched.jobId as string,
+        '--attempt-id', dispatched.attemptId as string,
+      ]);
+      expect(lastJson(world.stdout)).toMatchObject({
+        status: 'unresolved',
+        effect: 'unverified',
+        resolution: null,
+        unresolvedCode: 'CREATE_STATE_UNVERIFIED',
+        externalWritesPerformed: 0,
+      });
+      expect(world.adapterCalls).toHaveLength(callsBefore);
+      const store = openMigrationStoreReadOnly({
+        databasePath: world.migrationDatabasePath,
+        expectedScope: MIGRATION_SCOPE,
+      });
+      expect(store.getJobStatus(dispatched.jobId as string)).toMatchObject({
+        state: 'reconciliation_required',
+      });
+      store.close();
+    });
+
+  it('reports a redacted create-offer failure and leaves the observed Inventory residue unresolved',
+    async () => {
+      const world = await createWorld();
+      await world.run(establishArguments(world));
+      await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);
+      const manifestDigest = lastJson(world.stdout).manifestDigest as string;
+
+      world.failOffer();
+      await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+        '--manifest-digest', manifestDigest,
+        '--migration-store', world.migrationDatabasePath,
+      ]);
+      expect(lastJson(world.stdout)).toMatchObject({
+        status: 'dispatched-unresolved',
+        providerDispatchReported: false,
+        dispatchFailureStage: 'create_offer',
+        dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+        dispatchFailureOutcomeClass: 'outcome_unknown',
+        offerId: null,
+        listingId: null,
+        resolution: null,
+        externalCommerceWritesAttempted: 2,
+      });
+      const redactedOutput = JSON.stringify([...world.stdout, ...world.stderr]);
+      expect(redactedOutput).not.toContain('VERY_SECRET');
+      expect(redactedOutput).not.toContain('raw-body');
+    });
+
   it('leaves a created-offer-but-publish-failed job unresolved with the offer named in the output', async () => {
     const world = await createWorld();
     await world.run(establishArguments(world));
@@ -758,6 +966,9 @@ describe('listing-lifecycle operator CLI — create', () => {
       command: 'dispatch-create',
       status: 'dispatched-unresolved',
       providerDispatchReported: false,
+      dispatchFailureStage: 'publish_offer',
+      dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+      dispatchFailureOutcomeClass: 'outcome_unknown',
       offerId: OFFER_ID,
       listingId: null,
       effect: 'offer_unpublished',

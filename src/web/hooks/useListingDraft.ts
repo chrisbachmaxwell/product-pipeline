@@ -85,6 +85,7 @@ export interface ListingDraftSaveInput {
     conditionDescription: string | null;
     description: string | null;
     images: string | null;
+    itemSpecifics: string | null;
     fulfillmentPolicyId: string | null;
     paymentPolicyId: string | null;
     returnPolicyId: string | null;
@@ -112,7 +113,7 @@ export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSa
     || Object.keys(value.base).length !== 2 || !record(value.draft)
     || Object.keys(value.draft).sort().join(',') !== [
       'category', 'condition', 'conditionDescription', 'description',
-      'fulfillmentPolicyId', 'images', 'merchantLocation', 'paymentPolicyId',
+      'fulfillmentPolicyId', 'images', 'itemSpecifics', 'merchantLocation', 'paymentPolicyId',
       'returnPolicyId', 'title',
     ].sort().join(',')) return false;
   const title = value.draft.title;
@@ -120,6 +121,7 @@ export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSa
   if (!stringOrNull(title) || !stringOrNull(value.draft.category)
     || !stringOrNull(value.draft.condition) || !stringOrNull(value.draft.conditionDescription)
     || !stringOrNull(description) || !stringOrNull(value.draft.images)
+    || !stringOrNull(value.draft.itemSpecifics)
     || !stringOrNull(value.draft.fulfillmentPolicyId)
     || !stringOrNull(value.draft.paymentPolicyId)
     || !stringOrNull(value.draft.returnPolicyId)
@@ -142,7 +144,39 @@ export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSa
     const images = parseDraftImages(value.draft.images);
     if (images.length === 0 || canonicalDraftImages(images) !== value.draft.images) return false;
   }
+  if (value.draft.itemSpecifics !== null
+    && canonicalDraftItemSpecifics(value.draft.itemSpecifics) !== value.draft.itemSpecifics) {
+    return false;
+  }
   return true;
+};
+
+export const canonicalDraftItemSpecifics = (serialized: string): string | null => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(serialized); } catch { return null; }
+  if (!record(parsed)) return null;
+  const names = Object.keys(parsed);
+  if (names.length === 0 || names.length > 50) return null;
+  const canonicalNames = new Set<string>();
+  const result: Record<string, string[]> = {};
+  for (const name of names.sort()) {
+    const values = parsed[name];
+    const foldedName = name.toLocaleLowerCase('en-US');
+    if (name.length === 0 || name.length > 65 || name.trim() !== name
+      || canonicalNames.has(foldedName) || !Array.isArray(values)
+      || values.length === 0 || values.length > 30) return null;
+    canonicalNames.add(foldedName);
+    const seenValues = new Set<string>();
+    const checked: string[] = [];
+    for (const entry of values) {
+      if (typeof entry !== 'string' || entry.length === 0 || entry.length > 65
+        || entry.trim() !== entry || seenValues.has(entry)) return null;
+      seenValues.add(entry);
+      checked.push(entry);
+    }
+    result[name] = checked;
+  }
+  return JSON.stringify(result);
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -204,7 +238,7 @@ export const isListingDraftResponse = (
   const quantity = value.sections.listing.quantity;
   const itemSpecifics = value.sections.content.itemSpecifics;
   const identifiers = value.sections.content.identifiers;
-  if (price.editable || quantity.editable || itemSpecifics.editable || identifiers.editable) return false;
+  if (price.editable || quantity.editable || !itemSpecifics.editable || identifiers.editable) return false;
   const draftDescription = value.sections.content.description.draft;
   if (draftDescription !== null && (
     draftDescription.length > 20_000

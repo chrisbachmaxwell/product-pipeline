@@ -47,7 +47,8 @@ workspace row.
   a single-use exact-target approval expiring in at most 10 minutes, one job
   per intent, one dispatch attempt, and a resolution that must match a
   recorded `target_effect_observations` row. See `docs/MIGRATION_STATE.md`.
-- Required-or-deny create fields: title, category, condition, price,
+- Required-or-deny create fields: title, category, condition, description, canonical
+  item-specifics JSON, price,
   quantity ≥ 1, all three policy IDs, merchant location, and at least one
   image (`CREATE_REQUIRED_FIELD_MISSING` names the field; values stay
   redacted). The draft's numeric eBay condition ID maps through a fixed
@@ -56,7 +57,7 @@ workspace row.
 
 ## Prerequisites (once)
 
-1. A verified schema-v3 migration store for the exact production scope
+1. A verified schema-v4 migration store for the exact production scope
    (`migration-admin init`, or `migration-admin upgrade` for an existing
    v1/v2 store, each with the exact `--confirm-scope` digest).
 2. The ownership chain for each lifecycle responsibility you will use:
@@ -88,16 +89,21 @@ workspace row.
    The target must be a clean not-listed item: any eBay listing, offer,
    inventory item, or unpublished artifact denies as
    `CREATE_TARGET_ALREADY_LISTED`. The manifest derives from the revision
-   alone — every proposed field value, the mapped condition enum, and the
+   alone — every proposed field value, the mapped condition enum, reviewed
+   item specifics, fixed `GTC` duration, and the
    Shopify-sourced initial price/quantity — and any Shopify or eBay drift
    since the draft was saved denies as `CREATE_BASE_STALE` (reopen and
    re-save the draft). It prints the manifest summary and the
    **manifest digest**. `--description-template ucg-branded-v1` is the only
-   supported template and is opt-in. It deterministically replaces only the
-   approved description in the manifest before that digest is computed; omit
-   the flag to preserve the approved description byte-for-byte. If the draft
-   description is absent, the flag reports `applied: false` and the digest is
-   unchanged.
+   supported template and is opt-in. Manifest schema v2 separately binds the
+   exact approved base description (required and at most 4,000 characters) for
+   `InventoryItem.product.description` and the complete buyer-facing description
+   for `Offer.listingDescription`. The template changes only the latter; it is
+   never truncated or copied into the smaller Inventory field. The offer
+   description is required, nonempty, and bounded at 500,000 characters. The
+   same v2 manifest also binds the approved `product.aspects` object and
+   `listingDuration: GTC`. These fields follow eBay's documented publish
+   prerequisites: https://developer.ebay.com/api-docs/sell/static/inventory/publishing-offers.html
 
 2. **Dispatch** — the one action. Passing the exact target plus the manifest
    digest from preflight *is* the operator approval:
@@ -118,6 +124,16 @@ workspace row.
    reconciliation run + target-effect observation, and (when the new listing
    is visible and bound) the terminal resolution. The output includes the
    job id, attempt id, intent key, manifest digest, offerId, and listingId.
+   A provider failure prints only fixed `dispatchFailureStage`,
+   `dispatchFailureCode`, and `dispatchFailureOutcomeClass` values. Only a
+   `put_inventory_item` failure classified `definite_no_effect` (a local denial
+   before the request, or a known non-2xx HTTP rejection) may combine with a
+   fresh absent capture to produce `dispatch-failed-confirmed-missing`. A timeout,
+   abort, network/read failure, oversized or ambiguous response, or unexpected
+   exception is `outcome_unknown` and stays `dispatched-unresolved` even when the
+   immediate capture is absent: the PUT might have committed remotely. No provider
+   body, URL, token, or exception text is returned, and neither outcome can be
+   redispatched under the same intent.
    The template flag must exactly match the preflight that produced the
    manifest digest. Reconciliation compares the fresh provider's raw
    description HTML byte-for-byte, allowing only CRLF/CR-to-LF normalization;

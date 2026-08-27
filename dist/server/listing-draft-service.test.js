@@ -100,7 +100,8 @@ function body(base, title = 'Operator Title') {
         catalogId: 'shopify-variant:gid://shopify/ProductVariant/55396000563491',
         expectedRevisionDigest: null, base,
         draft: { title, category: null, condition: null, conditionDescription: null,
-            description: null, images: null, fulfillmentPolicyId: null, paymentPolicyId: null,
+            description: null, images: null, itemSpecifics: null,
+            fulfillmentPolicyId: null, paymentPolicyId: null,
             returnPolicyId: null, merchantLocation: null },
     };
 }
@@ -157,6 +158,13 @@ describe('local listing draft service', () => {
         expect(parseSaveListingDraftRequest({ ...valid, draft: { ...valid.draft,
                 images: JSON.stringify(['https://cdn.shopify.com/a.jpg?v=1&width=800']) } }).draft.images)
             .toBe('["https://cdn.shopify.com/a.jpg?v=1&width=800"]');
+        expect(parseSaveListingDraftRequest({ ...valid, draft: { ...valid.draft,
+                itemSpecifics: '{"Type":["Lens"],"Brand":["Canon"]}' } }).draft.itemSpecifics)
+            .toBe('{"Brand":["Canon"],"Type":["Lens"]}');
+        expect(() => parseSaveListingDraftRequest({ ...valid, draft: { ...valid.draft,
+                itemSpecifics: '{"Brand":[]}' } })).toThrow();
+        expect(() => parseSaveListingDraftRequest({ ...valid, draft: { ...valid.draft,
+                itemSpecifics: JSON.stringify({ Brand: ['x'.repeat(66)] }) } })).toThrow();
     });
     it('inherits observed eBay values and treats divergent explicit Shopify value as override', () => {
         const basis = LISTING_DRAFT_SERVICE_TESTING.eligibleBasis(workspace());
@@ -206,6 +214,7 @@ describe('local listing draft service', () => {
             databasePath: () => db, writerInstanceReady: () => true,
             now: () => new Date('2026-08-13T22:02:00.000Z'), uuid: () => 'fixed-uuid' });
         const opened = await service.get(first.catalog.id, true);
+        expect(opened.sections.content.itemSpecifics.editable).toBe(true);
         current = second;
         const semanticBase = { sourceDigest: opened.base.sourceDigest, ebayDigest: opened.base.ebayDigest };
         const created = await service.save(parseSaveListingDraftRequest(body(semanticBase)), 'shopify-user:1');

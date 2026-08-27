@@ -207,7 +207,7 @@ It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot
         sort_order: 1,
         answer: `Publishing from the Shopify app remains unavailable: **Save draft** is local-only and never contacts eBay. An operator can publish one clean not-listed SKU through the isolated Railway listing-lifecycle ceremony after the Marketplace Connect single-writer gate and ProductPipeline ownership are recorded.
 
-The operator first saves and reviews an exact draft revision, then runs a read-only preflight. For Used Camera Gear's branded description, preflight, dispatch, and any later reconcile must all include \`--description-template ucg-branded-v1\`; the rendered HTML is bound into the approved manifest digest and verified against eBay's raw HTML after publishing. Each dispatch requires the exact catalog row, SKU, revision digest, preflight manifest digest, and ceremony-state database path. Nothing runs automatically on deploy, and unsupported templates or changed targets fail closed. See \`docs/LISTING_LIFECYCLE_DISPATCH.md\` for the operator commands and recovery rules.`,
+The operator first saves and reviews an exact draft revision, including canonical item-specifics JSON required by the selected eBay category, then runs a read-only preflight. For Used Camera Gear's branded description, preflight, dispatch, and any later reconcile must all include \`--description-template ucg-branded-v1\`; the rendered HTML is bound into the approved manifest digest and verified against eBay's raw HTML after publishing. Each dispatch requires the exact catalog row, SKU, revision digest, preflight manifest digest, and ceremony-state database path. Nothing runs automatically on deploy, and unsupported templates or changed targets fail closed. See \`docs/LISTING_LIFECYCLE_DISPATCH.md\` for the operator commands and recovery rules.`,
     },
     {
         question: 'How do I use the branded template when creating an eBay listing?',
@@ -220,7 +220,7 @@ The operator first saves and reviews an exact draft revision, then runs a read-o
 3. Include the same template flag in the separately approved dispatch with that exact manifest digest.
 4. If recovery verification is needed, include the same flag on \`reconcile --action create\`.
 
-The rendered HTML is deterministic, is sent identically in the inventory-item and offer payloads, and is verified against eBay's fresh raw HTML. Omitting or changing the flag derives a different desired state and cannot authorize the templated intent. Unsupported versions, changed targets, missing raw HTML, or altered markup fail closed.`,
+The rendered HTML is deterministic and is sent intact as the offer listing description. eBay's Inventory product description has a smaller 4,000-character limit, so it receives the exact approved pre-template description instead; ProductPipeline never truncates either value. The manifest binds both descriptions, reviewed item specifics, and the fixed GTC duration, and fresh eBay raw HTML must exactly match the full branded offer description. If a write response is lost or ambiguous, the attempt stays unresolved for later reconciliation even when eBay initially appears unchanged; it is never automatically retried. Omitting or changing the flag derives a different desired state and cannot authorize the templated intent. Unsupported versions, changed targets, missing raw HTML, or altered markup fail closed.`,
     },
     {
         question: 'How do I change the eBay category?',

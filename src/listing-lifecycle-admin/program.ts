@@ -63,6 +63,7 @@ import {
   createProductionDispatchTokenProvider,
   ListingCreateDispatchError,
   type ListingCreateDispatchAdapter,
+  type ListingCreateDispatchOutcomeClass,
 } from './create-dispatch-adapter.js';
 import {
   createInventoryWithdrawDispatchAdapter,
@@ -343,8 +344,10 @@ async function deriveEndTarget(
 function createManifestSummary(target: DerivedCreateTarget): Record<string, unknown> {
   const { manifest, manifestDigest } = target.derived;
   return {
+    manifestSchemaVersion: manifest.schemaVersion,
     manifestDigest,
     action: manifest.action,
+    descriptionPlacement: manifest.descriptionPlacement,
     revisionId: manifest.revisionId,
     revisionNumber: manifest.revisionNumber,
     revisionDigest: manifest.revisionDigest,
@@ -355,14 +358,17 @@ function createManifestSummary(target: DerivedCreateTarget): Record<string, unkn
       conditionId: manifest.proposed.conditionId,
       conditionEnum: manifest.proposed.conditionEnum,
       conditionDescription: preview(manifest.proposed.conditionDescription),
+      inventoryProductDescription: preview(manifest.proposed.inventoryProductDescription),
       description: preview(manifest.proposed.description),
       imageCount: manifest.proposed.images.length,
+      aspects: manifest.proposed.aspects,
       fulfillmentPolicyId: manifest.proposed.fulfillmentPolicyId,
       paymentPolicyId: manifest.proposed.paymentPolicyId,
       returnPolicyId: manifest.proposed.returnPolicyId,
       merchantLocationKey: manifest.proposed.merchantLocationKey,
       price: manifest.proposed.price,
       quantity: manifest.proposed.quantity,
+      listingDuration: manifest.proposed.listingDuration,
     },
     ...(target.descriptionTemplate === null
       ? {}
@@ -432,7 +438,7 @@ async function runLifecycleReconciliation(input: {
   classify: (workspace: ListingWorkspaceDto) => LifecycleOutcome;
   /**
    * `confirmed_missing` is a terminal claim. It may be recorded only when the
-   * provider itself reported the dispatch failed before any durable artifact
+   * the first provider PUT was definitely rejected before any durable artifact
    * could exist (immediate post-dispatch path) or when the operator
    * explicitly accepts absence after the observation window
    * (`reconcile --accept-absent`). An absent state without that authority
@@ -830,18 +836,35 @@ export function buildListingLifecycleAdminProgram(
 
           ceremony.markDispatching();
           let dispatchFailed = false;
+          let dispatchFailureStage:
+            | 'put_inventory_item'
+            | 'create_offer'
+            | 'publish_offer'
+            | null = null;
+          let dispatchFailureCode: ListingCreateDispatchError['code'] | null = null;
+          let dispatchFailureOutcomeClass: ListingCreateDispatchOutcomeClass | null = null;
           let offerId: string | null = null;
           let listingId: string | null = null;
           let externalCommerceWritesAttempted = 0;
           try {
+            dispatchFailureStage = 'put_inventory_item';
             externalCommerceWritesAttempted = 1;
             await adapter.putInventoryItem(sku, payloads.inventoryItemPayload);
+            dispatchFailureStage = 'create_offer';
             externalCommerceWritesAttempted = 2;
             offerId = await adapter.createOffer(payloads.offerPayload);
+            dispatchFailureStage = 'publish_offer';
             externalCommerceWritesAttempted = 3;
             listingId = await adapter.publishOffer(offerId);
-          } catch {
+            dispatchFailureStage = null;
+          } catch (error) {
             dispatchFailed = true;
+            dispatchFailureCode = error instanceof ListingCreateDispatchError
+              ? error.code
+              : 'CREATE_DISPATCH_WRITE_FAILED';
+            dispatchFailureOutcomeClass = error instanceof ListingCreateDispatchError
+              ? error.outcomeClass
+              : 'outcome_unknown';
           }
 
           const requiredAtUtc = clock();
@@ -875,16 +898,20 @@ export function buildListingLifecycleAdminProgram(
               expectedListingId: listingId,
               expectedDescriptionHtml: target.derived.manifest.proposed.description,
             }),
-            // Absence may auto-confirm only when the provider reported the
-            // dispatch failed AND no offer artifact was ever created — an
-            // unpublished offer means something durable exists remotely.
-            resolveAbsent: dispatchFailed && offerId === null,
+            // Absence may auto-confirm only for a definite first-PUT rejection.
+            // A lost/ambiguous response may hide a committed Inventory item,
+            // and any later-stage failure necessarily follows an earlier write.
+            resolveAbsent: dispatchFailed
+              && dispatchFailureStage === 'put_inventory_item'
+              && dispatchFailureOutcomeClass === 'definite_no_effect',
           });
           io.stdout(JSON.stringify({
             command: 'dispatch-create',
             status: reconciliation.resolution === 'resolved_existing'
               ? 'dispatched-and-reconciled'
-              : 'dispatched-unresolved',
+              : reconciliation.resolution === 'confirmed_missing'
+                ? 'dispatch-failed-confirmed-missing'
+                : 'dispatched-unresolved',
             jobId: ceremony.jobId,
             attemptId: ceremony.attemptId,
             intentKey: ceremony.intentKey,
@@ -895,6 +922,9 @@ export function buildListingLifecycleAdminProgram(
             offerId,
             listingId,
             providerDispatchReported: !dispatchFailed,
+            ...(dispatchFailed
+              ? { dispatchFailureStage, dispatchFailureCode, dispatchFailureOutcomeClass }
+              : {}),
             effect: reconciliation.effect,
             resolution: reconciliation.resolution,
             unresolvedCode: reconciliation.unresolvedCode,
