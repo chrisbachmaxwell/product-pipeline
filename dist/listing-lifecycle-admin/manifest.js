@@ -303,6 +303,65 @@ export function applyListingCreateDescriptionTemplate(input) {
         descriptionTemplateApplied: true,
     });
 }
+/** eBay leaf category ids are plain positive decimal integers. */
+const PREVALIDATION_CATEGORY_ID = /^[1-9][0-9]{0,9}$/;
+/** eBay business policy ids are plain positive decimal integers. */
+const PREVALIDATION_POLICY_ID = /^[1-9][0-9]{0,18}$/;
+/**
+ * eBay merchant location keys: at most 36 characters, no spaces or exotic
+ * characters (the draft store's safe-identifier charset, capped at eBay's
+ * documented 36-character maximum).
+ */
+const PREVALIDATION_MERCHANT_LOCATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,35}$/;
+/**
+ * Bounded local pre-publish validation (Brain L30/L34): before ANY provider
+ * write, prove with fixed codes the documented publish prerequisites that
+ * eBay's opaque post-hoc `25019` rejection will never name. Every check runs
+ * against local data only; each failure is its own fixed
+ * `CREATE_PREVALIDATION_*` code naming the field family, and no provider
+ * text, value, or URL is ever echoed. This runs at preflight and again at
+ * dispatch (on the final, template-applied manifest) — it is deliberately not
+ * part of recovery reconciliation, which must be able to reconcile a
+ * historical job regardless of newer validation rules (L32).
+ */
+export function prevalidateListingCreateManifest(manifest) {
+    const { proposed } = manifest;
+    if (!PREVALIDATION_CATEGORY_ID.test(proposed.categoryId)) {
+        deny('CREATE_PREVALIDATION_CATEGORY_ID', 'category');
+    }
+    if (CREATE_CONDITION_ENUM_BY_ID[proposed.conditionId] !== proposed.conditionEnum
+        || proposed.conditionEnum.length === 0) {
+        deny('CREATE_PREVALIDATION_CONDITION', 'condition');
+    }
+    if (!PREVALIDATION_POLICY_ID.test(proposed.fulfillmentPolicyId)) {
+        deny('CREATE_PREVALIDATION_POLICY_IDS', 'fulfillment_policy');
+    }
+    if (!PREVALIDATION_POLICY_ID.test(proposed.paymentPolicyId)) {
+        deny('CREATE_PREVALIDATION_POLICY_IDS', 'payment_policy');
+    }
+    if (!PREVALIDATION_POLICY_ID.test(proposed.returnPolicyId)) {
+        deny('CREATE_PREVALIDATION_POLICY_IDS', 'return_policy');
+    }
+    if (!PREVALIDATION_MERCHANT_LOCATION_KEY.test(proposed.merchantLocationKey)) {
+        deny('CREATE_PREVALIDATION_MERCHANT_LOCATION', 'merchant_location');
+    }
+    const aspectNames = Object.keys(proposed.aspects);
+    if (aspectNames.length === 0
+        || aspectNames.some((name) => proposed.aspects[name].length === 0)) {
+        deny('CREATE_PREVALIDATION_ASPECTS', 'item_specifics');
+    }
+    if (proposed.listingDuration !== 'GTC') {
+        deny('CREATE_PREVALIDATION_LISTING_DURATION');
+    }
+    if (proposed.inventoryProductDescription.length === 0
+        || proposed.inventoryProductDescription.length > MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH) {
+        deny('CREATE_PREVALIDATION_INVENTORY_DESCRIPTION', 'description');
+    }
+    if (proposed.description.length === 0
+        || proposed.description.length > MAX_OFFER_LISTING_DESCRIPTION_LENGTH) {
+        deny('CREATE_PREVALIDATION_LISTING_DESCRIPTION', 'description');
+    }
+}
 function identitiesMatch(left, right) {
     return left.shopifyProductGid === right.shopifyProductGid
         && left.shopifyVariantGid === right.shopifyVariantGid

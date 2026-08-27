@@ -6,8 +6,9 @@ not-listed Shopify item, Inventory/Offer model — the pattern proven by the
 CAN3570-U119 canary) or exactly one listing END (end an active listing,
 either management model), with a server-independent one-action, exact-target
 operator approval at execution time, durable idempotent dispatch through the
-migration-state store (schema v4), immediate post-action reconciliation, an
-observation window, and a defined recovery path.
+migration-state store (schema v5), immediate post-action reconciliation, an
+observation window, and a defined recovery path (including the
+`recover-create` residue-cleanup ceremony below).
 
 **Building this slice authorizes no dispatch.** Every actual dispatch is a
 separate operator decision executed through the ceremonies below. Price and
@@ -41,8 +42,9 @@ workspace row.
   listing-revise slice, minted from the existing eBay refresh grant
   (`sell.inventory` covers all inventory calls; the Trading call uses the IAF
   header); it is never persisted, logged, or returned.
-- The migration store (schema v4) enforces durably: production intents for
-  `create_ebay_listing` and `end_or_relist_ebay_listing`, Class-A
+- The migration store (schema v5) enforces durably: production intents for
+  `create_ebay_listing`, `end_or_relist_ebay_listing`, and the
+  recovery-cleanup `recover_create_ebay_listing`, Class-A
   paused-genesis ownership chains for `listingCreate` and `listingEndRelist`,
   a single-use exact-target approval expiring in at most 10 minutes, one job
   per intent, one dispatch attempt, and a resolution that must match a
@@ -57,9 +59,10 @@ workspace row.
 
 ## Prerequisites (once)
 
-1. A verified schema-v4 migration store for the exact production scope
+1. A verified schema-v5 migration store for the exact production scope
    (`migration-admin init`, or `migration-admin upgrade` for an existing
-   v1/v2 store, each with the exact `--confirm-scope` digest).
+   v1–v4 store, each with the exact `--confirm-scope` digest, after an
+   off-volume backup — see L13).
 2. The ownership chain for each lifecycle responsibility you will use:
 
    ```
@@ -238,11 +241,11 @@ workspace row.
   exists remotely — the output and every later `reconcile --action create`
   report it with that fixed code, name the `offerId`, and the job stays
   unresolved. `--accept-absent` never applies while the artifact exists: the
-  state is not absent. The operator decides in a **new ceremony** whether to
-  finish (publish) or withdraw the offer out of band; once the fresh capture
-  shows either the active listing (→ `reconcile` resolves the job as
-  `resolved_existing`) or a clean not-listed row (→ `reconcile
-  --accept-absent` records the terminal absence), the job terminates.
+  state is not absent. The reviewed cleanup path is the separately approved
+  `recover-create` ceremony below, which removes the residue and truthfully
+  resolves the job as `resolved_residue_removed`. (If the operator instead
+  finishes the publish out of band, a fresh `reconcile` observing the active
+  listing resolves the job as `resolved_existing` exactly as before.)
 - An ambiguous fresh capture (`CREATE_STATE_UNVERIFIED` /
   `END_STATE_UNVERIFIED`) records a critical exception and stays unresolved —
   investigate before any further action.
@@ -252,6 +255,97 @@ workspace row.
   first-class dispatch with its own approval.
 - **Break-glass**: stop running the CLI. No schedule, webhook, or server
   path can dispatch; with no operator invocation there are zero writes.
+
+## Recovering an unpublished create (`recover-create`)
+
+When a create dispatch stops at `CREATE_OFFER_UNPUBLISHED`, the residue (one
+unpublished offer plus one inventory item) is neither a listing nor absence
+(Brain L34). `recover-create` is the one-action, exact-target Production
+cleanup: it verifies EVERY identity against the durable store state of the
+original job, deletes exactly the recorded residue, verifies it gone, and
+truthfully resolves the original job/attempt terminally as
+`resolved_residue_removed` — never a fabricated `confirmed_missing`, never a
+replay, never a publish.
+
+**Prerequisites (once):** the migration store must be schema v5. Per L13,
+deploying this slice makes every ordinary store open fail closed until the
+operator upgrades: take an off-volume backup, then run `migration-admin
+verify` → `migration-admin upgrade --config … --applied-at … --confirm-scope
+<exact scope digest>` → `migration-admin verify` on the Production store.
+
+**Binding:** every flag is required and must exactly match the durable state
+of the ORIGINAL unresolved create job — the job id, attempt id, intent key,
+approval evidence digest (the create's manifest digest, L29), raw SKU, and
+the exact offer id whose `CREATE_OFFER_UNPUBLISHED` evidence the store
+recorded (the offer id is re-derived from the recorded reconciliation result
+digest, not trusted from input). Any mismatch is a fixed `RECOVER_*` denial
+before any provider call; a published offer denies as
+`RECOVER_OFFER_PUBLISHED` (a listing exists — this ceremony must refuse); a
+job no longer `reconciliation_required` denies as `RECOVER_STATE_MISMATCH`,
+which is also the idempotent denial after success.
+
+**Provider boundary:** the bounded recover adapter can reach exactly
+`GET/DELETE /sell/inventory/v1/offer/{offerId}` and
+`GET/DELETE /sell/inventory/v1/inventory_item/{sku}` on `api.ebay.com` —
+publish, create, and revise are structurally impossible. One invocation
+performs at most: GET offer (verify UNPUBLISHED + exact SKU) → store ceremony
+(new `recover_create_ebay_listing` intent bound to the outstanding source
+job, single-use approval, job reservation) → DELETE offer → GET offer
+(verify gone) → DELETE inventory item → GET inventory item (verify gone) →
+fresh workspace capture → two zero-write authoritative reconciliation runs
+with `effect_residue_removed` observations → terminal
+`resolved_residue_removed` resolutions for the recovery job and the original
+job.
+
+**Worked example — the 2026-08-27 G16 incident** (job
+`listing-create-job:ec897152-ad2c-43f9-8d8c-a6942503bfa1`, attempt
+`listing-create-attempt:214fc4fe-79c3-416e-ad16-9a2c81117285`, Draft 5
+manifest
+`sha256:567bacafad0421ff0545a70fe35b7a3104b38828704f4959342f8d81bc059dbc`,
+unpublished offer `247267392011`). The intent key is the `intentKey` printed
+by the original Draft 5 `dispatch-create` output; the catalog id and SKU are
+the test item's exact workspace row and raw SKU:
+
+```
+node dist/listing-lifecycle-admin/index.js recover-create \
+  --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite \
+  --confirm-scope <exact production scope key> \
+  --catalog-id <the test item's catalog row id> \
+  --sku <the test item's raw SKU> \
+  --job-id listing-create-job:ec897152-ad2c-43f9-8d8c-a6942503bfa1 \
+  --attempt-id listing-create-attempt:214fc4fe-79c3-416e-ad16-9a2c81117285 \
+  --intent-key <intentKey printed by the Draft 5 dispatch output> \
+  --evidence-digest sha256:567bacafad0421ff0545a70fe35b7a3104b38828704f4959342f8d81bc059dbc \
+  --offer-id 247267392011
+```
+
+Success prints `recovered-and-reconciled` with both
+`resolved_residue_removed` resolutions. Never redispatch the original create,
+never pass `--accept-absent` while the artifact exists, and never point the
+Sandbox recovery CLI at Production.
+
+**If the capture lags or a delete fails:**
+
+- Deletions succeeded but the fresh capture still shows residue
+  (`RECOVER_RESIDUE_STILL_PRESENT`) or was ambiguous: re-run later with
+  zero provider writes —
+
+  ```
+  node dist/listing-lifecycle-admin/index.js recover-reconcile \
+    <the exact same nine flags> \
+    --recovery-job-id <id printed by recover-create> \
+    --recovery-attempt-id <id printed by recover-create>
+  ```
+
+  It re-verifies the offer and inventory item gone with direct reads plus a
+  fresh capture before resolving; capture absence alone never terminalizes
+  (`RECOVER_REMOVAL_UNVERIFIED`).
+- A provider DELETE failed: the recovery job stays unresolved and its intent
+  can never replay (`RECOVER_INTENT_ALREADY_RECORDED`). The reviewed retry is
+  an explicitly chained ceremony (L29) — re-run `recover-create` with the
+  same nine flags plus `--prior-recovery-job-id`/`--prior-recovery-attempt-id`
+  naming the failed recovery job/attempt. A successful chained run also
+  truthfully closes the abandoned prior recovery job.
 
 ## What this slice does not do
 

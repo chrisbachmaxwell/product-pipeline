@@ -447,7 +447,7 @@ describe('schema v3 to v4 populated order-state upgrade', () => {
             databasePath,
             expectedScope: PRODUCTION_SCOPE,
             appliedAtUtc: '2026-08-25T18:00:00.000Z',
-        })).toEqual({ fromVersion: 3, toVersion: 4 });
+        })).toEqual({ fromVersion: 3, toVersion: 5 });
         expect(snapshotOrderSafetyState(databasePath)).toEqual(before);
         const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
         openStores.push(store);

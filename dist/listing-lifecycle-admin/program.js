@@ -24,7 +24,9 @@ import { openListingControlStoreReadOnly, sha256Digest, } from '../listing-contr
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import { deriveListingDraftBasis, ListingDraftServiceError, } from '../server/listing-draft-service.js';
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
-import { applyListingCreateDescriptionTemplate, assertFreshBasisMatchesCreateRevision, buildListingCreatePayloads, classifyCreateOutcome, classifyEndOutcome, deriveListingCreateManifest, deriveListingEndManifest, ListingLifecycleManifestError, } from './manifest.js';
+import { applyListingCreateDescriptionTemplate, assertFreshBasisMatchesCreateRevision, buildListingCreatePayloads, classifyCreateOutcome, classifyEndOutcome, deriveListingCreateManifest, deriveListingEndManifest, ListingLifecycleManifestError, prevalidateListingCreateManifest, } from './manifest.js';
+import { deriveListingCreateRecoveryManifest, ListingCreateRecoveryError, requireRecordedUnpublishedOffer, } from './recovery.js';
+import { createListingRecoverDispatchAdapter, ListingRecoverDispatchError, } from './recover-dispatch-adapter.js';
 import { LISTING_DESCRIPTION_TEMPLATE_VERSION } from '../server/listing-description-template.js';
 import { createListingCreateDispatchAdapter, createProductionDispatchTokenProvider, ListingCreateDispatchError, } from './create-dispatch-adapter.js';
 import { createInventoryWithdrawDispatchAdapter, createTradingEndDispatchAdapter, ListingEndDispatchError, } from './end-dispatch-adapter.js';
@@ -66,6 +68,10 @@ function safeError(error) {
     if (error instanceof ListingCreateDispatchError)
         return { code: error.code };
     if (error instanceof ListingEndDispatchError)
+        return { code: error.code };
+    if (error instanceof ListingCreateRecoveryError)
+        return { code: error.code };
+    if (error instanceof ListingRecoverDispatchError)
         return { code: error.code };
     if (error instanceof ListingDraftServiceError)
         return { code: error.code };
@@ -207,6 +213,11 @@ async function deriveCreateTarget(dependencies, options) {
             applied: templated.descriptionTemplateApplied,
         };
     }
+    // Bounded local pre-publish validation (L30): every documented publish
+    // prerequisite that can be proven locally is proven here — at preflight and
+    // again at dispatch, on the final template-applied manifest — before any
+    // provider write is reachable.
+    prevalidateListingCreateManifest(derived.manifest);
     return { basis, revision, derived, descriptionTemplate };
 }
 async function deriveEndTarget(dependencies, options) {
@@ -358,6 +369,149 @@ async function runLifecycleReconciliation(input) {
     });
     return { effect, resolution, runId, unresolvedCode: null, outcome };
 }
+const RECOVERY_ARTIFACT_EXCEPTION_CODE = 'CREATE_OFFER_UNPUBLISHED';
+/**
+ * Verify EVERY identity the recovery ceremony binds against the durable
+ * store state of the ORIGINAL create job — job, attempt, intent, approval
+ * evidence (L29), exact SKU target, exact Shopify variant source, and the
+ * recorded unpublished-offer artifact evidence naming exactly the given
+ * offer id. Any mismatch is a fixed-code denial before any store write or
+ * provider call.
+ */
+function verifyRecoverySourceBindings(input) {
+    const { store } = input;
+    const job = store.getJobStatus(input.jobId);
+    if (!job || job.responsibility !== 'listingCreate')
+        deny('RECOVER_STATE_MISMATCH');
+    const boundJob = job;
+    if (boundJob.state !== 'reconciliation_required')
+        deny('RECOVER_STATE_MISMATCH');
+    if (boundJob.intentKey !== input.intentKey)
+        deny('RECOVER_INTENT_BINDING_MISMATCH');
+    // L29: the caller-supplied evidence digest must exactly match the job's
+    // fixed approval evidence before any reconciliation evidence can append.
+    if (boundJob.approvalEvidenceDigest !== input.evidenceDigest) {
+        deny('RECOVER_EVIDENCE_MISMATCH');
+    }
+    const attempt = store.getAttemptStatus(input.jobId, input.attemptId);
+    if (!attempt)
+        deny('RECOVER_ATTEMPT_MISMATCH');
+    const boundAttempt = attempt;
+    if (boundAttempt.intentKey !== input.intentKey)
+        deny('RECOVER_INTENT_BINDING_MISMATCH');
+    if (boundAttempt.resolution !== null)
+        deny('RECOVER_ATTEMPT_ALREADY_RESOLVED');
+    const intent = store.getIntent(input.intentKey);
+    if (!intent)
+        deny('RECOVER_INTENT_BINDING_MISMATCH');
+    const boundIntent = intent;
+    if (boundIntent.action !== 'create_ebay_listing'
+        || boundIntent.responsibility !== 'listingCreate') {
+        deny('RECOVER_INTENT_BINDING_MISMATCH');
+    }
+    if (boundIntent.desired_state_digest !== input.evidenceDigest) {
+        deny('RECOVER_EVIDENCE_MISMATCH');
+    }
+    const targetIdentityKey = deriveExternalIdentityKey(createTargetIdentity(input.sku));
+    if (boundIntent.approval_target_identity_key !== targetIdentityKey
+        || boundJob.targetIdentityKey !== targetIdentityKey) {
+        deny('RECOVER_EXACT_TARGET_MISMATCH');
+    }
+    const sourceIdentityKey = deriveExternalIdentityKey(sourceVariantIdentity(input.variantGid));
+    if (boundIntent.source_identity_key !== sourceIdentityKey) {
+        deny('RECOVER_EXACT_TARGET_MISMATCH');
+    }
+    // The store must have authoritatively recorded the unpublished-offer
+    // artifact for exactly this offer id (the offer id lives only inside the
+    // recorded result digest, so it is re-derived and compared exactly).
+    requireRecordedUnpublishedOffer({
+        sourceApprovalEvidenceDigest: input.evidenceDigest,
+        offerId: input.offerId,
+        evidenceRuns: store.listArtifactEvidence({
+            intentKey: input.intentKey,
+            exceptionCode: RECOVERY_ARTIFACT_EXCEPTION_CODE,
+        }),
+    });
+    return { sourceIdentityKey, targetIdentityKey };
+}
+function recoveryUnresolvedCode(kind) {
+    if (kind === 'artifact')
+        return 'RECOVER_RESIDUE_STILL_PRESENT';
+    if (kind === 'observed')
+        return 'RECOVER_UNEXPECTED_ACTIVE_LISTING';
+    return 'RECOVER_STATE_UNVERIFIED';
+}
+/**
+ * Record one authoritative zero-write reconciliation run over the shared
+ * fresh capture for ONE intent (the recovery intent or the original create
+ * intent) and, when the capture proves the residue removed, resolve that
+ * intent's job/attempt terminally and truthfully as
+ * `resolved_residue_removed`. A non-absent capture appends a critical
+ * exception and leaves the job unresolved.
+ */
+function recordResidueRemovalReconciliation(input) {
+    const completedAtUtc = input.clock();
+    const runId = `listing-create-recovery-run:${input.uuid()}`;
+    const resultDigest = sha256Digest({
+        schemaVersion: 1,
+        responsibility: 'listingCreate',
+        recoveryDigest: input.recoveryDigest,
+        intentRole: input.intentRole,
+        kind: input.outcome.kind,
+        observedListingId: input.outcome.observedListingId,
+        observedOfferId: input.outcome.observedOfferId,
+        observedDigest: input.outcome.observedDigest,
+    });
+    const removed = input.outcome.kind === 'absent' && input.providerRemovalVerified;
+    const unresolvedCode = removed
+        ? null
+        : input.outcome.kind === 'absent'
+            ? 'RECOVER_REMOVAL_UNVERIFIED'
+            : recoveryUnresolvedCode(input.outcome.kind);
+    input.store.recordReconciliationRun({
+        runId,
+        responsibility: 'listingCreate',
+        targetIdentityKey: input.targetIdentityKey,
+        mode: 'production_canary',
+        status: 'passed',
+        sourceSnapshotDigest: input.recoveryDigest,
+        targetSnapshotDigest: input.outcome.observedDigest,
+        resultDigest,
+        authoritative: removed,
+        authorityEvidenceDigest: input.recoveryDigest,
+        externalWritesObserved: 0,
+        startedAtUtc: input.startedAtUtc,
+        completedAtUtc,
+        exceptions: unresolvedCode === null ? [] : [{
+                exceptionId: `listing-create-recovery-exception:${input.uuid()}`,
+                code: unresolvedCode,
+                severity: 'critical',
+                subjectIdentityKey: input.targetIdentityKey,
+                detailsDigest: resultDigest,
+            }],
+        targetEffectObservation: removed ? {
+            observationId: `listing-create-recovery-observation:${input.uuid()}`,
+            intentKey: input.intentKey,
+            responsibility: 'listingCreate',
+            effect: 'effect_residue_removed',
+            observedDigest: input.outcome.observedDigest,
+        } : null,
+        audit: { eventId: `reconciliation:${runId}`, occurredAtUtc: completedAtUtc },
+    });
+    if (!removed)
+        return { runId, resolved: false, unresolvedCode };
+    const reconciledAtUtc = input.clock();
+    input.store.resolveUnknownAttempt({
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        resolution: 'resolved_residue_removed',
+        reconciliationRunId: runId,
+        reconciliationResultDigest: resultDigest,
+        reconciledAtUtc,
+        audit: { eventId: `resolution:${runId}`, occurredAtUtc: reconciledAtUtc },
+    });
+    return { runId, resolved: true, unresolvedCode: null };
+}
 /**
  * The shared migration-store ceremony up to (but not across) the dispatch
  * boundary: ownership gate, identity registration, idempotent intent,
@@ -450,6 +604,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
         getAccessToken: createProductionDispatchTokenProvider(),
     }));
     const createWithdrawAdapter = dependencies.createWithdrawAdapter ?? (() => createInventoryWithdrawDispatchAdapter({
+        getAccessToken: createProductionDispatchTokenProvider(),
+    }));
+    const createRecoverAdapter = dependencies.createRecoverAdapter ?? (() => createListingRecoverDispatchAdapter({
         getAccessToken: createProductionDispatchTokenProvider(),
     }));
     const now = dependencies.now ?? (() => new Date());
@@ -1011,6 +1168,451 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     externalWritesPerformed: 0,
                 }));
                 if (reconciliation.resolution === null)
+                    io.setExitCode(1);
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({ command, status: 'denied', ...safeError(error) }));
+            io.setExitCode(1);
+        }
+    });
+    const withRecoverBindingOptions = (command) => command
+        .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
+        .requiredOption('--confirm-scope <sha256>', 'Exact migration scope key confirming the one store')
+        .requiredOption('--catalog-id <id>', 'Exact listings catalog row id of the one target')
+        .requiredOption('--sku <sku>', 'Exact raw SKU the unresolved create job targeted')
+        .requiredOption('--job-id <id>', 'Exact unresolved create job id')
+        .requiredOption('--attempt-id <id>', 'Exact unresolved create attempt id')
+        .requiredOption('--intent-key <sha256>', 'Exact create intent key bound to the job')
+        .requiredOption('--evidence-digest <sha256>', "Exact approval evidence digest of the job (the create's manifest digest)")
+        .requiredOption('--offer-id <id>', 'Exact unpublished eBay offer id recorded by reconciliation')
+        .option('--prior-recovery-job-id <id>', 'Chained retry only: the exact unresolved prior recovery job id (L29)')
+        .option('--prior-recovery-attempt-id <id>', 'Chained retry only: the exact unresolved prior recovery attempt id');
+    /**
+     * L29 chained retry: a prior recovery ceremony whose provider phase failed
+     * must exist, be unresolved, target the identical inventory SKU, and be a
+     * genuine recovery intent before a new chained recovery digest may bind it.
+     */
+    const verifyPriorRecoveryBinding = (store, priorJobId, priorAttemptId, targetIdentityKey) => {
+        const priorJob = store.getJobStatus(priorJobId);
+        if (!priorJob
+            || priorJob.responsibility !== 'listingCreate'
+            || priorJob.state !== 'reconciliation_required'
+            || priorJob.targetIdentityKey !== targetIdentityKey) {
+            deny('RECOVER_PRIOR_RECOVERY_MISMATCH');
+        }
+        const boundPriorJob = priorJob;
+        const priorIntent = store.getIntent(boundPriorJob.intentKey);
+        if (!priorIntent
+            || priorIntent.action
+                !== 'recover_create_ebay_listing') {
+            deny('RECOVER_PRIOR_RECOVERY_MISMATCH');
+        }
+        const priorAttempt = store.getAttemptStatus(priorJobId, priorAttemptId);
+        if (!priorAttempt
+            || priorAttempt.resolution !== null) {
+            deny('RECOVER_PRIOR_RECOVERY_MISMATCH');
+        }
+        return { intentKey: boundPriorJob.intentKey };
+    };
+    withRecoverBindingOptions(program
+        .command('recover-create')
+        .description('One-action exact-target recovery cleanup for ONE unresolved create job whose dispatch '
+        + 'left an unpublished offer: verify the exact recorded residue, delete the offer and '
+        + 'inventory item, verify both gone, then truthfully resolve the original job as '
+        + 'resolved_residue_removed. Never publishes, replays, or touches any other listing.'))
+        .action(async (options) => {
+        const command = 'recover-create';
+        try {
+            if (options.confirmScope !== deriveScopeKey(MIGRATION_SCOPE)) {
+                deny('RECOVER_SCOPE_CONFIRMATION_MISMATCH');
+            }
+            // Deterministic recovery manifest: shape-validates every identity and
+            // binds the source job/attempt/intent/evidence/SKU/offer (L29).
+            const recovery = deriveListingCreateRecoveryManifest({
+                sourceJobId: options.jobId,
+                sourceAttemptId: options.attemptId,
+                sourceIntentKey: options.intentKey,
+                sourceApprovalEvidenceDigest: options.evidenceDigest,
+                sku: options.sku,
+                offerId: options.offerId,
+                priorRecoveryJobId: options.priorRecoveryJobId ?? null,
+                priorRecoveryAttemptId: options.priorRecoveryAttemptId ?? null,
+            });
+            const workspaceDto = await readWorkspace(options.catalogId);
+            const shopify = workspaceDto.catalog.shopify;
+            if (!shopify || shopify.sku !== options.sku)
+                deny('RECOVER_EXACT_TARGET_MISMATCH');
+            const variantGid = shopify.variantId;
+            // The current fresh capture must still show exactly the recorded
+            // residue: the unpublished artifact bound to exactly this offer id.
+            const residueOutcome = classifyCreateOutcome({
+                workspace: workspaceDto,
+                sku: options.sku,
+                expectedListingId: null,
+                expectedDescriptionHtml: null,
+            });
+            if (residueOutcome.kind !== 'artifact'
+                || residueOutcome.observedOfferId !== options.offerId) {
+                deny('RECOVER_RESIDUE_STATE_MISMATCH');
+            }
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                const bindings = verifyRecoverySourceBindings({
+                    store,
+                    jobId: options.jobId,
+                    attemptId: options.attemptId,
+                    intentKey: options.intentKey,
+                    evidenceDigest: options.evidenceDigest,
+                    sku: options.sku,
+                    offerId: options.offerId,
+                    variantGid,
+                });
+                let priorBinding = null;
+                if (options.priorRecoveryJobId !== undefined
+                    || options.priorRecoveryAttemptId !== undefined) {
+                    priorBinding = verifyPriorRecoveryBinding(store, options.priorRecoveryJobId ?? '', options.priorRecoveryAttemptId ?? '', bindings.targetIdentityKey);
+                }
+                // Provider verification read BEFORE any store write: the offer must
+                // exist, bind the exact SKU, and be UNPUBLISHED. A published offer
+                // means a listing exists and this ceremony must refuse.
+                const adapter = createRecoverAdapter();
+                const offerState = await adapter.getOffer(options.offerId);
+                if (!offerState.found)
+                    deny('RECOVER_OFFER_NOT_FOUND');
+                if (offerState.sku !== options.sku)
+                    deny('RECOVER_OFFER_SKU_MISMATCH');
+                if (offerState.status === 'PUBLISHED')
+                    deny('RECOVER_OFFER_PUBLISHED');
+                if (offerState.status !== 'UNPUBLISHED')
+                    deny('RECOVER_OFFER_STATE_MISMATCH');
+                const ceremony = reserveLifecycleJob({
+                    store,
+                    responsibility: 'listingCreate',
+                    action: 'recover_create_ebay_listing',
+                    sourceIdentity: sourceVariantIdentity(variantGid),
+                    targetIdentity: createTargetIdentity(options.sku),
+                    manifestDigest: recovery.manifestDigest,
+                    replayDeniedCode: 'RECOVER_INTENT_ALREADY_RECORDED',
+                    ownershipMissingCode: 'RECOVER_OWNERSHIP_NOT_ESTABLISHED',
+                    jobPrefix: 'listing-create-recovery',
+                    clock,
+                    uuid,
+                });
+                ceremony.markDispatching();
+                let dispatchFailed = false;
+                let dispatchFailureStage = null;
+                let dispatchFailureCode = null;
+                let externalCommerceWritesAttempted = 0;
+                try {
+                    dispatchFailureStage = 'delete_offer';
+                    externalCommerceWritesAttempted = 1;
+                    await adapter.deleteOffer(options.offerId);
+                    dispatchFailureStage = 'verify_offer_absent';
+                    const offerAfter = await adapter.getOffer(options.offerId);
+                    if (offerAfter.found) {
+                        throw new ListingLifecycleAdminError('RECOVER_OFFER_STILL_PRESENT');
+                    }
+                    dispatchFailureStage = 'delete_inventory_item';
+                    externalCommerceWritesAttempted = 2;
+                    await adapter.deleteInventoryItem(options.sku);
+                    dispatchFailureStage = 'verify_inventory_absent';
+                    const itemAfter = await adapter.getInventoryItem(options.sku);
+                    if (itemAfter.found) {
+                        throw new ListingLifecycleAdminError('RECOVER_INVENTORY_ITEM_STILL_PRESENT');
+                    }
+                    dispatchFailureStage = null;
+                }
+                catch (error) {
+                    dispatchFailed = true;
+                    dispatchFailureCode = safeError(error).code;
+                }
+                const requiredAtUtc = clock();
+                store.requirePostDispatchReconciliation({
+                    jobId: ceremony.jobId,
+                    attemptId: ceremony.attemptId,
+                    occurredAtUtc: requiredAtUtc,
+                    evidenceDigest: recovery.manifestDigest,
+                    audit: {
+                        eventId: `job:${ceremony.jobId}:reconciliation-required`,
+                        occurredAtUtc: requiredAtUtc,
+                    },
+                });
+                const startedAtUtc = clock();
+                const freshDto = await readWorkspace(options.catalogId);
+                const outcome = classifyCreateOutcome({
+                    workspace: freshDto,
+                    sku: options.sku,
+                    expectedListingId: null,
+                    expectedDescriptionHtml: null,
+                });
+                const recoveryResult = recordResidueRemovalReconciliation({
+                    store,
+                    intentKey: ceremony.intentKey,
+                    intentRole: 'recovery',
+                    targetIdentityKey: ceremony.targetIdentityKey,
+                    jobId: ceremony.jobId,
+                    attemptId: ceremony.attemptId,
+                    recoveryDigest: recovery.manifestDigest,
+                    outcome,
+                    providerRemovalVerified: !dispatchFailed,
+                    startedAtUtc,
+                    clock,
+                    uuid,
+                });
+                let sourceResult = null;
+                if (recoveryResult.resolved) {
+                    sourceResult = recordResidueRemovalReconciliation({
+                        store,
+                        intentKey: options.intentKey,
+                        intentRole: 'source_create',
+                        targetIdentityKey: ceremony.targetIdentityKey,
+                        jobId: options.jobId,
+                        attemptId: options.attemptId,
+                        recoveryDigest: recovery.manifestDigest,
+                        outcome,
+                        providerRemovalVerified: !dispatchFailed,
+                        startedAtUtc,
+                        clock,
+                        uuid,
+                    });
+                    // A chained retry also truthfully closes the abandoned prior
+                    // recovery job: the residue its intent targeted is now verifiably
+                    // removed.
+                    if (priorBinding !== null) {
+                        recordResidueRemovalReconciliation({
+                            store,
+                            intentKey: priorBinding.intentKey,
+                            intentRole: 'prior_recovery',
+                            targetIdentityKey: ceremony.targetIdentityKey,
+                            jobId: options.priorRecoveryJobId,
+                            attemptId: options.priorRecoveryAttemptId,
+                            recoveryDigest: recovery.manifestDigest,
+                            outcome,
+                            providerRemovalVerified: !dispatchFailed,
+                            startedAtUtc,
+                            clock,
+                            uuid,
+                        });
+                    }
+                }
+                const fullyResolved = recoveryResult.resolved
+                    && sourceResult !== null && sourceResult.resolved;
+                io.stdout(JSON.stringify({
+                    command,
+                    status: fullyResolved ? 'recovered-and-reconciled' : 'recovery-unresolved',
+                    recoveryJobId: ceremony.jobId,
+                    recoveryAttemptId: ceremony.attemptId,
+                    recoveryIntentKey: ceremony.intentKey,
+                    recoveryDigest: recovery.manifestDigest,
+                    sourceJobId: options.jobId,
+                    sourceAttemptId: options.attemptId,
+                    offerId: options.offerId,
+                    providerDispatchReported: !dispatchFailed,
+                    ...(dispatchFailed ? { dispatchFailureStage, dispatchFailureCode } : {}),
+                    effect: recoveryResult.resolved ? 'residue_removed' : outcome.kind,
+                    recoveryResolution: recoveryResult.resolved ? 'resolved_residue_removed' : null,
+                    sourceResolution: sourceResult?.resolved === true ? 'resolved_residue_removed' : null,
+                    unresolvedCode: recoveryResult.unresolvedCode,
+                    recoveryReconciliationRunId: recoveryResult.runId,
+                    ...(sourceResult === null
+                        ? {}
+                        : { sourceReconciliationRunId: sourceResult.runId }),
+                    externalCommerceWritesAttempted,
+                }));
+                if (!fullyResolved)
+                    io.setExitCode(1);
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({ command, status: 'denied', ...safeError(error) }));
+            io.setExitCode(1);
+        }
+    });
+    withRecoverBindingOptions(program
+        .command('recover-reconcile')
+        .description('Zero-provider-write re-verification for an outstanding recover-create ceremony: '
+        + 'when a fresh capture proves the residue removed, truthfully resolve the recovery '
+        + 'and original create jobs as resolved_residue_removed.'))
+        .requiredOption('--recovery-job-id <id>', 'Exact recovery job id printed by recover-create')
+        .requiredOption('--recovery-attempt-id <id>', 'Exact recovery attempt id printed by recover-create')
+        .action(async (options) => {
+        const command = 'recover-reconcile';
+        try {
+            if (options.confirmScope !== deriveScopeKey(MIGRATION_SCOPE)) {
+                deny('RECOVER_SCOPE_CONFIRMATION_MISMATCH');
+            }
+            const recovery = deriveListingCreateRecoveryManifest({
+                sourceJobId: options.jobId,
+                sourceAttemptId: options.attemptId,
+                sourceIntentKey: options.intentKey,
+                sourceApprovalEvidenceDigest: options.evidenceDigest,
+                sku: options.sku,
+                offerId: options.offerId,
+                priorRecoveryJobId: options.priorRecoveryJobId ?? null,
+                priorRecoveryAttemptId: options.priorRecoveryAttemptId ?? null,
+            });
+            const workspaceDto = await readWorkspace(options.catalogId);
+            const shopify = workspaceDto.catalog.shopify;
+            if (!shopify || shopify.sku !== options.sku)
+                deny('RECOVER_EXACT_TARGET_MISMATCH');
+            const variantGid = shopify.variantId;
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                const bindings = verifyRecoverySourceBindings({
+                    store,
+                    jobId: options.jobId,
+                    attemptId: options.attemptId,
+                    intentKey: options.intentKey,
+                    evidenceDigest: options.evidenceDigest,
+                    sku: options.sku,
+                    offerId: options.offerId,
+                    variantGid,
+                });
+                const recoveryIntentKey = deriveIdempotencyKey({
+                    scopeKey: deriveScopeKey(MIGRATION_SCOPE),
+                    action: 'recover_create_ebay_listing',
+                    sourceIdentityKey: bindings.sourceIdentityKey,
+                    targetIdentityKey: bindings.targetIdentityKey,
+                    desiredStateDigest: recovery.manifestDigest,
+                });
+                if (store.getIntent(recoveryIntentKey) === null) {
+                    deny('RECOVER_INTENT_BINDING_MISMATCH');
+                }
+                const recoveryJob = store.getJobStatus(options.recoveryJobId);
+                if (!recoveryJob
+                    || recoveryJob.responsibility !== 'listingCreate'
+                    || recoveryJob.intentKey !== recoveryIntentKey
+                    || recoveryJob.approvalEvidenceDigest !== recovery.manifestDigest) {
+                    deny('RECOVER_INTENT_BINDING_MISMATCH');
+                }
+                const boundRecoveryJob = recoveryJob;
+                const recoveryAttempt = store.getAttemptStatus(options.recoveryJobId, options.recoveryAttemptId);
+                if (!recoveryAttempt
+                    || recoveryAttempt.intentKey
+                        !== recoveryIntentKey) {
+                    deny('RECOVER_ATTEMPT_MISMATCH');
+                }
+                const recoveryAlreadyResolved = boundRecoveryJob.state === 'resolved_residue_removed';
+                if (!recoveryAlreadyResolved
+                    && boundRecoveryJob.state !== 'reconciliation_required') {
+                    deny('RECOVER_STATE_MISMATCH');
+                }
+                // Direct zero-write provider reads: propagation delay must not
+                // fabricate a removal, so resolution requires the offer AND the
+                // inventory item proven gone at the provider, plus the fresh
+                // capture's clean not-listed state.
+                const adapter = createRecoverAdapter();
+                const offerState = await adapter.getOffer(options.offerId);
+                const itemState = await adapter.getInventoryItem(options.sku);
+                const providerRemovalVerified = !offerState.found && !itemState.found;
+                const startedAtUtc = clock();
+                const freshDto = await readWorkspace(options.catalogId);
+                const outcome = classifyCreateOutcome({
+                    workspace: freshDto,
+                    sku: options.sku,
+                    expectedListingId: null,
+                    expectedDescriptionHtml: null,
+                });
+                let recoveryResult = null;
+                if (!recoveryAlreadyResolved) {
+                    recoveryResult = recordResidueRemovalReconciliation({
+                        store,
+                        intentKey: recoveryIntentKey,
+                        intentRole: 'recovery',
+                        targetIdentityKey: bindings.targetIdentityKey,
+                        jobId: options.recoveryJobId,
+                        attemptId: options.recoveryAttemptId,
+                        recoveryDigest: recovery.manifestDigest,
+                        outcome,
+                        providerRemovalVerified,
+                        startedAtUtc,
+                        clock,
+                        uuid,
+                    });
+                }
+                let sourceResult = null;
+                if (outcome.kind === 'absent' && providerRemovalVerified) {
+                    sourceResult = recordResidueRemovalReconciliation({
+                        store,
+                        intentKey: options.intentKey,
+                        intentRole: 'source_create',
+                        targetIdentityKey: bindings.targetIdentityKey,
+                        jobId: options.jobId,
+                        attemptId: options.attemptId,
+                        recoveryDigest: recovery.manifestDigest,
+                        outcome,
+                        providerRemovalVerified,
+                        startedAtUtc,
+                        clock,
+                        uuid,
+                    });
+                    // A chained ceremony's prior abandoned recovery job (still
+                    // unresolved) closes truthfully too once removal is proven.
+                    if (options.priorRecoveryJobId !== undefined
+                        && options.priorRecoveryAttemptId !== undefined) {
+                        const priorJob = store.getJobStatus(options.priorRecoveryJobId);
+                        if (priorJob
+                            && priorJob.responsibility === 'listingCreate'
+                            && priorJob.state === 'reconciliation_required'
+                            && priorJob.targetIdentityKey === bindings.targetIdentityKey) {
+                            recordResidueRemovalReconciliation({
+                                store,
+                                intentKey: priorJob.intentKey,
+                                intentRole: 'prior_recovery',
+                                targetIdentityKey: bindings.targetIdentityKey,
+                                jobId: options.priorRecoveryJobId,
+                                attemptId: options.priorRecoveryAttemptId,
+                                recoveryDigest: recovery.manifestDigest,
+                                outcome,
+                                providerRemovalVerified,
+                                startedAtUtc,
+                                clock,
+                                uuid,
+                            });
+                        }
+                    }
+                }
+                const fullyResolved = sourceResult !== null && sourceResult.resolved
+                    && (recoveryAlreadyResolved
+                        || (recoveryResult !== null && recoveryResult.resolved));
+                io.stdout(JSON.stringify({
+                    command,
+                    status: fullyResolved ? 'recovered-and-reconciled' : 'recovery-unresolved',
+                    recoveryJobId: options.recoveryJobId,
+                    recoveryAttemptId: options.recoveryAttemptId,
+                    recoveryIntentKey,
+                    recoveryDigest: recovery.manifestDigest,
+                    sourceJobId: options.jobId,
+                    sourceAttemptId: options.attemptId,
+                    offerId: options.offerId,
+                    effect: outcome.kind === 'absent' && providerRemovalVerified
+                        ? 'residue_removed'
+                        : outcome.kind,
+                    recoveryResolution: recoveryAlreadyResolved || recoveryResult?.resolved === true
+                        ? 'resolved_residue_removed'
+                        : null,
+                    sourceResolution: sourceResult?.resolved === true ? 'resolved_residue_removed' : null,
+                    unresolvedCode: outcome.kind === 'absent'
+                        ? (providerRemovalVerified ? null : 'RECOVER_REMOVAL_UNVERIFIED')
+                        : recoveryUnresolvedCode(outcome.kind),
+                    externalWritesPerformed: 0,
+                }));
+                if (!fullyResolved)
                     io.setExitCode(1);
             }
             finally {

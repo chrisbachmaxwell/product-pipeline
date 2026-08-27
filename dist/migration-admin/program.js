@@ -126,6 +126,7 @@ function safeProjection(projection) {
                 reconciliationRequired: projection.monitoring.currentJobs.reconciliationRequired,
                 resolvedExisting: projection.monitoring.currentJobs.resolvedExisting,
                 confirmedMissing: projection.monitoring.currentJobs.confirmedMissing,
+                resolvedResidueRemoved: projection.monitoring.currentJobs.resolvedResidueRemoved,
             },
             previousUtcDay: {
                 dateUtc: projection.monitoring.previousUtcDay.dateUtc,

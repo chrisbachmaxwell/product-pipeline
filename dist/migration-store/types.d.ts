@@ -2,9 +2,41 @@ import { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, type MigrationResp
 export { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES };
 export type Responsibility = MigrationResponsibility;
 export type { MigrationResponsibility, WriterResponsibility };
+/**
+ * The exact schema-v1 intent-action vocabulary. This list (and the matching
+ * responsibility map below) is interpolated into the immutable schema-v1
+ * migration SQL, whose checksum every existing store carries; it must NEVER
+ * change. Actions added by later schema versions live in
+ * RECOVERY_INTENT_ACTIONS and join the runtime vocabulary through
+ * ALL_INTENT_ACTIONS.
+ */
 export declare const INTENT_ACTIONS: readonly ["create_ebay_listing", "revise_ebay_listing", "end_or_relist_ebay_listing", "update_mapping", "update_ebay_price", "update_ebay_inventory", "import_shopify_order", "sync_fulfillment", "sync_feedback"];
-export type IntentAction = (typeof INTENT_ACTIONS)[number];
+/**
+ * Actions admitted by the schema-v5 rebuilt idempotency_intents table only.
+ * `recover_create_ebay_listing` is the one-shot residue-removal recovery for
+ * an unresolved production listing-create job (Brain L34): it deletes the
+ * exact unpublished offer and inventory item that job left behind, never
+ * creates or publishes anything, and is structurally bound to an outstanding
+ * unresolved create job on the identical target.
+ */
+export declare const RECOVERY_INTENT_ACTIONS: readonly ["recover_create_ebay_listing"];
+export declare const ALL_INTENT_ACTIONS: readonly ["create_ebay_listing", "revise_ebay_listing", "end_or_relist_ebay_listing", "update_mapping", "update_ebay_price", "update_ebay_inventory", "import_shopify_order", "sync_fulfillment", "sync_feedback", "recover_create_ebay_listing"];
+export type IntentAction = (typeof ALL_INTENT_ACTIONS)[number];
+/** Schema-v1 map — interpolated into immutable v1 SQL; never change it. */
 export declare const INTENT_ACTION_RESPONSIBILITY: {
+    readonly create_ebay_listing: "listingCreate";
+    readonly revise_ebay_listing: "listingRevise";
+    readonly end_or_relist_ebay_listing: "listingEndRelist";
+    readonly update_mapping: "mapping";
+    readonly update_ebay_price: "price";
+    readonly update_ebay_inventory: "inventory";
+    readonly import_shopify_order: "orderImport";
+    readonly sync_fulfillment: "fulfillment";
+    readonly sync_feedback: "feedback";
+};
+/** The complete runtime action→responsibility map (schema v5). */
+export declare const ALL_INTENT_ACTION_RESPONSIBILITY: {
+    readonly recover_create_ebay_listing: "listingCreate";
     readonly create_ebay_listing: "listingCreate";
     readonly revise_ebay_listing: "listingRevise";
     readonly end_or_relist_ebay_listing: "listingEndRelist";
@@ -58,7 +90,15 @@ export type ExternalIdentity = {
     createdAtUtc: string;
 };
 export type AttemptOutcome = 'outcome_unknown';
-export type AttemptResolution = 'resolved_existing' | 'confirmed_missing';
+/**
+ * `resolved_residue_removed` (schema v5) is the truthful terminal outcome for
+ * a listingCreate job whose dispatch left a durable remote artifact (an
+ * unpublished offer / inventory item) that a separately approved recovery
+ * ceremony later verifiably removed. It is neither `resolved_existing` (no
+ * listing exists) nor `confirmed_missing` (the artifact was not absent from
+ * the start).
+ */
+export type AttemptResolution = 'resolved_existing' | 'confirmed_missing' | 'resolved_residue_removed';
 export type ReconciliationMode = 'shadow' | 'test_lane' | 'production_canary';
 export type ReconciliationStatus = 'passed' | 'blocked' | 'failed';
 export type ReconciliationSeverity = 'info' | 'warning' | 'critical';
@@ -83,7 +123,13 @@ export type ListingReviseObservationInput = {
  */
 export declare const TARGET_EFFECT_RESPONSIBILITIES: readonly ["listingCreate", "listingEndRelist", "price", "inventory", "fulfillment"];
 export type TargetEffectResponsibility = (typeof TARGET_EFFECT_RESPONSIBILITIES)[number];
-export type TargetEffect = 'effect_observed' | 'effect_absent';
+/**
+ * `effect_residue_removed` (schema v5) records that the exact remote residue
+ * a listingCreate dispatch left behind has been verified removed. The schema
+ * restricts it to listingCreate observations, and it pairs exclusively with
+ * the `resolved_residue_removed` attempt resolution.
+ */
+export type TargetEffect = 'effect_observed' | 'effect_absent' | 'effect_residue_removed';
 export type TargetEffectObservationInput = {
     observationId: string;
     intentKey: string;
@@ -104,6 +150,7 @@ export type OperationalStoreMonitoring = Readonly<{
         reconciliationRequired: number;
         resolvedExisting: number;
         confirmedMissing: number;
+        resolvedResidueRemoved: number;
     }>;
     previousUtcDay: Readonly<{
         dateUtc: string;

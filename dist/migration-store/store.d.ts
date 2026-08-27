@@ -146,8 +146,26 @@ declare class MigrationStoreImpl {
         attemptId: string;
         intentKey: Digest;
         outcome: 'outcome_unknown';
-        resolution: 'resolved_existing' | 'confirmed_missing' | null;
+        resolution: AttemptResolution | null;
     } | null;
+    /**
+     * Read-only durable artifact evidence for one exact intent: the passed
+     * authoritative zero-write reconciliation runs whose recorded exception
+     * carries the given fixed code against the intent's approval target. A
+     * recovery CLI recomputes each run's result digest from its own exact
+     * inputs plus the returned target snapshot digest, so the artifact identity
+     * (for a create: the exact unpublished offer id) is verified against the
+     * store's recorded evidence rather than trusted from operator input.
+     * Returns digests and run ids only — no identities, values, or payloads.
+     */
+    listArtifactEvidence(input: {
+        intentKey: string;
+        exceptionCode: string;
+    }): Array<{
+        runId: string;
+        resultDigest: Digest;
+        targetSnapshotDigest: Digest;
+    }>;
     issueActionApproval(input: {
         approvalToken: string;
         intentKey: string;
@@ -191,7 +209,7 @@ declare class MigrationStoreImpl {
     resolveUnknownAttempt(input: {
         jobId: string;
         attemptId: string;
-        resolution: Extract<AttemptResolution, 'resolved_existing' | 'confirmed_missing'>;
+        resolution: AttemptResolution;
         reconciliationRunId: string;
         reconciliationResultDigest: string;
         shopifyOrderIdentityKey?: string | null;

@@ -34,7 +34,7 @@ export type UnavailableMigrationStateProjection = {
 };
 export type MigrationStateApiProjection = {
     status: 'verified';
-    schemaVersion: 4;
+    schemaVersion: 5;
     scope: {
         scopeKey: string;
         shopifyStoreDomain: string;

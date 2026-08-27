@@ -52,7 +52,7 @@ export type UnavailableMigrationStateProjection = {
 export type MigrationStateApiProjection =
   | {
       status: 'verified';
-      schemaVersion: 4;
+      schemaVersion: 5;
       scope: {
         scopeKey: string;
         shopifyStoreDomain: string;
@@ -263,7 +263,7 @@ function normalizeVerifiedProjection(
       && orderImportOwnership.singleWriterVerified === true
     );
   const contractValid =
-    projection.schemaVersion === 4 &&
+    projection.schemaVersion === 5 &&
     scope !== null &&
     DIGEST.test(scope.scopeKey) &&
     SHOPIFY_DOMAIN.test(scope.shopifyStoreDomain) &&
@@ -329,7 +329,7 @@ function normalizeVerifiedProjection(
 
   return {
     status: 'verified',
-    schemaVersion: 4,
+    schemaVersion: 5,
     scope: {
       scopeKey: scope.scopeKey,
       shopifyStoreDomain: scope.shopifyStoreDomain,
