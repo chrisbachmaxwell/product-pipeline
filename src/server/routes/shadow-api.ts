@@ -19,7 +19,9 @@ import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
 import { editorFacetSweep, type EditorFacetSweep } from '../listing-editor-facet-sweep.js';
 import {
   EbayCategorySearchError,
+  browseEbayCategories,
   searchEbayCategories,
+  type EbayCategoryBrowse,
   type EbayCategorySearch,
 } from '../ebay-category-search.js';
 import {
@@ -43,6 +45,7 @@ export const SHADOW_API_GET_PATHS = Object.freeze([
   '/api/listing-workspace',
   '/api/listing-editor-metadata',
   '/api/ebay-category-search',
+  '/api/ebay-category-browse',
   '/api/listing-description-preview',
   '/api/listings',
   '/api/capabilities',
@@ -127,6 +130,7 @@ export function createShadowApiRouter(
      */
     facetSweep?: EditorFacetSweep;
     searchEbayCategories?: EbayCategorySearch;
+    browseEbayCategories?: EbayCategoryBrowse;
     readMonitoring?: () => Promise<OperationalMonitoringProjection>;
   }> = {
     getSnapshot: getLiveListingCatalogSnapshot,
@@ -134,6 +138,7 @@ export function createShadowApiRouter(
     readWorkspace: readListingWorkspace,
     facetSweep: editorFacetSweep,
     searchEbayCategories,
+    browseEbayCategories,
   },
 ): Router {
 const router = Router();
@@ -141,6 +146,7 @@ const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
 const getListingDraft = dependencies.getListingDraft
   ?? ((catalogId: string) => createListingDraftService().get(catalogId));
 const categorySearch = dependencies.searchEbayCategories ?? searchEbayCategories;
+const categoryBrowse = dependencies.browseEbayCategories ?? browseEbayCategories;
 const monitoringReader = dependencies.readMonitoring ?? readOperationalMonitoring;
 
 function boundedInteger(
@@ -254,6 +260,26 @@ router.get('/api/ebay-category-search', async (req: Request, res: Response) => {
       return;
     }
     res.status(503).json({ error: 'Category search is unavailable' });
+  }
+});
+
+/**
+ * GET /api/ebay-category-browse — one level of the eBay category tree for the
+ * drill-down picker. `parent` absent or empty returns the top level; any
+ * other value must be an exact category id. Read-only: the whole tree is
+ * fetched once and served from the in-process index, so a level costs no
+ * provider call. Errors redact to the same fixed codes as the search route.
+ */
+router.get('/api/ebay-category-browse', async (req: Request, res: Response) => {
+  try {
+    const parent = typeof req.query.parent === 'string' ? req.query.parent : '';
+    res.json(await categoryBrowse(parent));
+  } catch (error) {
+    if (error instanceof EbayCategorySearchError && error.code === 'INVALID_QUERY') {
+      res.status(400).json({ error: 'Invalid category id' });
+      return;
+    }
+    res.status(503).json({ error: 'Category browse is unavailable' });
   }
 });
 
@@ -388,6 +414,14 @@ router.get('/api/capabilities', (_req: Request, res: Response) => {
         id: 'ebay-category-search',
         method: 'GET',
         endpoint: '/api/ebay-category-search',
+        remoteRead: true,
+        externalWrite: false,
+        evidenceKind: 'live_read',
+      },
+      {
+        id: 'ebay-category-browse',
+        method: 'GET',
+        endpoint: '/api/ebay-category-browse',
         remoteRead: true,
         externalWrite: false,
         evidenceKind: 'live_read',

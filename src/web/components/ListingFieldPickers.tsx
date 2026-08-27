@@ -16,6 +16,16 @@ import {
   useEbayCategorySearch,
   type EbayCategorySearchResult,
 } from '../hooks/useEbayCategorySearch';
+import { useEbayCategoryBrowse } from '../hooks/useEbayCategoryBrowse';
+
+/**
+ * Listbox option values are a single string, so drill-down navigation is
+ * encoded with sentinels that a real numeric category id can never collide
+ * with.
+ */
+const BROWSE_INTO_PREFIX = '__browse-into__';
+const BROWSE_TO_PREFIX = '__browse-to__';
+const BROWSE_ROOT = '__browse-root__';
 
 /**
  * Presentation-only pickers for the local draft editor. Each one edits a
@@ -153,6 +163,14 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
       || categoryName(category).toLowerCase().includes(query));
   }, [categories, trimmed]);
 
+  // Top-down browsing. `get_category_suggestions` can only answer "what
+  // matches this text", so browsing is a separate read; it is only enabled
+  // while the merchant is NOT searching, which is exactly when the popover
+  // would otherwise show nothing but the sparse "Your categories" list.
+  const [browseParent, setBrowseParent] = useState<string | null>(null);
+  const browseEnabled = !degraded && !disabled && !searching;
+  const browse = useEbayCategoryBrowse(browseParent, browseEnabled);
+
   const shownMatches = matches.slice(0, 50);
   // Hide live results that already appear in the "Your categories" section.
   const searchResults = useMemo(() => {
@@ -175,10 +193,30 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
   };
 
   const selectCategory = (id: string) => {
+    // Navigation sentinels move the browse cursor and never commit a value.
+    if (id === BROWSE_ROOT) {
+      setBrowseParent(null);
+      return;
+    }
+    if (id.startsWith(BROWSE_INTO_PREFIX)) {
+      setBrowseParent(id.slice(BROWSE_INTO_PREFIX.length));
+      return;
+    }
+    if (id.startsWith(BROWSE_TO_PREFIX)) {
+      setBrowseParent(id.slice(BROWSE_TO_PREFIX.length) || null);
+      return;
+    }
     onChange(id);
     const fromSearch = search.results.find((result) => result.id === id);
     if (fromSearch && !categories.some((category) => category.id === id)) {
       const picked = searchResultLabel(fromSearch);
+      setPickedLabels((current) => ({ ...current, [id]: picked }));
+      setText(picked);
+      return;
+    }
+    const fromBrowse = browse.level.children.find((child) => child.id === id);
+    if (fromBrowse && !categories.some((category) => category.id === id)) {
+      const picked = `${fromBrowse.name} (${id})`;
       setPickedLabels((current) => ({ ...current, [id]: picked }));
       setText(picked);
       return;
@@ -217,7 +255,17 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
       ? 'No matching category — pick from the list or enter a numeric category ID (digits only)'
       : undefined);
 
-  const hasPopoverContent = shownMatches.length > 0 || showSearchSection || bothSectionsEmpty;
+  const showBrowseSection = browseEnabled
+    && (browse.level.children.length > 0 || browse.isLoading || browse.isError);
+  const crumbs = browse.level.breadcrumb;
+  const backValue = crumbs.length <= 1
+    ? BROWSE_ROOT
+    : `${BROWSE_TO_PREFIX}${crumbs[crumbs.length - 2]!.id}`;
+
+  const hasPopoverContent = shownMatches.length > 0
+    || showSearchSection
+    || showBrowseSection
+    || bothSectionsEmpty;
 
   return (
     <Combobox
@@ -277,6 +325,59 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
                   <Text as="span" variant="bodySm" tone="subdued">
                     eBay category search is unavailable right now — your categories
                     and numeric ID entry still work.
+                  </Text>
+                </Listbox.Option>
+              )}
+            </Listbox.Section>
+          )}
+          {showBrowseSection && (
+            <Listbox.Section
+              divider={shownMatches.length > 0 || showSearchSection}
+              title={(
+                <Listbox.Header>
+                  {crumbs.length === 0
+                    ? 'Browse all categories'
+                    : `Browse: ${crumbs.map((crumb) => crumb.name).join(' > ')}`}
+                </Listbox.Header>
+              )}
+            >
+              {crumbs.length > 0 && (
+                <Listbox.Option
+                  value={backValue}
+                  accessibilityLabel="Back to the previous category level"
+                >
+                  <Text as="span" tone="subdued">← Back</Text>
+                </Listbox.Option>
+              )}
+              {browse.level.children.map((child) => (
+                <Listbox.Option
+                  key={child.id}
+                  value={child.leaf ? child.id : `${BROWSE_INTO_PREFIX}${child.id}`}
+                  selected={child.id === value}
+                  accessibilityLabel={child.leaf
+                    ? `${child.name} (${child.id}), selectable category`
+                    : `${child.name}, ${child.childCount} subcategories`}
+                >
+                  <BlockStack gap="050">
+                    <Text as="span">
+                      {child.leaf ? `${child.name} (${child.id})` : child.name}
+                    </Text>
+                    {!child.leaf && (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {`${child.childCount} subcategor${child.childCount === 1 ? 'y' : 'ies'} →`}
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Listbox.Option>
+              ))}
+              {browse.isLoading && (
+                <Listbox.Loading accessibilityLabel="Loading eBay categories" />
+              )}
+              {browse.isError && !browse.isLoading && (
+                <Listbox.Option value="__ebay-category-browse-error__" disabled>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    Category browsing is unavailable right now — search and numeric
+                    ID entry still work.
                   </Text>
                 </Listbox.Option>
               )}

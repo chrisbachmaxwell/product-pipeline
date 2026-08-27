@@ -6,7 +6,7 @@ import { getLiveListingCatalogSnapshot, hasUnresolvedLiveListingRefreshFailure, 
 import { ListingWorkspaceReaderError, readListingWorkspace, } from '../listing-workspace-reader.js';
 import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
 import { editorFacetSweep } from '../listing-editor-facet-sweep.js';
-import { EbayCategorySearchError, searchEbayCategories, } from '../ebay-category-search.js';
+import { EbayCategorySearchError, browseEbayCategories, searchEbayCategories, } from '../ebay-category-search.js';
 import { createListingDraftService, ListingDraftServiceError, } from '../listing-draft-service.js';
 import { LISTING_DESCRIPTION_TEMPLATE_VERSION, renderListingDescription, } from '../listing-description-template.js';
 import { readOperationalMonitoring, } from '../operational-monitoring.js';
@@ -17,6 +17,7 @@ export const SHADOW_API_GET_PATHS = Object.freeze([
     '/api/listing-workspace',
     '/api/listing-editor-metadata',
     '/api/ebay-category-search',
+    '/api/ebay-category-browse',
     '/api/listing-description-preview',
     '/api/listings',
     '/api/capabilities',
@@ -80,12 +81,14 @@ export function createShadowApiRouter(dependencies = {
     readWorkspace: readListingWorkspace,
     facetSweep: editorFacetSweep,
     searchEbayCategories,
+    browseEbayCategories,
 }) {
     const router = Router();
     const workspaceReader = dependencies.readWorkspace ?? readListingWorkspace;
     const getListingDraft = dependencies.getListingDraft
         ?? ((catalogId) => createListingDraftService().get(catalogId));
     const categorySearch = dependencies.searchEbayCategories ?? searchEbayCategories;
+    const categoryBrowse = dependencies.browseEbayCategories ?? browseEbayCategories;
     const monitoringReader = dependencies.readMonitoring ?? readOperationalMonitoring;
     function boundedInteger(value, fallback, minimum, maximum) {
         const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
@@ -188,6 +191,26 @@ export function createShadowApiRouter(dependencies = {
                 return;
             }
             res.status(503).json({ error: 'Category search is unavailable' });
+        }
+    });
+    /**
+     * GET /api/ebay-category-browse — one level of the eBay category tree for the
+     * drill-down picker. `parent` absent or empty returns the top level; any
+     * other value must be an exact category id. Read-only: the whole tree is
+     * fetched once and served from the in-process index, so a level costs no
+     * provider call. Errors redact to the same fixed codes as the search route.
+     */
+    router.get('/api/ebay-category-browse', async (req, res) => {
+        try {
+            const parent = typeof req.query.parent === 'string' ? req.query.parent : '';
+            res.json(await categoryBrowse(parent));
+        }
+        catch (error) {
+            if (error instanceof EbayCategorySearchError && error.code === 'INVALID_QUERY') {
+                res.status(400).json({ error: 'Invalid category id' });
+                return;
+            }
+            res.status(503).json({ error: 'Category browse is unavailable' });
         }
     });
     /**
@@ -309,6 +332,14 @@ export function createShadowApiRouter(dependencies = {
                     id: 'ebay-category-search',
                     method: 'GET',
                     endpoint: '/api/ebay-category-search',
+                    remoteRead: true,
+                    externalWrite: false,
+                    evidenceKind: 'live_read',
+                },
+                {
+                    id: 'ebay-category-browse',
+                    method: 'GET',
+                    endpoint: '/api/ebay-category-browse',
                     remoteRead: true,
                     externalWrite: false,
                     evidenceKind: 'live_read',

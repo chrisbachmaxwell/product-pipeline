@@ -2,10 +2,10 @@ import { Router } from 'express';
 import { type LiveListingCatalogRouteDependencies } from '../live-listing-catalog-source.js';
 import { type ListingWorkspaceDto } from '../listing-workspace-reader.js';
 import { type EditorFacetSweep } from '../listing-editor-facet-sweep.js';
-import { type EbayCategorySearch } from '../ebay-category-search.js';
+import { type EbayCategoryBrowse, type EbayCategorySearch } from '../ebay-category-search.js';
 import { type ListingDraftDto } from '../listing-draft-service.js';
 import { type OperationalMonitoringProjection } from '../operational-monitoring.js';
-export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/monitoring/digest", "/api/authoritative-listings", "/api/listing-workspace", "/api/listing-editor-metadata", "/api/ebay-category-search", "/api/listing-description-preview", "/api/listings", "/api/capabilities"];
+export declare const SHADOW_API_GET_PATHS: readonly ["/api/migration/status", "/api/monitoring/digest", "/api/authoritative-listings", "/api/listing-workspace", "/api/listing-editor-metadata", "/api/ebay-category-search", "/api/ebay-category-browse", "/api/listing-description-preview", "/api/listings", "/api/capabilities"];
 export type LocalListingProjection = {
     id: number | string;
     shopify_product_id: string;
@@ -38,6 +38,7 @@ export declare function createShadowApiRouter(dependencies?: LiveListingCatalogR
      */
     facetSweep?: EditorFacetSweep;
     searchEbayCategories?: EbayCategorySearch;
+    browseEbayCategories?: EbayCategoryBrowse;
     readMonitoring?: () => Promise<OperationalMonitoringProjection>;
 }>): Router;
 declare const _default: Router;
