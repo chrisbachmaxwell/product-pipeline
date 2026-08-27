@@ -116,6 +116,45 @@ function offerPendingWorkspace(offerId: string = OFFER_ID): ListingWorkspaceDto 
   };
 }
 
+/**
+ * The residue exactly as the REAL live catalog emits it (L40).
+ *
+ * `buildLiveListingCatalogSnapshot` fills `ebay.offerId` only from
+ * `matchingOffer`, which it computes solely inside the `activeListing ? ... :
+ * null` branch. An unpublished offer has no active listing, so a genuine
+ * created-offer-but-publish-failed capture always reports `offerId: null`
+ * while still counting the artifacts. This mirrors the Production row
+ * observed for the 2026-08-27 G16 incident: activeMatchCount 0,
+ * inventoryItemCount 1, offerCount 1, unpublishedArtifactCount 2, offerId
+ * null, attentionReasons ['ebay_unpublished_artifact'].
+ *
+ * `offerPendingWorkspace` above keeps a populated offer id to exercise the
+ * contradiction path, but that combination is NOT one the real capture can
+ * produce — so success paths must be proven against THIS fixture.
+ */
+function productionResidueWorkspace(): ListingWorkspaceDto {
+  const base = notListedWorkspace();
+  return {
+    ...base,
+    catalog: {
+      ...base.catalog,
+      ebay: {
+        ...base.catalog.ebay,
+        state: 'attention', listingId: null, offerId: null,
+        activeMatchCount: 0, inventoryItemCount: 1,
+        offerCount: 1, unpublishedArtifactCount: 2,
+      },
+      lifecycleStatus: 'attention',
+      audit: {
+        ...base.catalog.audit,
+        unresolvedCount: 1,
+        attentionReasons: ['ebay_unpublished_artifact'],
+      },
+    },
+    mapping: { ...base.mapping, state: 'attention' },
+  };
+}
+
 /** Only the inventory item remains (offer deleted, item delete pending). */
 function inventoryOnlyWorkspace(): ListingWorkspaceDto {
   const base = notListedWorkspace();
@@ -447,6 +486,55 @@ describe('listing-lifecycle operator CLI — recover-create', () => {
     await world.run(recoverArguments(world, source));
     expect(lastJson(world.stderr)).toMatchObject({ code: 'RECOVER_STATE_MISMATCH' });
     expect(world.recoverCalls).toHaveLength(callsBefore);
+  });
+
+  // L40 regression. Before the fix the residue guard required the fresh
+  // capture's `observedOfferId` to equal the named offer id, but the real
+  // catalog cannot surface an offer id for an unpublished offer, so the
+  // ceremony denied RECOVER_RESIDUE_STATE_MISMATCH against every genuine
+  // Production residue and could never succeed.
+  it('recovers residue the live catalog reports with no observable offer id (L40)', async () => {
+    const world = await createWorld();
+    const source = await dispatchUnpublishedCreate(world);
+    world.setWorkspace(productionResidueWorkspace());
+
+    await world.run(recoverArguments(world, source));
+    expect(lastJson(world.stdout)).toMatchObject({
+      command: 'recover-create',
+      status: 'recovered-and-reconciled',
+      sourceJobId: source.jobId,
+      offerId: OFFER_ID,
+      effect: 'residue_removed',
+      recoveryResolution: 'resolved_residue_removed',
+      sourceResolution: 'resolved_residue_removed',
+      unresolvedCode: null,
+    });
+    expect(world.recoverCalls).toEqual([
+      `getOffer:${OFFER_ID}`,
+      `deleteOffer:${OFFER_ID}`,
+      `getOffer:${OFFER_ID}`,
+      `deleteInventoryItem:${SKU}`,
+      `getInventoryItem:${SKU}`,
+    ]);
+  });
+
+  // The safety property the removed comparison was assumed to provide is
+  // still enforced, one layer down: with the offer id unobservable in the
+  // capture, the store's recorded artifact evidence is the sole authority for
+  // which offer may be deleted, so a foreign offer id is refused before any
+  // provider call and the source job stays untouched.
+  it('still refuses a foreign offer id when the capture omits one (L40)', async () => {
+    const world = await createWorld();
+    const source = await dispatchUnpublishedCreate(world);
+    world.setWorkspace(productionResidueWorkspace());
+
+    await world.run(recoverArguments(world, source, { offerId: '999999999999' }));
+    expect(lastJson(world.stderr)).toMatchObject({
+      status: 'denied',
+      code: 'RECOVER_ARTIFACT_EVIDENCE_MISMATCH',
+    });
+    expect(world.recoverCalls).toHaveLength(0);
+    expect(jobState(world, source.jobId)).toBe('reconciliation_required');
   });
 
   it('denies every identity mismatch with a fixed code before any provider call', async () => {

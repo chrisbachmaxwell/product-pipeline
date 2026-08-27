@@ -1247,8 +1247,27 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
             if (!shopify || shopify.sku !== options.sku)
                 deny('RECOVER_EXACT_TARGET_MISMATCH');
             const variantGid = shopify.variantId;
-            // The current fresh capture must still show exactly the recorded
-            // residue: the unpublished artifact bound to exactly this offer id.
+            // The current fresh capture must still show the recorded residue: an
+            // unpublished artifact bound to exactly this SKU.
+            //
+            // L40: the capture proves residue PRESENCE only, never the offer id.
+            // `catalog.ebay.offerId` is populated solely from `matchingOffer`,
+            // which `live-listing-catalog.ts` computes only when an active
+            // published listing exists; an unpublished offer has no active
+            // listing, so that field is structurally `null` for exactly the
+            // residue class this ceremony exists to remove. Requiring it to equal
+            // the operator's offer id made the ceremony unsatisfiable in
+            // Production. The offer id's authority is unchanged and stays doubly
+            // enforced below: `verifyRecoverySourceBindings` →
+            // `requireRecordedUnpublishedOffer` re-derives the store's recorded
+            // `CREATE_OFFER_UNPUBLISHED` result digest and denies unless it binds
+            // exactly this offer id, and the bounded adapter's `getOffer` then
+            // confirms the offer exists, carries the exact SKU, and is
+            // UNPUBLISHED before any DELETE. A published offer classifies as
+            // `observed` (that branch requires a non-null offer id), so it still
+            // denies here, with `RECOVER_OFFER_PUBLISHED` as the backstop. When
+            // the capture DOES surface an offer id, a contradiction with the
+            // named offer remains a hard denial.
             const residueOutcome = classifyCreateOutcome({
                 workspace: workspaceDto,
                 sku: options.sku,
@@ -1256,7 +1275,8 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                 expectedDescriptionHtml: null,
             });
             if (residueOutcome.kind !== 'artifact'
-                || residueOutcome.observedOfferId !== options.offerId) {
+                || (residueOutcome.observedOfferId !== null
+                    && residueOutcome.observedOfferId !== options.offerId)) {
                 deny('RECOVER_RESIDUE_STATE_MISMATCH');
             }
             const store = openMigration({
