@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, } from '../safety/responsibilities.js';
-import { INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY } from './types.js';
-export const CURRENT_SCHEMA_VERSION = 4;
+import { ALL_INTENT_ACTIONS, ALL_INTENT_ACTION_RESPONSIBILITY, INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY, } from './types.js';
+export const CURRENT_SCHEMA_VERSION = 5;
 export const MIGRATION_STORE_APPLICATION_ID = 0x50504d53;
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ');
 const migrationResponsibilitiesSql = sqlList(MIGRATION_RESPONSIBILITIES);
 const writerResponsibilitiesSql = sqlList(WRITER_RESPONSIBILITIES);
 const intentActionsSql = sqlList(INTENT_ACTIONS);
+const allIntentActionsSql = sqlList(ALL_INTENT_ACTIONS);
 const digestCheck = (column) => `(length(${column}) = 71 AND substr(${column}, 1, 7) = 'sha256:' `
     + `AND substr(${column}, 8) NOT GLOB '*[^0-9a-f]*')`;
 const immutableTables = [
@@ -164,6 +165,9 @@ BEGIN
 END;
 `;
 const actionResponsibilitySql = Object.entries(INTENT_ACTION_RESPONSIBILITY)
+    .map(([action, responsibility]) => `(NEW.action = '${action}' AND NEW.responsibility = '${responsibility}')`)
+    .join('\n    OR ');
+const allActionResponsibilitySql = Object.entries(ALL_INTENT_ACTION_RESPONSIBILITY)
     .map(([action, responsibility]) => `(NEW.action = '${action}' AND NEW.responsibility = '${responsibility}')`)
     .join('\n    OR ');
 const migrationOneSql = `
@@ -1948,6 +1952,557 @@ BEGIN
   SELECT RAISE(ABORT, 'attempt resolution lacks authoritative target reconciliation');
 END;
 `;
+/**
+ * Schema version 5 — the reviewed G16 listing-create recovery-cleanup slice
+ * (Brain L34).
+ *
+ * A production listing-create dispatch can leave a durable unpublished
+ * offer/inventory-item residue (Inventory PUT + Offer POST succeeded, Publish
+ * Offer rejected). That state is neither `resolved_existing` nor
+ * `confirmed_missing`, and v4 could not truthfully terminate it. Version 5
+ * widens exactly one narrow capability and nothing else:
+ *
+ * - `recover_create_ebay_listing` joins the intent-action vocabulary and the
+ *   production action allowlist. It maps to `listingCreate`, requires an
+ *   outstanding unresolved (`reconciliation_required`) create job on the
+ *   identical approval target, and its provider effect is deletion of the
+ *   exact residue — never a create, publish, or replay.
+ * - `job_events.to_state`, `attempt_resolutions.resolution`, and
+ *   `target_effect_observations.effect` each gain one truthful value
+ *   (`resolved_residue_removed` / `effect_residue_removed`), paired
+ *   exclusively with each other and restricted to `listingCreate`.
+ *
+ * Every other production denial — mapping/feedback writers, watermark
+ * clamps, ownership staging, approval TTL/single-use, append-only history —
+ * is recreated byte-for-byte identical in intent and unchanged in effect.
+ *
+ * Mechanics: the four constrained tables are rebuilt in place using the
+ * SQLite rename-out / create / copy / drop pattern. The migration runner
+ * disables foreign-key enforcement for the duration of the migration
+ * transaction (and proves `foreign_key_check` clean before committing), and
+ * `legacy_alter_table` is enabled around the renames so that no other table,
+ * trigger, or index text is rewritten — child tables keep their original
+ * `REFERENCES idempotency_intents(...)` clauses, which resolve to the rebuilt
+ * table.
+ */
+const migrationFiveSql = `
+PRAGMA legacy_alter_table = ON;
+
+-- idempotency_intents: admit exactly one new action string.
+DROP TRIGGER idempotency_intents_deny_update;
+DROP TRIGGER idempotency_intents_deny_delete;
+DROP TRIGGER idempotency_intents_deny_conflicting_insert;
+DROP TRIGGER idempotency_intents_enforce_action_responsibility;
+DROP TRIGGER idempotency_intents_deny_production;
+DROP TRIGGER idempotency_intents_enforce_identity_scope;
+DROP TRIGGER idempotency_intents_enforce_order_eligibility;
+DROP TRIGGER fulfillment_intents_require_exact_order_link;
+DROP INDEX unique_order_import_intent;
+DROP INDEX fulfillment_intents_one_per_order_pair;
+ALTER TABLE idempotency_intents RENAME TO idempotency_intents_v4;
+CREATE TABLE idempotency_intents (
+  intent_key TEXT PRIMARY KEY CHECK (${digestCheck('intent_key')}),
+  scope_key TEXT NOT NULL REFERENCES integration_scope(scope_key),
+  responsibility TEXT NOT NULL CHECK (responsibility IN (${writerResponsibilitiesSql})),
+  action TEXT NOT NULL CHECK (action IN (${allIntentActionsSql})),
+  source_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  target_identity_key TEXT REFERENCES external_identities(identity_key),
+  approval_target_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  desired_state_digest TEXT NOT NULL CHECK (${digestCheck('desired_state_digest')}),
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL,
+  CHECK (
+    (action = 'import_shopify_order' AND target_identity_key IS NULL
+      AND approval_target_identity_key = source_identity_key)
+    OR
+    (action != 'import_shopify_order' AND target_identity_key IS NOT NULL
+      AND approval_target_identity_key = target_identity_key)
+  ),
+  UNIQUE (intent_key, scope_key, responsibility, approval_target_identity_key)
+);
+INSERT INTO idempotency_intents SELECT * FROM idempotency_intents_v4;
+DROP TABLE idempotency_intents_v4;
+
+-- job_events: admit the one new truthful terminal state.
+DROP TRIGGER job_events_deny_update;
+DROP TRIGGER job_events_deny_delete;
+DROP TRIGGER job_events_deny_conflicting_insert;
+DROP TRIGGER job_events_require_job;
+DROP TRIGGER job_events_enforce_transition;
+DROP TRIGGER job_events_enforce_dispatch_authority;
+DROP TRIGGER job_events_enforce_reconciled_terminal;
+DROP TRIGGER job_events_enforce_reconciliation_gate;
+ALTER TABLE job_events RENAME TO job_events_v4;
+CREATE TABLE job_events (
+  job_event_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES execution_jobs(job_id),
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  from_state TEXT,
+  to_state TEXT NOT NULL CHECK (
+    to_state IN ('reserved', 'dispatching', 'reconciliation_required',
+      'resolved_existing', 'confirmed_missing', 'resolved_residue_removed')
+  ),
+  evidence_digest TEXT NOT NULL CHECK (${digestCheck('evidence_digest')}),
+  occurred_at_utc TEXT NOT NULL,
+  occurred_epoch_ms INTEGER NOT NULL,
+  UNIQUE (job_id, sequence)
+);
+INSERT INTO job_events SELECT * FROM job_events_v4;
+DROP TABLE job_events_v4;
+
+-- attempt_resolutions: admit the paired truthful resolution value.
+DROP TRIGGER attempt_resolutions_deny_update;
+DROP TRIGGER attempt_resolutions_deny_delete;
+DROP TRIGGER attempt_resolutions_deny_conflicting_insert;
+DROP TRIGGER attempt_resolutions_require_authoritative_target_reconciliation;
+ALTER TABLE attempt_resolutions RENAME TO attempt_resolutions_v4;
+CREATE TABLE attempt_resolutions (
+  resolution_id TEXT PRIMARY KEY,
+  attempt_id TEXT NOT NULL UNIQUE REFERENCES intent_attempts(attempt_id),
+  resolution TEXT NOT NULL CHECK (
+    resolution IN ('resolved_existing', 'confirmed_missing', 'resolved_residue_removed')
+  ),
+  reconciliation_run_id TEXT NOT NULL REFERENCES reconciliation_runs(run_id),
+  evidence_digest TEXT NOT NULL CHECK (${digestCheck('evidence_digest')}),
+  reconciled_at_utc TEXT NOT NULL,
+  reconciled_epoch_ms INTEGER NOT NULL
+);
+INSERT INTO attempt_resolutions SELECT * FROM attempt_resolutions_v4;
+DROP TABLE attempt_resolutions_v4;
+
+-- target_effect_observations: admit the paired effect, listingCreate only.
+DROP TRIGGER target_effect_observations_deny_update;
+DROP TRIGGER target_effect_observations_deny_delete;
+DROP TRIGGER target_effect_observations_deny_conflicting_insert;
+DROP TRIGGER target_effect_observations_enforce_binding;
+ALTER TABLE target_effect_observations RENAME TO target_effect_observations_v4;
+CREATE TABLE target_effect_observations (
+  observation_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES reconciliation_runs(run_id),
+  intent_key TEXT NOT NULL REFERENCES idempotency_intents(intent_key),
+  target_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  responsibility TEXT NOT NULL CHECK (
+    responsibility IN ('listingCreate', 'listingEndRelist', 'price', 'inventory', 'fulfillment')
+  ),
+  effect TEXT NOT NULL CHECK (
+    effect IN ('effect_observed', 'effect_absent', 'effect_residue_removed')
+  ),
+  observed_digest TEXT NOT NULL CHECK (${digestCheck('observed_digest')}),
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL,
+  CHECK (effect != 'effect_residue_removed' OR responsibility = 'listingCreate')
+);
+INSERT INTO target_effect_observations SELECT * FROM target_effect_observations_v4;
+DROP TABLE target_effect_observations_v4;
+
+PRAGMA legacy_alter_table = OFF;
+
+-- Recreate the idempotency_intents indexes and triggers. Every predicate is
+-- identical to v4 except: the action/responsibility map gains exactly the
+-- recover pairing, the production allowlist gains exactly the recover action,
+-- and one new structural trigger binds every recovery intent to an
+-- outstanding unresolved create job on the identical target.
+CREATE UNIQUE INDEX unique_order_import_intent
+ON idempotency_intents(scope_key, responsibility, action, source_identity_key)
+WHERE action = 'import_shopify_order';
+
+CREATE UNIQUE INDEX fulfillment_intents_one_per_order_pair
+ON idempotency_intents (
+  scope_key, action, source_identity_key, target_identity_key
+)
+WHERE action = 'sync_fulfillment';
+
+CREATE TRIGGER idempotency_intents_deny_update
+BEFORE UPDATE ON idempotency_intents
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents is append-only');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_delete
+BEFORE DELETE ON idempotency_intents
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents is append-only');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_conflicting_insert
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (SELECT 1 FROM idempotency_intents WHERE intent_key = NEW.intent_key OR (
+    NEW.action = 'import_shopify_order' AND scope_key = NEW.scope_key
+    AND responsibility = NEW.responsibility AND action = NEW.action
+    AND source_identity_key = NEW.source_identity_key
+  ))
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents replay or replacement denied');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_action_responsibility
+BEFORE INSERT ON idempotency_intents
+WHEN NOT (
+    ${allActionResponsibilitySql}
+)
+BEGIN
+  SELECT RAISE(ABORT, 'intent action and responsibility mismatch');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_production
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key AND scope.ebay_environment = 'production'
+)
+AND NEW.action NOT IN (
+  'revise_ebay_listing', 'create_ebay_listing', 'end_or_relist_ebay_listing',
+  'update_ebay_price', 'update_ebay_inventory', 'import_shopify_order',
+  'sync_fulfillment', 'recover_create_ebay_listing'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'production writer intents are disabled');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_identity_scope
+BEFORE INSERT ON idempotency_intents
+WHEN NOT EXISTS (
+  SELECT 1 FROM external_identities source
+  WHERE source.identity_key = NEW.source_identity_key AND source.scope_key = NEW.scope_key
+)
+OR (
+  NEW.target_identity_key IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM external_identities target
+    WHERE target.identity_key = NEW.target_identity_key AND target.scope_key = NEW.scope_key
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'intent identity scope mismatch');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_order_eligibility
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'import_shopify_order' AND NOT EXISTS (
+  SELECT 1
+  FROM order_observations observation
+  JOIN external_identities source
+    ON source.identity_key = observation.ebay_order_identity_key
+  LEFT JOIN order_observation_resolutions resolution
+    ON resolution.observation_id = observation.observation_id
+  WHERE observation.scope_key = NEW.scope_key
+    AND observation.ebay_order_identity_key = NEW.source_identity_key
+    AND source.scope_key = NEW.scope_key
+    AND source.platform = 'ebay'
+    AND source.resource_kind = 'order'
+    AND observation.eligible_after_watermark = 1
+    AND resolution.observation_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM order_links existing_link
+      WHERE existing_link.ebay_order_identity_key = NEW.source_identity_key
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'order import intent requires an eligible unresolved observation');
+END;
+
+CREATE TRIGGER fulfillment_intents_require_exact_order_link
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'sync_fulfillment' AND NOT EXISTS (
+  SELECT 1 FROM order_links link
+  WHERE link.scope_key = NEW.scope_key
+    AND link.shopify_order_identity_key = NEW.source_identity_key
+    AND link.ebay_order_identity_key = NEW.target_identity_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'fulfillment intent requires exact durable order link');
+END;
+
+-- A recovery intent exists only in service of one outstanding unresolved
+-- (reconciliation_required) create job on the identical approval target. It
+-- can never be minted speculatively, against a resolved job, or against a
+-- target no create job ever touched.
+CREATE TRIGGER recovery_intents_require_unresolved_create
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'recover_create_ebay_listing' AND NOT EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN idempotency_intents source_intent ON source_intent.intent_key = job.intent_key
+  JOIN job_events latest ON latest.job_id = job.job_id
+  WHERE job.scope_key = NEW.scope_key
+    AND job.responsibility = 'listingCreate'
+    AND source_intent.action = 'create_ebay_listing'
+    AND source_intent.approval_target_identity_key = NEW.approval_target_identity_key
+    AND latest.sequence = (
+      SELECT MAX(candidate.sequence) FROM job_events candidate WHERE candidate.job_id = job.job_id
+    )
+    AND latest.to_state = 'reconciliation_required'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'recovery intent requires an unresolved create job on the exact target');
+END;
+
+-- Recreate the job_events triggers; only the terminal-state sets change.
+CREATE TRIGGER job_events_deny_update
+BEFORE UPDATE ON job_events
+BEGIN
+  SELECT RAISE(ABORT, 'job_events is append-only');
+END;
+
+CREATE TRIGGER job_events_deny_delete
+BEFORE DELETE ON job_events
+BEGIN
+  SELECT RAISE(ABORT, 'job_events is append-only');
+END;
+
+CREATE TRIGGER job_events_deny_conflicting_insert
+BEFORE INSERT ON job_events
+WHEN EXISTS (SELECT 1 FROM job_events WHERE job_event_id = NEW.job_event_id OR (job_id = NEW.job_id AND sequence = NEW.sequence))
+BEGIN
+  SELECT RAISE(ABORT, 'job_events replay or replacement denied');
+END;
+
+CREATE TRIGGER job_events_require_job
+BEFORE INSERT ON job_events
+WHEN NOT EXISTS (SELECT 1 FROM execution_jobs WHERE job_id = NEW.job_id)
+BEGIN
+  SELECT RAISE(ABORT, 'job event job does not exist');
+END;
+
+CREATE TRIGGER job_events_enforce_transition
+BEFORE INSERT ON job_events
+WHEN NOT (
+  (NEW.sequence = 1 AND NEW.from_state IS NULL AND NEW.to_state = 'reserved'
+    AND NOT EXISTS (SELECT 1 FROM job_events WHERE job_id = NEW.job_id))
+  OR
+  (NEW.sequence > 1
+    AND NEW.from_state = (
+      SELECT to_state FROM job_events WHERE job_id = NEW.job_id ORDER BY sequence DESC LIMIT 1
+    )
+    AND NEW.sequence = COALESCE((
+      SELECT MAX(sequence) FROM job_events WHERE job_id = NEW.job_id
+    ), 0) + 1
+    AND (
+      (NEW.from_state = 'reserved' AND NEW.to_state = 'dispatching')
+      OR (NEW.from_state = 'dispatching' AND NEW.to_state = 'reconciliation_required')
+      OR (NEW.from_state = 'reconciliation_required'
+        AND NEW.to_state IN (
+          'resolved_existing', 'confirmed_missing', 'resolved_residue_removed'
+        ))
+    )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid job state transition');
+END;
+
+CREATE TRIGGER job_events_enforce_dispatch_authority
+BEFORE INSERT ON job_events
+WHEN (NEW.to_state = 'dispatching' AND NOT EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN action_approvals approval ON approval.approval_digest = job.approval_digest
+  JOIN ownership_versions ownership
+    ON ownership.scope_key = job.scope_key
+   AND ownership.responsibility = job.responsibility
+   AND ownership.version = job.ownership_version
+  WHERE job.job_id = NEW.job_id
+    AND approval.scope_key = job.scope_key
+    AND approval.intent_key = job.intent_key
+    AND approval.responsibility = job.responsibility
+    AND approval.target_identity_key = job.target_identity_key
+    AND approval.ownership_version = job.ownership_version
+    AND approval.evidence_digest = job.approval_evidence_digest
+    AND NEW.occurred_epoch_ms >= approval.issued_epoch_ms
+    AND NEW.occurred_epoch_ms < approval.expires_epoch_ms
+    AND ownership.owner = 'product_pipeline'
+    AND ownership.single_writer_verified = 1
+    AND ownership.version = (
+      SELECT MAX(current.version) FROM ownership_versions current
+      WHERE current.scope_key = job.scope_key
+        AND current.responsibility = job.responsibility
+    )
+))
+OR (NEW.to_state = 'dispatching' AND EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN idempotency_intents intent ON intent.intent_key = job.intent_key
+  JOIN order_links link ON link.ebay_order_identity_key = intent.source_identity_key
+  WHERE job.job_id = NEW.job_id
+    AND job.responsibility = 'orderImport'
+    AND intent.action = 'import_shopify_order'
+    AND link.scope_key = job.scope_key
+))
+BEGIN
+  SELECT RAISE(ABORT, 'dispatch lacks authority or order is already linked');
+END;
+
+CREATE TRIGGER job_events_enforce_reconciled_terminal
+BEFORE INSERT ON job_events
+WHEN NEW.to_state IN (
+  'resolved_existing', 'confirmed_missing', 'resolved_residue_removed'
+) AND NOT EXISTS (
+  SELECT 1
+  FROM intent_attempts attempt
+  JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+  WHERE attempt.job_id = NEW.job_id
+    AND resolution.resolution = NEW.to_state
+    AND resolution.evidence_digest = NEW.evidence_digest
+    AND resolution.reconciled_epoch_ms = NEW.occurred_epoch_ms
+)
+BEGIN
+  SELECT RAISE(ABORT, 'terminal job event requires exact attempt resolution');
+END;
+
+CREATE TRIGGER job_events_enforce_reconciliation_gate
+BEFORE INSERT ON job_events
+WHEN NEW.to_state = 'reconciliation_required' AND NOT EXISTS (
+  SELECT 1 FROM intent_attempts attempt
+  WHERE attempt.job_id = NEW.job_id
+    AND attempt.outcome = 'outcome_unknown'
+    AND attempt.recorded_epoch_ms <= NEW.occurred_epoch_ms
+)
+BEGIN
+  SELECT RAISE(ABORT, 'reconciliation gate requires the exact unknown attempt');
+END;
+
+-- Recreate the attempt_resolutions triggers; only the listingCreate branch
+-- gains the residue pairing.
+CREATE TRIGGER attempt_resolutions_deny_update
+BEFORE UPDATE ON attempt_resolutions
+BEGIN
+  SELECT RAISE(ABORT, 'attempt_resolutions is append-only');
+END;
+
+CREATE TRIGGER attempt_resolutions_deny_delete
+BEFORE DELETE ON attempt_resolutions
+BEGIN
+  SELECT RAISE(ABORT, 'attempt_resolutions is append-only');
+END;
+
+CREATE TRIGGER attempt_resolutions_deny_conflicting_insert
+BEFORE INSERT ON attempt_resolutions
+WHEN EXISTS (SELECT 1 FROM attempt_resolutions WHERE resolution_id = NEW.resolution_id OR attempt_id = NEW.attempt_id)
+BEGIN
+  SELECT RAISE(ABORT, 'attempt_resolutions replay or replacement denied');
+END;
+
+CREATE TRIGGER attempt_resolutions_require_authoritative_target_reconciliation
+BEFORE INSERT ON attempt_resolutions
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM intent_attempts attempt
+  JOIN execution_jobs job ON job.job_id = attempt.job_id
+  JOIN idempotency_intents intent ON intent.intent_key = attempt.intent_key
+  JOIN reconciliation_runs run ON run.run_id = NEW.reconciliation_run_id
+  JOIN job_events reconciliation_event ON reconciliation_event.job_id = job.job_id
+  WHERE attempt.attempt_id = NEW.attempt_id
+    AND job.scope_key = run.scope_key
+    AND job.responsibility = run.responsibility
+    AND intent.approval_target_identity_key = run.target_identity_key
+    AND run.status = 'passed'
+    AND run.authoritative = 1
+    AND run.mode IN ('test_lane', 'production_canary')
+    AND run.external_writes_observed = 0
+    AND run.result_digest = NEW.evidence_digest
+    AND reconciliation_event.to_state = 'reconciliation_required'
+    AND reconciliation_event.sequence = (
+      SELECT MAX(latest.sequence) FROM job_events latest WHERE latest.job_id = job.job_id
+    )
+    AND run.started_epoch_ms >= reconciliation_event.occurred_epoch_ms
+    AND run.completed_epoch_ms <= NEW.reconciled_epoch_ms
+    AND NOT EXISTS (
+      SELECT 1 FROM reconciliation_exceptions exception
+      WHERE exception.run_id = run.run_id AND exception.severity = 'critical'
+    )
+    AND (
+      (job.responsibility = 'orderImport' AND (
+        (NEW.resolution = 'resolved_existing' AND EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+            AND link.idempotency_intent_key = intent.intent_key
+            AND link.link_kind = 'product_pipeline_created'
+        ))
+        OR
+        (NEW.resolution = 'confirmed_missing' AND NOT EXISTS (
+          SELECT 1 FROM order_links link
+          WHERE link.scope_key = job.scope_key
+            AND link.ebay_order_identity_key = intent.source_identity_key
+        ))
+      ))
+      OR
+      (job.responsibility = 'listingRevise' AND EXISTS (
+        SELECT 1 FROM listing_revise_observations observation
+        WHERE observation.run_id = run.run_id
+          AND observation.intent_key = intent.intent_key
+          AND (
+            (NEW.resolution = 'resolved_existing'
+              AND observation.effect = 'revised_state_observed')
+            OR
+            (NEW.resolution = 'confirmed_missing'
+              AND observation.effect = 'revised_state_absent')
+          )
+      ))
+      OR
+      (job.responsibility IN (
+        'listingCreate', 'listingEndRelist', 'price', 'inventory', 'fulfillment'
+      ) AND EXISTS (
+        SELECT 1 FROM target_effect_observations observation
+        WHERE observation.run_id = run.run_id
+          AND observation.intent_key = intent.intent_key
+          AND observation.responsibility = job.responsibility
+          AND (
+            (NEW.resolution = 'resolved_existing' AND observation.effect = 'effect_observed')
+            OR
+            (NEW.resolution = 'confirmed_missing' AND observation.effect = 'effect_absent')
+            OR
+            (NEW.resolution = 'resolved_residue_removed'
+              AND job.responsibility = 'listingCreate'
+              AND observation.effect = 'effect_residue_removed')
+          )
+      ))
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'attempt resolution lacks authoritative target reconciliation');
+END;
+
+-- Recreate the target_effect_observations triggers verbatim.
+CREATE TRIGGER target_effect_observations_deny_update
+BEFORE UPDATE ON target_effect_observations
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations is append-only');
+END;
+
+CREATE TRIGGER target_effect_observations_deny_delete
+BEFORE DELETE ON target_effect_observations
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations is append-only');
+END;
+
+CREATE TRIGGER target_effect_observations_deny_conflicting_insert
+BEFORE INSERT ON target_effect_observations
+WHEN EXISTS (
+  SELECT 1 FROM target_effect_observations
+  WHERE observation_id = NEW.observation_id OR run_id = NEW.run_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'target_effect_observations replay or replacement denied');
+END;
+
+CREATE TRIGGER target_effect_observations_enforce_binding
+BEFORE INSERT ON target_effect_observations
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM reconciliation_runs run
+  JOIN idempotency_intents intent ON intent.intent_key = NEW.intent_key
+  WHERE run.run_id = NEW.run_id
+    AND run.responsibility = NEW.responsibility
+    AND run.target_identity_key = NEW.target_identity_key
+    AND intent.responsibility = NEW.responsibility
+    AND intent.approval_target_identity_key = NEW.target_identity_key
+    AND intent.scope_key = run.scope_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'target effect observation binding mismatch');
+END;
+`;
 export const SCHEMA_MIGRATIONS = [
     {
         version: 1,
@@ -1972,6 +2527,12 @@ export const SCHEMA_MIGRATIONS = [
         name: 'fulfillment_tracking_slice_v4',
         sql: migrationFourSql,
         checksum: sqlChecksum(migrationFourSql),
+    },
+    {
+        version: 5,
+        name: 'listing_create_recovery_slice_v5',
+        sql: migrationFiveSql,
+        checksum: sqlChecksum(migrationFiveSql),
     },
 ];
 const bootstrapSql = `
@@ -2011,8 +2572,32 @@ function applyMigration(database, migration, appliedAtUtc) {
         .run(migration.version, migration.name, migration.checksum, appliedAtUtc);
     database.pragma(`user_version = ${migration.version}`);
 }
+/**
+ * Run one migration transaction with foreign-key enforcement deferred, per
+ * SQLite's documented table-rebuild procedure: enforcement is disabled only
+ * for the duration of the transaction (a rebuild must drop a referenced
+ * table after renaming its replacement into place), and before committing the
+ * complete database must prove `foreign_key_check` clean, so a migration can
+ * never commit a dangling reference. Enforcement is always restored.
+ */
+function applyMigrationsWithDeferredForeignKeys(database, migrate) {
+    database.pragma('foreign_keys = OFF');
+    try {
+        const apply = database.transaction(() => {
+            migrate();
+            const foreignKeyProblems = database.pragma('foreign_key_check');
+            if (foreignKeyProblems.length !== 0) {
+                throw new Error('Migration left the store foreign-key inconsistent');
+            }
+        });
+        apply.immediate();
+    }
+    finally {
+        database.pragma('foreign_keys = ON');
+    }
+}
 function installSchema(database, appliedAtUtc, throughVersion = CURRENT_SCHEMA_VERSION) {
-    const apply = database.transaction(() => {
+    applyMigrationsWithDeferredForeignKeys(database, () => {
         database.exec(bootstrapSql);
         for (const migration of SCHEMA_MIGRATIONS) {
             if (migration.version > throughVersion)
@@ -2021,7 +2606,6 @@ function installSchema(database, appliedAtUtc, throughVersion = CURRENT_SCHEMA_V
         }
         database.pragma(`application_id = ${MIGRATION_STORE_APPLICATION_ID}`);
     });
-    apply.immediate();
 }
 function canonicalCatalog(database) {
     const rows = database
@@ -2125,12 +2709,11 @@ export function upgradeSchemaToCurrent(database, appliedAtUtc) {
         return { fromVersion, toVersion: CURRENT_SCHEMA_VERSION };
     }
     const pending = SCHEMA_MIGRATIONS.filter((migration) => migration.version > fromVersion);
-    const apply = database.transaction(() => {
+    applyMigrationsWithDeferredForeignKeys(database, () => {
         for (const migration of pending) {
             applyMigration(database, migration, appliedAtUtc);
         }
     });
-    apply.immediate();
     verifySchema(database);
     return { fromVersion, toVersion: CURRENT_SCHEMA_VERSION };
 }

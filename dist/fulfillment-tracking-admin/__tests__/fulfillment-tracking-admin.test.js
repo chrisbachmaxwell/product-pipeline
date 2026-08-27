@@ -388,8 +388,12 @@ describe('fulfillment tracking ceremony', () => {
 });
 describe('migration schema v4 fulfillment boundary', () => {
     it('publishes an explicit versioned migration', () => {
-        expect(CURRENT_SCHEMA_VERSION).toBe(4);
+        expect(CURRENT_SCHEMA_VERSION).toBe(5);
         expect(SCHEMA_MIGRATIONS.at(-1)).toMatchObject({
+            version: 5,
+            name: 'listing_create_recovery_slice_v5',
+        });
+        expect(SCHEMA_MIGRATIONS.at(-2)).toMatchObject({
             version: 4,
             name: 'fulfillment_tracking_slice_v4',
         });

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-export declare const CURRENT_SCHEMA_VERSION = 4;
+export declare const CURRENT_SCHEMA_VERSION = 5;
 export declare const MIGRATION_STORE_APPLICATION_ID = 1347439955;
 export type SchemaMigration = {
     version: number;

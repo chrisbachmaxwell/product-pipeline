@@ -654,6 +654,27 @@ describe('listing-lifecycle operator CLI — create', () => {
         expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_TARGET_ALREADY_LISTED' });
         expect(world.adapterCalls).toHaveLength(0);
     });
+    it('prevalidates publish prerequisites locally before any provider write', async () => {
+        // A merchant location key beyond eBay's 36-character bound saves fine in
+        // the draft store but is exactly the kind of fact eBay's opaque 25019
+        // rejection never names; the fixed prevalidation code denies it at
+        // preflight AND dispatch, before the first provider call.
+        const world = await createWorld({ merchantLocation: 'w'.repeat(37) });
+        await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);
+        expect(lastJson(world.stderr)).toMatchObject({
+            status: 'denied',
+            code: 'CREATE_PREVALIDATION_MERCHANT_LOCATION',
+            field: 'merchant_location',
+        });
+        await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+            '--manifest-digest', `sha256:${'a'.repeat(64)}`,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        expect(lastJson(world.stderr)).toMatchObject({
+            code: 'CREATE_PREVALIDATION_MERCHANT_LOCATION',
+        });
+        expect(world.adapterCalls).toHaveLength(0);
+    });
     it('denies a create manifest missing a required policy id, naming the field', async () => {
         const world = await createWorld({ fulfillmentPolicyId: null });
         await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);

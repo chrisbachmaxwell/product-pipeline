@@ -25,9 +25,9 @@ import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 export declare class ListingLifecycleManifestError extends Error {
-    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
+    readonly code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'CREATE_PREVALIDATION_CATEGORY_ID' | 'CREATE_PREVALIDATION_CONDITION' | 'CREATE_PREVALIDATION_POLICY_IDS' | 'CREATE_PREVALIDATION_MERCHANT_LOCATION' | 'CREATE_PREVALIDATION_ASPECTS' | 'CREATE_PREVALIDATION_LISTING_DURATION' | 'CREATE_PREVALIDATION_INVENTORY_DESCRIPTION' | 'CREATE_PREVALIDATION_LISTING_DESCRIPTION' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED';
     readonly field: ListingFieldName | null;
-    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
+    constructor(code: 'CREATE_TARGET_ALREADY_LISTED' | 'CREATE_REQUIRED_FIELD_MISSING' | 'CREATE_CONDITION_UNSUPPORTED' | 'CREATE_IDENTITY_MISMATCH' | 'CREATE_BASE_STALE' | 'CREATE_PAYLOAD_INVALID' | 'CREATE_TEMPLATE_UNSUPPORTED' | 'CREATE_TEMPLATE_INPUT_INVALID' | 'CREATE_TEMPLATE_OUTPUT_TOO_LARGE' | 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE' | 'CREATE_LISTING_DESCRIPTION_TOO_LARGE' | 'CREATE_ITEM_SPECIFICS_INVALID' | 'CREATE_PREVALIDATION_CATEGORY_ID' | 'CREATE_PREVALIDATION_CONDITION' | 'CREATE_PREVALIDATION_POLICY_IDS' | 'CREATE_PREVALIDATION_MERCHANT_LOCATION' | 'CREATE_PREVALIDATION_ASPECTS' | 'CREATE_PREVALIDATION_LISTING_DURATION' | 'CREATE_PREVALIDATION_INVENTORY_DESCRIPTION' | 'CREATE_PREVALIDATION_LISTING_DESCRIPTION' | 'END_TARGET_NOT_ACTIVE' | 'END_REASON_UNSUPPORTED', field?: ListingFieldName | null);
 }
 /**
  * FIXED mapping from the draft model's numeric eBay condition IDs to the
@@ -129,6 +129,18 @@ export declare function applyListingCreateDescriptionTemplate(input: {
     revision: ListingRevision;
     templateVersion: string;
 }): TemplatedListingCreateManifest;
+/**
+ * Bounded local pre-publish validation (Brain L30/L34): before ANY provider
+ * write, prove with fixed codes the documented publish prerequisites that
+ * eBay's opaque post-hoc `25019` rejection will never name. Every check runs
+ * against local data only; each failure is its own fixed
+ * `CREATE_PREVALIDATION_*` code naming the field family, and no provider
+ * text, value, or URL is ever echoed. This runs at preflight and again at
+ * dispatch (on the final, template-applied manifest) — it is deliberately not
+ * part of recovery reconciliation, which must be able to reconcile a
+ * historical job regardless of newer validation rules (L32).
+ */
+export declare function prevalidateListingCreateManifest(manifest: ListingCreateManifest): void;
 /**
  * Pre-dispatch freshness gate for a create: the live workspace identity must
  * equal the revision identity, and both the observed values (all null for an
