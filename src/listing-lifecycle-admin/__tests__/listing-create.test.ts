@@ -326,6 +326,11 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
         throw new ListingCreateDispatchError(
           'CREATE_DISPATCH_WRITE_FAILED',
           'definite_no_effect',
+          Object.freeze({
+            statusFamily: 'http_4xx',
+            statusCode: 400,
+            ebayErrorIds: Object.freeze([25002]),
+          }),
         );
       }
       if (itemPutFailure === 'outcome_unknown') {
@@ -808,6 +813,18 @@ describe('listing-lifecycle operator CLI — create', () => {
     })).toThrowError(expect.objectContaining({ code: 'CREATE_IDENTITY_MISMATCH' }));
   });
 
+  it('omits an explicitly cleared optional condition description from the create payload',
+    async () => {
+      const world = await createWorld({ conditionDescription: '' });
+      expect(world.revision.fields.find(
+        (field) => field.field === 'condition_description',
+      )).toMatchObject({ proposedValue: null, proposedSource: 'omit' });
+      const derived = deriveListingCreateManifest(world.revision);
+      expect(derived.manifest.proposed.conditionDescription).toBeNull();
+      expect(buildListingCreatePayloads(derived.manifest).inventoryItemPayload)
+        .not.toHaveProperty('conditionDescription');
+    });
+
   it('records a provider-failed create (no offer) as a durable confirmed_missing outcome and denies replay', async () => {
     const world = await createWorld();
     await world.run(establishArguments(world));
@@ -827,6 +844,9 @@ describe('listing-lifecycle operator CLI — create', () => {
       dispatchFailureStage: 'put_inventory_item',
       dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
       dispatchFailureOutcomeClass: 'definite_no_effect',
+      dispatchFailureHttpStatusFamily: 'http_4xx',
+      dispatchFailureHttpStatusCode: 400,
+      dispatchFailureEbayErrorIds: [25002],
       offerId: null,
       listingId: null,
       effect: 'created_state_absent',
@@ -883,6 +903,9 @@ describe('listing-lifecycle operator CLI — create', () => {
         resolution: null,
         externalCommerceWritesAttempted: 1,
       });
+      expect(dispatched).not.toHaveProperty('dispatchFailureHttpStatusFamily');
+      expect(dispatched).not.toHaveProperty('dispatchFailureHttpStatusCode');
+      expect(dispatched).not.toHaveProperty('dispatchFailureEbayErrorIds');
       const redactedOutput = JSON.stringify([...world.stdout, ...world.stderr]);
       expect(redactedOutput).not.toContain('VERY_SECRET');
       expect(redactedOutput).not.toContain('api.ebay.com/private');

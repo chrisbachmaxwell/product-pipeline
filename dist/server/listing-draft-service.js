@@ -52,6 +52,13 @@ function exactOverrideText(value, maximum) {
         return invalid();
     return checked;
 }
+function exactOptionalConditionDescription(value) {
+    // Empty is a narrow wire sentinel for explicit omission. `null` retains its
+    // established meaning: inherit the current observed/source value.
+    if (value === '')
+        return '';
+    return exactOverrideText(value, 1_000);
+}
 function exactNumericId(value) {
     const checked = exactOverrideText(value, 32);
     if (checked !== null && !/^[1-9][0-9]{0,31}$/.test(checked))
@@ -183,7 +190,7 @@ export function parseSaveListingDraftRequest(value) {
             title: exactOverrideText(draft.title, 80),
             category: exactNumericId(draft.category),
             condition: exactNumericId(draft.condition),
-            conditionDescription: exactOverrideText(draft.conditionDescription, 1_000),
+            conditionDescription: exactOptionalConditionDescription(draft.conditionDescription),
             description: (() => {
                 const description = exactOverrideText(draft.description, 20_000);
                 if (description !== null && !isAllowlistedListingHtml(description))
@@ -382,7 +389,8 @@ function fieldsForRevision(basis, draft) {
         const submitted = EDITABLE[field] ? (draft[field] ?? null) : null;
         const hasRemoteListing = basis.identity.ebayListingId !== null;
         const inherited = hasRemoteListing ? (observedValue ?? sourceValue) : sourceValue;
-        const proposedValue = submitted === null ? inherited : submitted;
+        const explicitOmit = field === 'condition_description' && submitted === '';
+        const proposedValue = explicitOmit ? null : submitted === null ? inherited : submitted;
         const proposedSource = proposedValue === null
             ? 'omit'
             : submitted !== null
@@ -405,10 +413,16 @@ function fieldsForRevision(basis, draft) {
 }
 function currentDraft(revision, field) {
     const stored = revision?.fields.find((candidate) => candidate.field === field);
+    if (field === 'condition_description' && stored?.proposedSource === 'omit')
+        return '';
     return stored?.proposedSource === 'override' ? stored.overrideValue : null;
 }
-function overrideMap(fields) {
-    return JSON.stringify(Object.fromEntries(fields.filter((field) => EDITABLE[field.field]).map((field) => [field.field, field.proposedSource === 'override' ? field.overrideValue : null])));
+function draftComparisonMap(fields) {
+    return JSON.stringify(Object.fromEntries(fields.filter((field) => EDITABLE[field.field]).map((field) => [field.field, field.proposedSource === 'override'
+            ? { mode: 'override', value: field.overrideValue }
+            : field.proposedSource === 'omit'
+                ? { mode: 'omit' }
+                : { mode: 'inherit' }])));
 }
 function leaf(basis, revision, field) {
     return Object.freeze({
@@ -543,9 +557,11 @@ export function createListingDraftService(dependencies = {}) {
                         merchant_location: request.draft.merchantLocation,
                     };
                     const fields = fieldsForRevision(basis, draft);
-                    const noOverrides = overrideMap(fields) === overrideMap(fieldsForRevision(basis, {}));
+                    const noOverrides = draftComparisonMap(fields)
+                        === draftComparisonMap(fieldsForRevision(basis, {}));
                     if ((previous === null && noOverrides)
-                        || (previous !== null && overrideMap(fields) === overrideMap(previous.fields))) {
+                        || (previous !== null
+                            && draftComparisonMap(fields) === draftComparisonMap(previous.fields))) {
                         throw new ListingDraftServiceError('LISTING_DRAFT_INVALID');
                     }
                     const bases = deriveListingBaseDigests({

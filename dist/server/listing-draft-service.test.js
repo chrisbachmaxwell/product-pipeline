@@ -186,6 +186,61 @@ describe('local listing draft service', () => {
             proposedValue: 'Shopify New', proposedSource: 'source',
         });
     });
+    it('distinguishes explicit condition-description omission from non-null inheritance', () => {
+        const basis = LISTING_DRAFT_SERVICE_TESTING.eligibleBasis(workspace());
+        expect(LISTING_DRAFT_SERVICE_TESTING.fieldsForRevision(basis, {})
+            .find((field) => field.field === 'condition_description')).toMatchObject({
+            proposedValue: 'Excellent', proposedSource: 'observed',
+        });
+        expect(LISTING_DRAFT_SERVICE_TESTING.fieldsForRevision(basis, { condition_description: '' }).find((field) => field.field === 'condition_description')).toMatchObject({
+            proposedValue: null, proposedSource: 'omit', overrideValue: null,
+        });
+    });
+    it('clears a previously saved optional condition note and preserves explicit omission', async () => {
+        const current = workspace({ listed: false });
+        const db = databasePath();
+        let tick = 0;
+        const service = createListingDraftService({
+            readWorkspace: async () => current,
+            databasePath: () => db,
+            writerInstanceReady: () => true,
+            now: () => new Date(`2026-08-13T22:02:0${tick++}.000Z`),
+            uuid: () => `condition-note-${tick}`,
+        });
+        const opened = await service.get(current.catalog.id, true);
+        const firstBody = body({
+            sourceDigest: opened.base.sourceDigest,
+            ebayDigest: opened.base.ebayDigest,
+        });
+        const firstRequest = {
+            ...firstBody,
+            draft: { ...firstBody.draft, conditionDescription: 'Operational test only' },
+        };
+        const first = await service.save(parseSaveListingDraftRequest(firstRequest), 'shopify-user:1');
+        expect(first.sections.listing.conditionDescription.draft).toBe('Operational test only');
+        const omitBody = body({
+            sourceDigest: first.base.sourceDigest,
+            ebayDigest: first.base.ebayDigest,
+        });
+        const omitRequest = {
+            ...omitBody,
+            expectedRevisionDigest: first.revision.revisionDigest,
+            draft: { ...omitBody.draft, conditionDescription: '' },
+        };
+        const omitted = await service.save(parseSaveListingDraftRequest(omitRequest), 'shopify-user:1');
+        expect(omitted.sections.listing.conditionDescription.draft).toBe('');
+        const store = openListingControlStoreReadOnly({
+            databasePath: db,
+            expectedScope: LISTING_DRAFT_SCOPE,
+        });
+        expect(store.getLatestRevision(current.catalog.shopify.variantId)?.fields
+            .find((field) => field.field === 'condition_description')).toMatchObject({
+            proposedValue: null,
+            proposedSource: 'omit',
+            overrideValue: null,
+        });
+        store.close();
+    });
     it('denies a noncanonical SKU before advertising local draft eligibility', () => {
         expect(() => LISTING_DRAFT_SERVICE_TESTING.eligibleBasis(workspace({ listed: false, sku: 'CANON-É' }))).toThrow(ListingDraftServiceError);
     });

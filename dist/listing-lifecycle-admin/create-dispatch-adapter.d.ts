@@ -20,10 +20,18 @@
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
 export { createProductionDispatchTokenProvider };
 export type ListingCreateDispatchOutcomeClass = 'definite_no_effect' | 'outcome_unknown';
+export type ListingCreateDispatchHttpStatusFamily = 'http_1xx' | 'http_3xx' | 'http_4xx' | 'http_5xx';
+export type ListingCreateDispatchHttpDiagnostic = Readonly<{
+    statusFamily: ListingCreateDispatchHttpStatusFamily;
+    statusCode: number;
+    /** Present only when the bounded body matches eBay's REST errors shape. */
+    ebayErrorIds: readonly number[] | null;
+}>;
 export declare class ListingCreateDispatchError extends Error {
     readonly code: 'CREATE_DISPATCH_AUTHORITY_UNAVAILABLE' | 'CREATE_DISPATCH_TARGET_INVALID' | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE' | 'CREATE_DISPATCH_WRITE_FAILED' | 'CREATE_DISPATCH_RESPONSE_INVALID';
     readonly outcomeClass: ListingCreateDispatchOutcomeClass;
-    constructor(code: 'CREATE_DISPATCH_AUTHORITY_UNAVAILABLE' | 'CREATE_DISPATCH_TARGET_INVALID' | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE' | 'CREATE_DISPATCH_WRITE_FAILED' | 'CREATE_DISPATCH_RESPONSE_INVALID', outcomeClass: ListingCreateDispatchOutcomeClass);
+    readonly httpDiagnostic: ListingCreateDispatchHttpDiagnostic | null;
+    constructor(code: 'CREATE_DISPATCH_AUTHORITY_UNAVAILABLE' | 'CREATE_DISPATCH_TARGET_INVALID' | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE' | 'CREATE_DISPATCH_WRITE_FAILED' | 'CREATE_DISPATCH_RESPONSE_INVALID', outcomeClass: ListingCreateDispatchOutcomeClass, httpDiagnostic?: ListingCreateDispatchHttpDiagnostic | null);
 }
 type FetchLike = typeof fetch;
 export type ListingCreateDispatchAdapter = Readonly<{

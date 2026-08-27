@@ -23,21 +23,72 @@ const EBAY_API_HOST = 'https://api.ebay.com';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_EBAY_ERROR_ENTRIES = 20;
+const MAX_REPORTED_EBAY_ERROR_IDS = 5;
+const MAX_EBAY_ERROR_ID = 2_147_483_647;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXACT_LISTING_ID = /^[0-9]{1,19}$/;
 export class ListingCreateDispatchError extends Error {
     code;
     outcomeClass;
-    constructor(code, outcomeClass) {
+    httpDiagnostic;
+    constructor(code, outcomeClass, httpDiagnostic = null) {
         super('Listing create dispatch adapter failed');
         this.code = code;
         this.outcomeClass = outcomeClass;
+        this.httpDiagnostic = httpDiagnostic;
         this.name = 'ListingCreateDispatchError';
     }
 }
-const deny = (code, outcomeClass) => {
-    throw new ListingCreateDispatchError(code, outcomeClass);
+const deny = (code, outcomeClass, httpDiagnostic = null) => {
+    throw new ListingCreateDispatchError(code, outcomeClass, httpDiagnostic);
 };
+function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function parseEbayErrorIds(text) {
+    try {
+        const parsed = JSON.parse(text);
+        if (!isRecord(parsed) || !Array.isArray(parsed.errors))
+            return null;
+        if (parsed.errors.length === 0 || parsed.errors.length > MAX_EBAY_ERROR_ENTRIES)
+            return null;
+        const errorIds = [];
+        for (const error of parsed.errors) {
+            if (!isRecord(error)
+                || !Number.isSafeInteger(error.errorId)
+                || error.errorId < 1
+                || error.errorId > MAX_EBAY_ERROR_ID) {
+                return null;
+            }
+            errorIds.push(error.errorId);
+        }
+        return Object.freeze([...new Set(errorIds)]
+            .sort((left, right) => left - right)
+            .slice(0, MAX_REPORTED_EBAY_ERROR_IDS));
+    }
+    catch {
+        return null;
+    }
+}
+function httpDiagnostic(statusCode, text) {
+    if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599
+        || (statusCode >= 200 && statusCode <= 299)) {
+        return null;
+    }
+    const statusFamily = statusCode < 200
+        ? 'http_1xx'
+        : statusCode < 400
+            ? 'http_3xx'
+            : statusCode < 500
+                ? 'http_4xx'
+                : 'http_5xx';
+    return Object.freeze({
+        statusFamily,
+        statusCode,
+        ebayErrorIds: parseEbayErrorIds(text),
+    });
+}
 export function createListingCreateDispatchAdapter(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
     async function authorizedHeaders() {
@@ -56,7 +107,7 @@ export function createListingCreateDispatchAdapter(dependencies) {
             Accept: 'application/json',
             'Content-Type': 'application/json',
             'Content-Language': 'en-US',
-            Accept_Language: 'en-US',
+            'Accept-Language': 'en-US',
         };
     }
     async function boundedRequest(url, init) {
@@ -115,7 +166,8 @@ export function createListingCreateDispatchAdapter(dependencies) {
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, { method: 'PUT', headers, body });
         if (response.status !== 200 && response.status !== 201 && response.status !== 204) {
-            deny('CREATE_DISPATCH_WRITE_FAILED', 'definite_no_effect');
+            const diagnostic = httpDiagnostic(response.status, response.text);
+            deny(diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED', diagnostic?.statusFamily === 'http_4xx' ? 'definite_no_effect' : 'outcome_unknown', diagnostic);
         }
     }
     async function createOffer(payload) {
@@ -123,7 +175,8 @@ export function createListingCreateDispatchAdapter(dependencies) {
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer`, { method: 'POST', headers, body });
         if (response.status !== 200 && response.status !== 201) {
-            deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+            const diagnostic = httpDiagnostic(response.status, response.text);
+            deny(diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown', diagnostic);
         }
         const parsed = parseJsonObject(response.text);
         const offerId = parsed.offerId;
@@ -138,8 +191,10 @@ export function createListingCreateDispatchAdapter(dependencies) {
         }
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, { method: 'POST', headers, body: '{}' });
-        if (response.status !== 200)
-            deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+        if (response.status !== 200) {
+            const diagnostic = httpDiagnostic(response.status, response.text);
+            deny(diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown', diagnostic);
+        }
         const parsed = parseJsonObject(response.text);
         const listingId = parsed.listingId;
         if (typeof listingId !== 'string' || !EXACT_LISTING_ID.test(listingId)) {

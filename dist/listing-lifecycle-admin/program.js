@@ -617,6 +617,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                 let dispatchFailureStage = null;
                 let dispatchFailureCode = null;
                 let dispatchFailureOutcomeClass = null;
+                let dispatchFailureHttpDiagnostic = null;
                 let offerId = null;
                 let listingId = null;
                 let externalCommerceWritesAttempted = 0;
@@ -640,6 +641,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     dispatchFailureOutcomeClass = error instanceof ListingCreateDispatchError
                         ? error.outcomeClass
                         : 'outcome_unknown';
+                    dispatchFailureHttpDiagnostic = error instanceof ListingCreateDispatchError
+                        ? error.httpDiagnostic
+                        : null;
                 }
                 const requiredAtUtc = clock();
                 store.requirePostDispatchReconciliation({
@@ -696,7 +700,22 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     listingId,
                     providerDispatchReported: !dispatchFailed,
                     ...(dispatchFailed
-                        ? { dispatchFailureStage, dispatchFailureCode, dispatchFailureOutcomeClass }
+                        ? {
+                            dispatchFailureStage,
+                            dispatchFailureCode,
+                            dispatchFailureOutcomeClass,
+                            ...(dispatchFailureHttpDiagnostic === null
+                                ? {}
+                                : {
+                                    dispatchFailureHttpStatusFamily: dispatchFailureHttpDiagnostic.statusFamily,
+                                    dispatchFailureHttpStatusCode: dispatchFailureHttpDiagnostic.statusCode,
+                                    ...(dispatchFailureHttpDiagnostic.ebayErrorIds === null
+                                        ? {}
+                                        : {
+                                            dispatchFailureEbayErrorIds: dispatchFailureHttpDiagnostic.ebayErrorIds,
+                                        }),
+                                }),
+                        }
                         : {}),
                     effect: reconciliation.effect,
                     resolution: reconciliation.resolution,

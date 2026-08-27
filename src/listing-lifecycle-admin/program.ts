@@ -63,6 +63,7 @@ import {
   createProductionDispatchTokenProvider,
   ListingCreateDispatchError,
   type ListingCreateDispatchAdapter,
+  type ListingCreateDispatchHttpDiagnostic,
   type ListingCreateDispatchOutcomeClass,
 } from './create-dispatch-adapter.js';
 import {
@@ -843,6 +844,7 @@ export function buildListingLifecycleAdminProgram(
             | null = null;
           let dispatchFailureCode: ListingCreateDispatchError['code'] | null = null;
           let dispatchFailureOutcomeClass: ListingCreateDispatchOutcomeClass | null = null;
+          let dispatchFailureHttpDiagnostic: ListingCreateDispatchHttpDiagnostic | null = null;
           let offerId: string | null = null;
           let listingId: string | null = null;
           let externalCommerceWritesAttempted = 0;
@@ -865,6 +867,9 @@ export function buildListingLifecycleAdminProgram(
             dispatchFailureOutcomeClass = error instanceof ListingCreateDispatchError
               ? error.outcomeClass
               : 'outcome_unknown';
+            dispatchFailureHttpDiagnostic = error instanceof ListingCreateDispatchError
+              ? error.httpDiagnostic
+              : null;
           }
 
           const requiredAtUtc = clock();
@@ -923,7 +928,25 @@ export function buildListingLifecycleAdminProgram(
             listingId,
             providerDispatchReported: !dispatchFailed,
             ...(dispatchFailed
-              ? { dispatchFailureStage, dispatchFailureCode, dispatchFailureOutcomeClass }
+              ? {
+                  dispatchFailureStage,
+                  dispatchFailureCode,
+                  dispatchFailureOutcomeClass,
+                  ...(dispatchFailureHttpDiagnostic === null
+                    ? {}
+                    : {
+                        dispatchFailureHttpStatusFamily:
+                          dispatchFailureHttpDiagnostic.statusFamily,
+                        dispatchFailureHttpStatusCode:
+                          dispatchFailureHttpDiagnostic.statusCode,
+                        ...(dispatchFailureHttpDiagnostic.ebayErrorIds === null
+                          ? {}
+                          : {
+                              dispatchFailureEbayErrorIds:
+                                dispatchFailureHttpDiagnostic.ebayErrorIds,
+                            }),
+                      }),
+                }
               : {}),
             effect: reconciliation.effect,
             resolution: reconciliation.resolution,
