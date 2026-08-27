@@ -9,6 +9,14 @@ export { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES };
 export type Responsibility = MigrationResponsibility;
 export type { MigrationResponsibility, WriterResponsibility };
 
+/**
+ * The exact schema-v1 intent-action vocabulary. This list (and the matching
+ * responsibility map below) is interpolated into the immutable schema-v1
+ * migration SQL, whose checksum every existing store carries; it must NEVER
+ * change. Actions added by later schema versions live in
+ * RECOVERY_INTENT_ACTIONS and join the runtime vocabulary through
+ * ALL_INTENT_ACTIONS.
+ */
 export const INTENT_ACTIONS = [
   'create_ebay_listing',
   'revise_ebay_listing',
@@ -21,8 +29,21 @@ export const INTENT_ACTIONS = [
   'sync_feedback',
 ] as const;
 
-export type IntentAction = (typeof INTENT_ACTIONS)[number];
+/**
+ * Actions admitted by the schema-v5 rebuilt idempotency_intents table only.
+ * `recover_create_ebay_listing` is the one-shot residue-removal recovery for
+ * an unresolved production listing-create job (Brain L34): it deletes the
+ * exact unpublished offer and inventory item that job left behind, never
+ * creates or publishes anything, and is structurally bound to an outstanding
+ * unresolved create job on the identical target.
+ */
+export const RECOVERY_INTENT_ACTIONS = ['recover_create_ebay_listing'] as const;
 
+export const ALL_INTENT_ACTIONS = [...INTENT_ACTIONS, ...RECOVERY_INTENT_ACTIONS] as const;
+
+export type IntentAction = (typeof ALL_INTENT_ACTIONS)[number];
+
+/** Schema-v1 map — interpolated into immutable v1 SQL; never change it. */
 export const INTENT_ACTION_RESPONSIBILITY = {
   create_ebay_listing: 'listingCreate',
   revise_ebay_listing: 'listingRevise',
@@ -33,6 +54,12 @@ export const INTENT_ACTION_RESPONSIBILITY = {
   import_shopify_order: 'orderImport',
   sync_fulfillment: 'fulfillment',
   sync_feedback: 'feedback',
+} as const satisfies Record<(typeof INTENT_ACTIONS)[number], WriterResponsibility>;
+
+/** The complete runtime action→responsibility map (schema v5). */
+export const ALL_INTENT_ACTION_RESPONSIBILITY = {
+  ...INTENT_ACTION_RESPONSIBILITY,
+  recover_create_ebay_listing: 'listingCreate',
 } as const satisfies Record<IntentAction, WriterResponsibility>;
 
 export type EbayEnvironment = 'sandbox' | 'production';
@@ -87,7 +114,18 @@ export type ExternalIdentity = {
 
 export type AttemptOutcome = 'outcome_unknown';
 
-export type AttemptResolution = 'resolved_existing' | 'confirmed_missing';
+/**
+ * `resolved_residue_removed` (schema v5) is the truthful terminal outcome for
+ * a listingCreate job whose dispatch left a durable remote artifact (an
+ * unpublished offer / inventory item) that a separately approved recovery
+ * ceremony later verifiably removed. It is neither `resolved_existing` (no
+ * listing exists) nor `confirmed_missing` (the artifact was not absent from
+ * the start).
+ */
+export type AttemptResolution =
+  | 'resolved_existing'
+  | 'confirmed_missing'
+  | 'resolved_residue_removed';
 
 export type ReconciliationMode = 'shadow' | 'test_lane' | 'production_canary';
 export type ReconciliationStatus = 'passed' | 'blocked' | 'failed';
@@ -125,7 +163,13 @@ export const TARGET_EFFECT_RESPONSIBILITIES = [
 
 export type TargetEffectResponsibility = (typeof TARGET_EFFECT_RESPONSIBILITIES)[number];
 
-export type TargetEffect = 'effect_observed' | 'effect_absent';
+/**
+ * `effect_residue_removed` (schema v5) records that the exact remote residue
+ * a listingCreate dispatch left behind has been verified removed. The schema
+ * restricts it to listingCreate observations, and it pairs exclusively with
+ * the `resolved_residue_removed` attempt resolution.
+ */
+export type TargetEffect = 'effect_observed' | 'effect_absent' | 'effect_residue_removed';
 
 export type TargetEffectObservationInput = {
   observationId: string;
@@ -149,6 +193,7 @@ export type OperationalStoreMonitoring = Readonly<{
     reconciliationRequired: number;
     resolvedExisting: number;
     confirmedMissing: number;
+    resolvedResidueRemoved: number;
   }>;
   previousUtcDay: Readonly<{
     dateUtc: string;

@@ -10,8 +10,8 @@ import {
   verifySchema,
 } from './schema.js';
 import {
-  INTENT_ACTIONS,
-  INTENT_ACTION_RESPONSIBILITY,
+  ALL_INTENT_ACTIONS,
+  ALL_INTENT_ACTION_RESPONSIBILITY,
   MIGRATION_RESPONSIBILITIES,
   WRITER_RESPONSIBILITIES,
   type AttemptResolution,
@@ -45,7 +45,12 @@ const MAX_APPROVAL_TTL_MS = 15 * 60 * 1000;
  */
 const NO_BACKFILL_CLAMP_MS = 60 * 60 * 1000;
 
-/** The exact schema-v4 production writer intent actions; all others stay denied. */
+/**
+ * The exact schema-v5 production writer intent actions; all others stay
+ * denied. `recover_create_ebay_listing` (v5) is the narrow residue-removal
+ * recovery for an unresolved listing-create job — its only provider effect is
+ * deletion of that job's exact unpublished offer/inventory-item residue.
+ */
 const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
   'revise_ebay_listing',
   'create_ebay_listing',
@@ -54,6 +59,7 @@ const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
   'update_ebay_inventory',
   'import_shopify_order',
   'sync_fulfillment',
+  'recover_create_ebay_listing',
 ];
 
 /**
@@ -766,7 +772,7 @@ export function deriveIdempotencyKey(input: {
 }): Digest {
   const scopeKey = assertDigest(input.scopeKey, 'scopeKey');
   const sourceIdentityKey = assertDigest(input.sourceIdentityKey, 'sourceIdentityKey');
-  if (!INTENT_ACTIONS.includes(input.action)) {
+  if (!ALL_INTENT_ACTIONS.includes(input.action)) {
     throw new MigrationStoreError('INVALID_INPUT', 'action is invalid');
   }
 
@@ -1274,10 +1280,10 @@ class MigrationStoreImpl {
         'Production writer intents are disabled in this unwired foundation',
       );
     }
-    if (!INTENT_ACTIONS.includes(input.action)) {
+    if (!ALL_INTENT_ACTIONS.includes(input.action)) {
       throw new MigrationStoreError('INVALID_INPUT', 'action is invalid');
     }
-    const responsibility = INTENT_ACTION_RESPONSIBILITY[input.action];
+    const responsibility = ALL_INTENT_ACTION_RESPONSIBILITY[input.action];
     const source = this.requireIdentity(input.sourceIdentityKey, 'source identity');
     const target = input.targetIdentityKey
       ? this.requireIdentity(input.targetIdentityKey, 'target identity')
@@ -1301,6 +1307,33 @@ class MigrationStoreImpl {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
         'Fulfillment intent requires the exact durable Shopify/eBay order link',
+      );
+    }
+    // Mirror of the schema-v5 recovery_intents_require_unresolved_create
+    // trigger: a residue-removal recovery intent exists only in service of
+    // one outstanding unresolved create job on the identical approval target.
+    if (
+      input.action === 'recover_create_ebay_listing'
+      && this.database.prepare(
+        `SELECT 1
+         FROM execution_jobs job
+         JOIN idempotency_intents source_intent ON source_intent.intent_key = job.intent_key
+         JOIN job_events latest ON latest.job_id = job.job_id
+         WHERE job.scope_key = ?
+           AND job.responsibility = 'listingCreate'
+           AND source_intent.action = 'create_ebay_listing'
+           AND source_intent.approval_target_identity_key = ?
+           AND latest.sequence = (
+             SELECT MAX(candidate.sequence) FROM job_events candidate
+             WHERE candidate.job_id = job.job_id
+           )
+           AND latest.to_state = 'reconciliation_required'
+         LIMIT 1`,
+      ).get(this.scopeKey, target?.identity_key ?? '') === undefined
+    ) {
+      throw new MigrationStoreError(
+        'OWNERSHIP_DENIED',
+        'Recovery intent requires an unresolved create job on the exact target',
       );
     }
     const intentKey = deriveIdempotencyKey({
@@ -1532,7 +1565,7 @@ class MigrationStoreImpl {
     attemptId: string;
     intentKey: Digest;
     outcome: 'outcome_unknown';
-    resolution: 'resolved_existing' | 'confirmed_missing' | null;
+    resolution: AttemptResolution | null;
   } | null {
     this.assertOpen();
     const jobId = identifier(jobIdInput, 'jobId');
@@ -1546,12 +1579,54 @@ class MigrationStoreImpl {
        WHERE attempt.job_id = ? AND attempt.attempt_id = ? AND job.scope_key = ?`,
     ).get(jobId, attemptId, this.scopeKey) as {
       job_id: string; attempt_id: string; intent_key: Digest; outcome: 'outcome_unknown';
-      resolution: 'resolved_existing' | 'confirmed_missing' | null;
+      resolution: AttemptResolution | null;
     } | undefined;
     return row ? {
       jobId: row.job_id, attemptId: row.attempt_id, intentKey: row.intent_key,
       outcome: row.outcome, resolution: row.resolution,
     } : null;
+  }
+
+  /**
+   * Read-only durable artifact evidence for one exact intent: the passed
+   * authoritative zero-write reconciliation runs whose recorded exception
+   * carries the given fixed code against the intent's approval target. A
+   * recovery CLI recomputes each run's result digest from its own exact
+   * inputs plus the returned target snapshot digest, so the artifact identity
+   * (for a create: the exact unpublished offer id) is verified against the
+   * store's recorded evidence rather than trusted from operator input.
+   * Returns digests and run ids only — no identities, values, or payloads.
+   */
+  listArtifactEvidence(input: { intentKey: string; exceptionCode: string }): Array<{
+    runId: string;
+    resultDigest: Digest;
+    targetSnapshotDigest: Digest;
+  }> {
+    this.assertOpen();
+    const intent = this.requireIntent(input.intentKey);
+    const exceptionCode = identifier(input.exceptionCode, 'exceptionCode');
+    const rows = this.database.prepare(
+      `SELECT run.run_id, run.result_digest, run.target_snapshot_digest
+       FROM reconciliation_runs run
+       JOIN reconciliation_exceptions exception ON exception.run_id = run.run_id
+       WHERE run.scope_key = ?
+         AND run.responsibility = ?
+         AND run.target_identity_key = ?
+         AND run.status = 'passed'
+         AND run.external_writes_observed = 0
+         AND exception.code = ?
+       ORDER BY run.completed_epoch_ms ASC, run.run_id ASC`,
+    ).all(
+      this.scopeKey,
+      intent.responsibility,
+      intent.approval_target_identity_key,
+      exceptionCode,
+    ) as Array<{ run_id: string; result_digest: Digest; target_snapshot_digest: Digest }>;
+    return rows.map((row) => ({
+      runId: row.run_id,
+      resultDigest: row.result_digest,
+      targetSnapshotDigest: row.target_snapshot_digest,
+    }));
   }
 
   issueActionApproval(input: {
@@ -1990,7 +2065,7 @@ class MigrationStoreImpl {
   resolveUnknownAttempt(input: {
     jobId: string;
     attemptId: string;
-    resolution: Extract<AttemptResolution, 'resolved_existing' | 'confirmed_missing'>;
+    resolution: AttemptResolution;
     reconciliationRunId: string;
     reconciliationResultDigest: string;
     shopifyOrderIdentityKey?: string | null;
@@ -2009,12 +2084,24 @@ class MigrationStoreImpl {
     if (input.audit.occurredAtUtc !== reconciled.utc) {
       throw new MigrationStoreError('INVALID_INPUT', 'Reconciliation audit time must equal result time');
     }
+    if (!['resolved_existing', 'confirmed_missing', 'resolved_residue_removed']
+      .includes(input.resolution)) {
+      throw new MigrationStoreError('INVALID_INPUT', 'resolution is invalid');
+    }
     this.immediate('unknown attempt resolution', () => {
       const job = this.requireJob(jobId);
       if (!PRODUCTION_ENABLED_RESPONSIBILITIES.includes(job.responsibility)) {
         throw new MigrationStoreError(
           'CONFLICT',
           'This foundation resolves only the enabled writer responsibilities',
+        );
+      }
+      // Mirror of the schema-v5 resolution pairing: the removed-residue
+      // terminal outcome exists only for listingCreate jobs.
+      if (input.resolution === 'resolved_residue_removed' && job.responsibility !== 'listingCreate') {
+        throw new MigrationStoreError(
+          'CONFLICT',
+          'A removed-residue resolution exists only for listingCreate jobs',
         );
       }
       const intent = this.requireIntent(job.intent_key);
@@ -2107,7 +2194,9 @@ class MigrationStoreImpl {
           | undefined;
         const expectedEffect = input.resolution === 'resolved_existing'
           ? 'effect_observed'
-          : 'effect_absent';
+          : input.resolution === 'resolved_residue_removed'
+            ? 'effect_residue_removed'
+            : 'effect_absent';
         if (!recordedEffect || recordedEffect.effect !== expectedEffect) {
           throw new MigrationStoreError(
             'CONFLICT',
@@ -2654,8 +2743,19 @@ class MigrationStoreImpl {
       observedDigest: assertDigest(targetEffectInput.observedDigest, 'observedDigest'),
     };
     if (targetEffectObservation !== null
-      && !['effect_observed', 'effect_absent'].includes(targetEffectObservation.effect)) {
+      && !['effect_observed', 'effect_absent', 'effect_residue_removed']
+        .includes(targetEffectObservation.effect)) {
       throw new MigrationStoreError('INVALID_INPUT', 'target effect is invalid');
+    }
+    // Mirror of the schema-v5 table CHECK: the removed-residue effect is a
+    // listingCreate-only observation.
+    if (targetEffectObservation !== null
+      && targetEffectObservation.effect === 'effect_residue_removed'
+      && targetEffectObservation.responsibility !== 'listingCreate') {
+      throw new MigrationStoreError(
+        'INVALID_INPUT',
+        'A removed-residue effect exists only for listingCreate observations',
+      );
     }
     const seenExceptions = new Set<string>();
     const exceptions = input.exceptions.map((exception) => {
@@ -2878,6 +2978,7 @@ class MigrationStoreImpl {
         reconciliationRequired: current.reconciliation_required ?? 0,
         resolvedExisting: current.resolved_existing ?? 0,
         confirmedMissing: current.confirmed_missing ?? 0,
+        resolvedResidueRemoved: current.resolved_residue_removed ?? 0,
       }),
       previousUtcDay: Object.freeze({
         dateUtc: windowStartUtc.slice(0, 10),
@@ -2900,11 +3001,15 @@ class MigrationStoreImpl {
                AND resolution.reconciled_epoch_ms < ?`,
             this.scopeKey, startEpochMs, endEpochMs, endEpochMs,
           ),
+          // A write whose only durable outcome was removed residue did not
+          // succeed; count it with the failed writes so the daily cohort
+          // invariant (succeeded + failed + unresolved = performed) holds.
           failed: count(
             `SELECT COUNT(*) AS count FROM attempt_resolutions resolution
              JOIN intent_attempts attempt ON attempt.attempt_id = resolution.attempt_id
              JOIN execution_jobs job ON job.job_id = attempt.job_id
-             WHERE job.scope_key = ? AND resolution.resolution = 'confirmed_missing'
+             WHERE job.scope_key = ?
+               AND resolution.resolution IN ('confirmed_missing', 'resolved_residue_removed')
                AND attempt.recorded_epoch_ms >= ? AND attempt.recorded_epoch_ms < ?
                AND resolution.reconciled_epoch_ms < ?`,
             this.scopeKey, startEpochMs, endEpochMs, endEpochMs,
@@ -3122,7 +3227,9 @@ class MigrationStoreImpl {
       if (target.resource_kind !== 'inventory_sku') {
         throw new MigrationStoreError('INVALID_INPUT', 'Inventory target must be an eBay inventory SKU');
       }
-    } else if (action === 'create_ebay_listing') {
+    } else if (['create_ebay_listing', 'recover_create_ebay_listing'].includes(action)) {
+      // Recovery cleanup binds the identical source/target shape as the
+      // create it recovers: the Shopify variant and the exact inventory SKU.
       if (source.platform !== 'shopify' || !['product', 'variant'].includes(source.resource_kind)) {
         throw new MigrationStoreError('INVALID_INPUT', 'Listing source must be a Shopify product or variant');
       }

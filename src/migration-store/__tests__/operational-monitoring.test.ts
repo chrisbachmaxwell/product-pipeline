@@ -59,7 +59,7 @@ describe('aggregate-only operational monitoring', () => {
     expect(result).toEqual({
       currentJobs: {
         reserved: 0, dispatching: 0, reconciliationRequired: 0,
-        resolvedExisting: 0, confirmedMissing: 0,
+        resolvedExisting: 0, confirmedMissing: 0, resolvedResidueRemoved: 0,
       },
       previousUtcDay: {
         dateUtc: '2026-08-26',

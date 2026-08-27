@@ -27,7 +27,7 @@ const SCOPE = {
 
 const VERIFIED: MigrationStoreProjection = {
   status: 'verified',
-  schemaVersion: 4,
+  schemaVersion: 5,
   scope: { ...SCOPE, scopeKey: `sha256:${'1'.repeat(64)}` },
   access: {
     writable: false,
@@ -74,7 +74,7 @@ const VERIFIED: MigrationStoreProjection = {
   monitoring: {
     currentJobs: {
       reserved: 0, dispatching: 0, reconciliationRequired: 0,
-      resolvedExisting: 0, confirmedMissing: 0,
+      resolvedExisting: 0, confirmedMissing: 0, resolvedResidueRemoved: 0,
     },
     previousUtcDay: {
       dateUtc: '2026-08-25',
@@ -294,7 +294,7 @@ describe('request-time durable migration-state reader', () => {
 
     expect(result).toMatchObject({
       status: 'verified',
-      schemaVersion: 4,
+      schemaVersion: 5,
       orders: { watermarkUtc: null, watermarkEstablished: false },
       audit: { valid: true },
       counts: {

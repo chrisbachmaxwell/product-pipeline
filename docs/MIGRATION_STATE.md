@@ -68,6 +68,58 @@ scheduler, worker, or legacy CLI. Schema upgrade, ownership, and every
 dispatch remain explicit operator actions; migration alone performs no
 provider write. See `docs/FULFILLMENT_TRACKING_DISPATCH.md`.
 
+## Schema version 5 — listing-create recovery-cleanup slice (2026-08-27, goal G16 / L34)
+
+Version 5 exists because a production listing-create dispatch left a durable
+unpublished offer/inventory-item residue (Inventory PUT and Offer POST
+succeeded; Publish Offer was rejected). That state is neither
+`resolved_existing` nor `confirmed_missing`, and v4 could not truthfully
+terminate it. Version 5 widens exactly one narrow capability:
+
+- `recover_create_ebay_listing` joins the intent-action vocabulary and the
+  exact production action allowlist. It maps to `listingCreate`, shares the
+  create shape (Shopify variant source, eBay inventory-SKU target), and a new
+  structural trigger (`recovery_intents_require_unresolved_create`, mirrored
+  by the store guard) permits it only while an unresolved
+  (`reconciliation_required`) `create_ebay_listing` job exists on the
+  identical approval target. Its ceremony's only provider effect is deletion
+  of that job's exact recorded residue.
+- `job_events.to_state` and `attempt_resolutions.resolution` gain
+  `resolved_residue_removed`, reachable only from `reconciliation_required`,
+  and `target_effect_observations.effect` gains `effect_residue_removed`,
+  restricted by table CHECK to `listingCreate`. Attempt resolution pairs the
+  new resolution exclusively with the new effect (and only for
+  listingCreate); every existing pairing is unchanged, so a removed residue
+  can never masquerade as a listing that existed or as absence from the
+  start.
+
+Every other denial — mapping/feedback production writers, the order
+watermark clamps, ownership staging, approval TTL/single-use, one job/one
+attempt per intent, append-only history, and the audit chain — is recreated
+with identical predicates. Aggregate monitoring adds a
+`resolvedResidueRemoved` current-job bucket and counts removed-residue
+resolutions with failed writes so the daily cohort invariant holds.
+
+Mechanically, v5 rebuilds the four constrained tables
+(`idempotency_intents`, `job_events`, `attempt_resolutions`,
+`target_effect_observations`) with SQLite's rename-out / create / copy / drop
+pattern. The migration runner now defers foreign-key enforcement for the
+duration of any migration transaction and refuses to commit unless
+`foreign_key_check` is clean, and `legacy_alter_table` brackets the renames
+so no other table, trigger, or index text is rewritten — child tables keep
+their original `REFERENCES idempotency_intents(...)` clauses, which resolve
+to the rebuilt table. The immutable schema-v1 SQL (and therefore every
+stored checksum) is untouched: the v1 `INTENT_ACTIONS` /
+`INTENT_ACTION_RESPONSIBILITY` constants are frozen, and the new action lives
+in `RECOVERY_INTENT_ACTIONS` / `ALL_INTENT_ACTION_RESPONSIBILITY`.
+
+Upgrading remains the same explicit operator action (`migration-admin
+upgrade` after an off-volume backup); runtime never upgrades, and a v1–v4
+store fails every ordinary open until the operator upgrades it. The only
+consumer of the new action is the standalone `listing-lifecycle-admin`
+`recover-create` / `recover-reconcile` ceremony pair; see
+`docs/LISTING_LIFECYCLE_DISPATCH.md`.
+
 ## Canonical responsibility vocabulary
 
 Every control-plane record uses the exact values exported by `src/safety/responsibilities.ts`:
