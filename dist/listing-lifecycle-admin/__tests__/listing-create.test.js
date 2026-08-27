@@ -15,6 +15,7 @@ import { createListingDraftService, parseSaveListingDraftRequest, } from '../../
 import { applyListingCreateDescriptionTemplate, buildListingCreatePayloads, classifyCreateOutcome, deriveListingCreateManifest, ListingLifecycleManifestError, MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH, } from '../manifest.js';
 import { renderListingDescription } from '../../server/listing-description-template.js';
 import { buildListingLifecycleAdminProgram, } from '../program.js';
+import { ListingCreateDispatchError, } from '../create-dispatch-adapter.js';
 const MIGRATION_SCOPE = {
     shopifyStoreDomain: LISTING_DRAFT_SCOPE.shopifyStoreDomain,
     ebayEnvironment: LISTING_DRAFT_SCOPE.ebayEnvironment,
@@ -244,13 +245,16 @@ async function createWorld(draftOverrides = {}) {
     const itemPayloads = [];
     const offerPayloads = [];
     const publishCalls = [];
-    let itemPutFails = false;
+    let itemPutFailure = null;
     let offerFails = false;
     let publishFails = false;
     const adapter = Object.freeze({
         putInventoryItem: async (_sku, payload) => {
             adapterCalls.push('putInventoryItem');
-            if (itemPutFails) {
+            if (itemPutFailure === 'definite_no_effect') {
+                throw new ListingCreateDispatchError('CREATE_DISPATCH_WRITE_FAILED', 'definite_no_effect');
+            }
+            if (itemPutFailure === 'outcome_unknown') {
                 throw new Error('provider secret token=VERY_SECRET https://api.ebay.com/private raw-body');
             }
             itemPayloads.push(payload);
@@ -299,7 +303,8 @@ async function createWorld(draftOverrides = {}) {
         itemPayloads,
         offerPayloads,
         publishCalls,
-        failItemPut: () => { itemPutFails = true; },
+        failItemPut: () => { itemPutFailure = 'definite_no_effect'; },
+        loseItemPutResponse: () => { itemPutFailure = 'outcome_unknown'; },
         failOffer: () => { offerFails = true; },
         failPublish: () => { publishFails = true; },
         stdout,
@@ -703,6 +708,7 @@ describe('listing-lifecycle operator CLI — create', () => {
             providerDispatchReported: false,
             dispatchFailureStage: 'put_inventory_item',
             dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+            dispatchFailureOutcomeClass: 'definite_no_effect',
             offerId: null,
             listingId: null,
             effect: 'created_state_absent',
@@ -733,6 +739,61 @@ describe('listing-lifecycle operator CLI — create', () => {
         expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_INTENT_ALREADY_RECORDED' });
         expect(world.adapterCalls.length).toBe(callsBefore);
     });
+    it('keeps a response-lost Inventory PUT unresolved through absence and later residue', async () => {
+        const world = await createWorld();
+        await world.run(establishArguments(world));
+        await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest)]);
+        const manifestDigest = lastJson(world.stdout).manifestDigest;
+        world.loseItemPutResponse();
+        await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        const dispatched = lastJson(world.stdout);
+        expect(dispatched).toMatchObject({
+            status: 'dispatched-unresolved',
+            providerDispatchReported: false,
+            dispatchFailureStage: 'put_inventory_item',
+            dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+            dispatchFailureOutcomeClass: 'outcome_unknown',
+            effect: 'created_state_absent',
+            resolution: null,
+            externalCommerceWritesAttempted: 1,
+        });
+        const redactedOutput = JSON.stringify([...world.stdout, ...world.stderr]);
+        expect(redactedOutput).not.toContain('VERY_SECRET');
+        expect(redactedOutput).not.toContain('api.ebay.com/private');
+        expect(redactedOutput).not.toContain('raw-body');
+        const callsBefore = world.adapterCalls.length;
+        await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
+            '--manifest-digest', manifestDigest,
+            '--migration-store', world.migrationDatabasePath,
+        ]);
+        expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_INTENT_ALREADY_RECORDED' });
+        expect(world.adapterCalls).toHaveLength(callsBefore);
+        world.setWorkspace(inventoryOnlyWorkspace());
+        await world.run(['reconcile',
+            '--action', 'create', '--catalog-id', CATALOG_ID, '--sku', SKU,
+            '--revision-digest', world.revision.revisionDigest,
+            '--migration-store', world.migrationDatabasePath,
+            '--job-id', dispatched.jobId,
+            '--attempt-id', dispatched.attemptId,
+        ]);
+        expect(lastJson(world.stdout)).toMatchObject({
+            status: 'unresolved',
+            resolution: null,
+            externalWritesPerformed: 0,
+        });
+        expect(world.adapterCalls).toHaveLength(callsBefore);
+        const store = openMigrationStoreReadOnly({
+            databasePath: world.migrationDatabasePath,
+            expectedScope: MIGRATION_SCOPE,
+        });
+        expect(store.getJobStatus(dispatched.jobId)).toMatchObject({
+            state: 'reconciliation_required',
+        });
+        store.close();
+    });
     it('reports a redacted create-offer failure and leaves the observed Inventory residue unresolved', async () => {
         const world = await createWorld();
         await world.run(establishArguments(world));
@@ -748,6 +809,7 @@ describe('listing-lifecycle operator CLI — create', () => {
             providerDispatchReported: false,
             dispatchFailureStage: 'create_offer',
             dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+            dispatchFailureOutcomeClass: 'outcome_unknown',
             offerId: null,
             listingId: null,
             resolution: null,
@@ -774,6 +836,7 @@ describe('listing-lifecycle operator CLI — create', () => {
             providerDispatchReported: false,
             dispatchFailureStage: 'publish_offer',
             dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+            dispatchFailureOutcomeClass: 'outcome_unknown',
             offerId: OFFER_ID,
             listingId: null,
             effect: 'offer_unpublished',

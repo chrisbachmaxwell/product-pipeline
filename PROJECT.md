@@ -347,6 +347,8 @@ Test files: `src/services/__tests__/`
 
 Replaced the listing-create manifest with schema v2 after the first production create safely failed and reconciled absent. The exact approved base description is now bounded and serialized to Inventory product description, while the complete branded HTML remains intact in Offer listing description; reviewed canonical item specifics and fixed `GTC` duration are also digest-bound and serialized. Dispatch failures now report only fixed redacted stage/code values and use a truthful terminal status when fresh reconciliation confirms no artifact. The local draft editor can review and save canonical item-specifics JSON. The prior terminal v1 intent remains non-replayable.
 
+The dispatch boundary also distinguishes `definite_no_effect` from `outcome_unknown`. Only a local pre-request denial or known Inventory PUT HTTP rejection may auto-confirm a fresh absent result; response loss, timeout, network/read failure, oversized or ambiguous responses remain reconciliation-required and non-replayable.
+
 ### 2026-08-26: G19 Production Migration Projection Contract Repair
 
 - Replaced dynamically interpolated camel-case ownership blocker codes with an exhaustive responsibility-to-lower-kebab mapping while preserving the server's strict redacted-code allowlist unchanged.

@@ -616,6 +616,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                 let dispatchFailed = false;
                 let dispatchFailureStage = null;
                 let dispatchFailureCode = null;
+                let dispatchFailureOutcomeClass = null;
                 let offerId = null;
                 let listingId = null;
                 let externalCommerceWritesAttempted = 0;
@@ -636,6 +637,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     dispatchFailureCode = error instanceof ListingCreateDispatchError
                         ? error.code
                         : 'CREATE_DISPATCH_WRITE_FAILED';
+                    dispatchFailureOutcomeClass = error instanceof ListingCreateDispatchError
+                        ? error.outcomeClass
+                        : 'outcome_unknown';
                 }
                 const requiredAtUtc = clock();
                 store.requirePostDispatchReconciliation({
@@ -667,10 +671,12 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                         expectedListingId: listingId,
                         expectedDescriptionHtml: target.derived.manifest.proposed.description,
                     }),
-                    // Absence may auto-confirm only when the provider reported the
-                    // dispatch failed AND no offer artifact was ever created — an
-                    // unpublished offer means something durable exists remotely.
-                    resolveAbsent: dispatchFailed && offerId === null,
+                    // Absence may auto-confirm only for a definite first-PUT rejection.
+                    // A lost/ambiguous response may hide a committed Inventory item,
+                    // and any later-stage failure necessarily follows an earlier write.
+                    resolveAbsent: dispatchFailed
+                        && dispatchFailureStage === 'put_inventory_item'
+                        && dispatchFailureOutcomeClass === 'definite_no_effect',
                 });
                 io.stdout(JSON.stringify({
                     command: 'dispatch-create',
@@ -689,7 +695,9 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     offerId,
                     listingId,
                     providerDispatchReported: !dispatchFailed,
-                    ...(dispatchFailed ? { dispatchFailureStage, dispatchFailureCode } : {}),
+                    ...(dispatchFailed
+                        ? { dispatchFailureStage, dispatchFailureCode, dispatchFailureOutcomeClass }
+                        : {}),
                     effect: reconciliation.effect,
                     resolution: reconciliation.resolution,
                     unresolvedCode: reconciliation.unresolvedCode,

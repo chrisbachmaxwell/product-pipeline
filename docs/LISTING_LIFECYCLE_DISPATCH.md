@@ -124,10 +124,16 @@ workspace row.
    reconciliation run + target-effect observation, and (when the new listing
    is visible and bound) the terminal resolution. The output includes the
    job id, attempt id, intent key, manifest digest, offerId, and listingId.
-   A provider failure prints only fixed `dispatchFailureStage` and
-   `dispatchFailureCode` values. If a failed first write is freshly proven absent,
-   status is `dispatch-failed-confirmed-missing`; no provider body, URL, token, or
-   exception text is returned, and the terminal intent cannot be replayed.
+   A provider failure prints only fixed `dispatchFailureStage`,
+   `dispatchFailureCode`, and `dispatchFailureOutcomeClass` values. Only a
+   `put_inventory_item` failure classified `definite_no_effect` (a local denial
+   before the request, or a known non-2xx HTTP rejection) may combine with a
+   fresh absent capture to produce `dispatch-failed-confirmed-missing`. A timeout,
+   abort, network/read failure, oversized or ambiguous response, or unexpected
+   exception is `outcome_unknown` and stays `dispatched-unresolved` even when the
+   immediate capture is absent: the PUT might have committed remotely. No provider
+   body, URL, token, or exception text is returned, and neither outcome can be
+   redispatched under the same intent.
    The template flag must exactly match the preflight that produced the
    manifest digest. Reconciliation compares the fresh provider's raw
    description HTML byte-for-byte, allowing only CRLF/CR-to-LF normalization;
