@@ -134,8 +134,8 @@ export const isListingDraftSaveInput = (value: unknown): value is ListingDraftSa
     if (id !== null && !positiveDecimalId(id)) return false;
   }
   if (value.draft.conditionDescription !== null
-    && (value.draft.conditionDescription.trim().length === 0
-      || value.draft.conditionDescription.trim() !== value.draft.conditionDescription
+    && value.draft.conditionDescription !== ''
+    && (value.draft.conditionDescription.trim() !== value.draft.conditionDescription
       || value.draft.conditionDescription.length > 1_000)) return false;
   if (value.draft.merchantLocation !== null && !safeMerchantKey(value.draft.merchantLocation)) {
     return false;

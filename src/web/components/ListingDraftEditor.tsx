@@ -252,7 +252,9 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
     return [{
       label,
       before: descriptionSummary((initial[key] ?? inheritedFieldValue(field)) || 'Not set', 160),
-      after: descriptionSummary(values[key] ?? 'Use current value', 160),
+      after: key === 'conditionDescription' && values[key] === ''
+        ? 'Omit optional field'
+        : descriptionSummary(values[key] ?? 'Use current value', 160),
     }];
   });
   const imagesChanged = isSemanticImageChange(
@@ -423,23 +425,44 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
           </InlineGrid>
           <DraftTextField
             label={(
-              <FieldLabel
-                text="Condition description"
-                changed={changedFor('conditionDescription', conditionDescriptionField)}
-              />
+              <InlineStack align="space-between" blockAlign="center" gap="200" wrap>
+                <FieldLabel
+                  text="Condition description"
+                  changed={changedFor('conditionDescription', conditionDescriptionField)}
+                />
+                <InlineStack gap="200">
+                  <Button
+                    variant="plain"
+                    onClick={() => setValue('conditionDescription', '')}
+                    disabled={!conditionDescriptionField.editable
+                      || values.conditionDescription === ''}
+                  >
+                    Omit optional field
+                  </Button>
+                  <Button
+                    variant="plain"
+                    onClick={() => setValue('conditionDescription', null)}
+                    disabled={!conditionDescriptionField.editable
+                      || values.conditionDescription === null}
+                  >
+                    Use current value
+                  </Button>
+                </InlineStack>
+              </InlineStack>
             )}
             field={conditionDescriptionField}
             value={draftFieldValue({
               ...conditionDescriptionField,
               draft: values.conditionDescription,
             })}
-            error={values.conditionDescription !== null && (
-              values.conditionDescription.trim().length === 0
-              || values.conditionDescription.trim() !== values.conditionDescription
+            error={values.conditionDescription !== null
+              && values.conditionDescription !== '' && (
+              values.conditionDescription.trim() !== values.conditionDescription
               || values.conditionDescription.length > 1_000
             ) ? 'Use 1–1,000 characters with no leading or trailing spaces' : undefined}
             multiline={2}
-            onChange={(value) => set('conditionDescription', value)}
+            extraHelp="Optional. Use only to clarify physical condition; omit unrelated text."
+            onChange={(value) => setValue('conditionDescription', value)}
           />
           <InlineGrid columns={{ xs: 1, sm: 2 }} gap="400">
             <ReadOnlyCompare label="Price" field={editBase.sections.listing.price} />

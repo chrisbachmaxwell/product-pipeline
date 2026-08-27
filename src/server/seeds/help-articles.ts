@@ -232,7 +232,7 @@ The operator first saves and reviews an exact draft revision, including canonica
 3. Include the same template flag in the separately approved dispatch with that exact manifest digest.
 4. If recovery verification is needed, include the same flag on \`reconcile --action create\`.
 
-The rendered HTML is deterministic and is sent intact as the offer listing description. eBay's Inventory product description has a smaller 4,000-character limit, so it receives the exact approved pre-template description instead; ProductPipeline never truncates either value. The manifest binds both descriptions, reviewed item specifics, and the fixed GTC duration, and fresh eBay raw HTML must exactly match the full branded offer description. If a write response is lost or ambiguous, the attempt stays unresolved for later reconciliation even when eBay initially appears unchanged; it is never automatically retried. Omitting or changing the flag derives a different desired state and cannot authorize the templated intent. Unsupported versions, changed targets, missing raw HTML, or altered markup fail closed.`,
+The rendered HTML is deterministic and is sent intact as the offer listing description. eBay's Inventory product description has a smaller 4,000-character limit, so it receives the exact approved pre-template description instead; ProductPipeline never truncates either value. The manifest binds both descriptions, reviewed item specifics, and the fixed GTC duration, and fresh eBay raw HTML must exactly match the full branded offer description. The optional condition description may clarify only physical condition; use **Omit optional field** for test instructions or unrelated text. If eBay rejects a write, the CLI may show only the fixed HTTP family/status and at most five validated numeric eBay error IDs; it never shows provider messages, parameters, response bodies, URLs, or tokens. A first-PUT 5xx or lost/ambiguous response stays unresolved for later reconciliation even when eBay initially appears unchanged; it is never automatically retried. A completed intent also stays closed after diagnostic code changes: another create requires an actual reviewed desired-state or serializer correction, not an identical draft re-save or manifest-version bump used only to retry. Omitting or changing the template flag derives a different desired state and cannot authorize the templated intent. Unsupported versions, changed targets, missing raw HTML, or altered markup fail closed.`,
   },
   {
     question: 'How do I change the eBay category?',
@@ -248,7 +248,7 @@ Saving does not change eBay. Apply, approval, and publishing are not available i
     sort_order: 3,
     answer: `A condition description explains the condition of one item. Open the item from **Listings** to see the current eBay condition and description.
 
-Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
+Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. A condition description is optional and may clarify only the item's physical condition. Use **Omit optional field** to explicitly remove a prior proposal; **Use current value** restores inheritance. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
   },
   {
     question: 'How does a saved draft reach eBay?',
@@ -384,7 +384,7 @@ ProductPipeline verifies the exact store and app with four read-only scopes: pro
     question: 'How do I edit condition descriptions?',
     category: 'Settings',
     sort_order: 3,
-    answer: `Open an item from **Listings**, select **Edit**, and enter the proposed condition description. Preview the difference, then select **Save draft**.
+    answer: `Open an item from **Listings**, select **Edit**, and enter the proposed physical-condition description. Use **Omit optional field** to explicitly remove it or **Use current value** to inherit the current value. Preview the difference, then select **Save draft**.
 
 The value is append-only local draft state. It does not update eBay, and this release has no Apply, Approve, or Publish action.`,
   },

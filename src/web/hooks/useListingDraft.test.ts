@@ -202,6 +202,15 @@ describe('local listing draft UI contract', () => {
     expect(isListingDraftSaveInput(payload)).toBe(true);
   });
 
+  it('preserves the explicit optional condition-description omission sentinel', () => {
+    const input = draft();
+    input.sections.listing.conditionDescription.draft = 'Operational test only';
+    const values = { ...initialDraftValues(input), conditionDescription: '' };
+    const payload = buildListingDraftSaveInput(input, values, null);
+    expect(payload.draft.conditionDescription).toBe('');
+    expect(isListingDraftSaveInput(payload)).toBe(true);
+  });
+
   it('canonicalizes bounded item specifics for exact draft approval', () => {
     expect(canonicalDraftItemSpecifics('{"Type":["Lens"],"Brand":["Canon"]}')).toBe(
       '{"Brand":["Canon"],"Type":["Lens"]}',
@@ -307,6 +316,9 @@ describe('local listing draft UI contract', () => {
     expect(page).toContain('isListingDraftBoundToWorkspace(refreshed.data, trustedWorkspace)');
     expect(page).not.toMatch(/onClick=\{\(\) => setEditing\(true\)\}/u);
     expect(editor).toContain('descriptionSummary');
+    expect(editor).toContain('Omit optional field');
+    expect(editor).toContain("setValue('conditionDescription', '')");
+    expect(editor).toContain("setValue('conditionDescription', null)");
     expect(editor).not.toMatch(/dangerouslySetInnerHTML/u);
   });
 

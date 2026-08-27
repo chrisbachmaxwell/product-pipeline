@@ -22,11 +22,26 @@ import { createProductionDispatchTokenProvider } from '../listing-revise-admin/d
 export { createProductionDispatchTokenProvider };
 
 export type ListingCreateDispatchOutcomeClass = 'definite_no_effect' | 'outcome_unknown';
+export type ListingCreateDispatchHttpStatusFamily =
+  | 'http_1xx'
+  | 'http_3xx'
+  | 'http_4xx'
+  | 'http_5xx';
+
+export type ListingCreateDispatchHttpDiagnostic = Readonly<{
+  statusFamily: ListingCreateDispatchHttpStatusFamily;
+  statusCode: number;
+  /** Present only when the bounded body matches eBay's REST errors shape. */
+  ebayErrorIds: readonly number[] | null;
+}>;
 
 const EBAY_API_HOST = 'https://api.ebay.com';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_EBAY_ERROR_ENTRIES = 20;
+const MAX_REPORTED_EBAY_ERROR_IDS = 5;
+const MAX_EBAY_ERROR_ID = 2_147_483_647;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXACT_LISTING_ID = /^[0-9]{1,19}$/;
 
@@ -37,7 +52,8 @@ export class ListingCreateDispatchError extends Error {
     | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE'
     | 'CREATE_DISPATCH_WRITE_FAILED'
     | 'CREATE_DISPATCH_RESPONSE_INVALID',
-  readonly outcomeClass: ListingCreateDispatchOutcomeClass) {
+  readonly outcomeClass: ListingCreateDispatchOutcomeClass,
+  readonly httpDiagnostic: ListingCreateDispatchHttpDiagnostic | null = null) {
     super('Listing create dispatch adapter failed');
     this.name = 'ListingCreateDispatchError';
   }
@@ -46,9 +62,60 @@ export class ListingCreateDispatchError extends Error {
 const deny = (
   code: ConstructorParameters<typeof ListingCreateDispatchError>[0],
   outcomeClass: ListingCreateDispatchOutcomeClass,
+  httpDiagnostic: ListingCreateDispatchHttpDiagnostic | null = null,
 ): never => {
-  throw new ListingCreateDispatchError(code, outcomeClass);
+  throw new ListingCreateDispatchError(code, outcomeClass, httpDiagnostic);
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseEbayErrorIds(text: string): readonly number[] | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isRecord(parsed) || !Array.isArray(parsed.errors)) return null;
+    if (parsed.errors.length === 0 || parsed.errors.length > MAX_EBAY_ERROR_ENTRIES) return null;
+
+    const errorIds: number[] = [];
+    for (const error of parsed.errors) {
+      if (!isRecord(error)
+        || !Number.isSafeInteger(error.errorId)
+        || (error.errorId as number) < 1
+        || (error.errorId as number) > MAX_EBAY_ERROR_ID) {
+        return null;
+      }
+      errorIds.push(error.errorId as number);
+    }
+    return Object.freeze([...new Set(errorIds)]
+      .sort((left, right) => left - right)
+      .slice(0, MAX_REPORTED_EBAY_ERROR_IDS));
+  } catch {
+    return null;
+  }
+}
+
+function httpDiagnostic(
+  statusCode: number,
+  text: string,
+): ListingCreateDispatchHttpDiagnostic | null {
+  if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599
+    || (statusCode >= 200 && statusCode <= 299)) {
+    return null;
+  }
+  const statusFamily: ListingCreateDispatchHttpStatusFamily = statusCode < 200
+    ? 'http_1xx'
+    : statusCode < 400
+      ? 'http_3xx'
+      : statusCode < 500
+        ? 'http_4xx'
+        : 'http_5xx';
+  return Object.freeze({
+    statusFamily,
+    statusCode,
+    ebayErrorIds: parseEbayErrorIds(text),
+  });
+}
 
 type FetchLike = typeof fetch;
 
@@ -81,7 +148,7 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       Accept: 'application/json',
       'Content-Type': 'application/json',
       'Content-Language': 'en-US',
-      Accept_Language: 'en-US',
+      'Accept-Language': 'en-US',
     };
   }
 
@@ -144,7 +211,12 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       { method: 'PUT', headers, body },
     );
     if (response.status !== 200 && response.status !== 201 && response.status !== 204) {
-      deny('CREATE_DISPATCH_WRITE_FAILED', 'definite_no_effect');
+      const diagnostic = httpDiagnostic(response.status, response.text);
+      deny(
+        diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED',
+        diagnostic?.statusFamily === 'http_4xx' ? 'definite_no_effect' : 'outcome_unknown',
+        diagnostic,
+      );
     }
   }
 
@@ -156,7 +228,12 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       { method: 'POST', headers, body },
     );
     if (response.status !== 200 && response.status !== 201) {
-      deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+      const diagnostic = httpDiagnostic(response.status, response.text);
+      deny(
+        diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED',
+        'outcome_unknown',
+        diagnostic,
+      );
     }
     const parsed = parseJsonObject(response.text);
     const offerId = parsed.offerId;
@@ -175,7 +252,14 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
       `${EBAY_API_HOST}/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`,
       { method: 'POST', headers, body: '{}' },
     );
-    if (response.status !== 200) deny('CREATE_DISPATCH_WRITE_FAILED', 'outcome_unknown');
+    if (response.status !== 200) {
+      const diagnostic = httpDiagnostic(response.status, response.text);
+      deny(
+        diagnostic === null ? 'CREATE_DISPATCH_RESPONSE_INVALID' : 'CREATE_DISPATCH_WRITE_FAILED',
+        'outcome_unknown',
+        diagnostic,
+      );
+    }
     const parsed = parseJsonObject(response.text);
     const listingId = parsed.listingId;
     if (typeof listingId !== 'string' || !EXACT_LISTING_ID.test(listingId)) {

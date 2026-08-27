@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-08-27: G16 Bounded Provider-Rejection Diagnostics
+
+Added a diagnostic-only refinement for listing-create provider rejections. A known non-2xx response can now expose only a fixed HTTP family, a bounded numeric status, and the first five sorted unique validated positive eBay REST `errorId` values; messages, parameters, response bodies, URLs, tokens, and exception text remain inaccessible. Only a first-PUT 4xx can be `definite_no_effect`; 5xx and ambiguous transport outcomes remain reconciliation-required. Corrected the outbound `Accept-Language` header spelling. The draft editor now explicitly distinguishes inheriting from omitting the optional condition description, preserves that provenance across later saves, and omits the field from the provider payload. This does not reopen the terminal v2 production intent: the next attempt requires the genuinely corrected draft with its unrelated test instruction omitted, never an identical draft re-save or blind version bump.
+
 ### 2026-08-27: G16 Create Description and Publish-Prerequisite Repair
 
 Replaced the listing-create manifest with schema v2 after the first production create safely failed and reconciled absent. The exact approved base description is now bounded and serialized to Inventory product description, while the complete branded HTML remains intact in Offer listing description; reviewed canonical item specifics and fixed `GTC` duration are also digest-bound and serialized. Dispatch failures now report only fixed redacted stage/code values and use a truthful terminal status when fresh reconciliation confirms no artifact. The local draft editor can review and save canonical item-specifics JSON. The prior terminal v1 intent remains non-replayable.

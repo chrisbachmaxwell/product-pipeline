@@ -104,6 +104,12 @@ workspace row.
    same v2 manifest also binds the approved `product.aspects` object and
    `listingDuration: GTC`. These fields follow eBay's documented publish
    prerequisites: https://developer.ebay.com/api-docs/sell/static/inventory/publishing-offers.html
+   `conditionDescription` is optional. If supplied, it must describe only the
+   used item's physical condition and must not contain test instructions,
+   branding, promotions, shipping, returns, payment, or unrelated text; omit it
+   when there is no physical-condition clarification. It must not contradict
+   the condition, listing description, or images:
+   https://developer.ebay.com/api-docs/sell/inventory/types/slr%3AInventoryItem
 
 2. **Dispatch** — the one action. Passing the exact target plus the manifest
    digest from preflight *is* the operator approval:
@@ -124,16 +130,28 @@ workspace row.
    reconciliation run + target-effect observation, and (when the new listing
    is visible and bound) the terminal resolution. The output includes the
    job id, attempt id, intent key, manifest digest, offerId, and listingId.
-   A provider failure prints only fixed `dispatchFailureStage`,
-   `dispatchFailureCode`, and `dispatchFailureOutcomeClass` values. Only a
+   A provider failure prints fixed `dispatchFailureStage`,
+   `dispatchFailureCode`, and `dispatchFailureOutcomeClass` values. A known
+   non-2xx provider response may additionally print its fixed HTTP family,
+   bounded numeric status code, and the first five sorted unique positive
+   numeric eBay `errorId` values when the bounded response matches eBay's REST
+   `errors` shape. Messages, parameters, provider bodies, URLs, tokens, and
+   exception text are never returned. Only a
    `put_inventory_item` failure classified `definite_no_effect` (a local denial
-   before the request, or a known non-2xx HTTP rejection) may combine with a
+   before the request, or a known 4xx HTTP rejection) may combine with a
    fresh absent capture to produce `dispatch-failed-confirmed-missing`. A timeout,
-   abort, network/read failure, oversized or ambiguous response, or unexpected
+   5xx response, abort, network/read failure, oversized or ambiguous response, or unexpected
    exception is `outcome_unknown` and stays `dispatched-unresolved` even when the
    immediate capture is absent: the PUT might have committed remotely. No provider
    body, URL, token, or exception text is returned, and neither outcome can be
-   redispatched under the same intent.
+   redispatched under the same intent. These diagnostics are not retroactive:
+   deploying newer diagnostics does not reopen a completed intent or authorize
+   another write. A future corrected create must be based on an actual reviewed
+   desired-state correction saved as a newly reviewed draft (for the current
+   canary, omit the unrelated operational-test condition description), or an actual
+   serializer correction bound by a new manifest schema/projection. Re-saving
+   identical draft values or bumping a manifest solely to retry the same bytes
+   is prohibited.
    The template flag must exactly match the preflight that produced the
    manifest digest. Reconciliation compares the fresh provider's raw
    description HTML byte-for-byte, allowing only CRLF/CR-to-LF normalization;
