@@ -2,8 +2,17 @@
 
 Prepared 2026-08-27 by the delegated agent session after Railway SSH was
 re-confirmed unreachable from the remote agent environment (Brain L36, L37).
-This is **resolution path 2**: the operator pastes these blocks into the
-Railway dashboard **Console** for the `product-pipeline` production service.
+The operator pastes these blocks into the Railway dashboard **Console** for the
+`product-pipeline` production service.
+
+> **Read Brain L38 first.** Raising the cloud environment's network access to
+> **Full** does *not* unblock SSH and is not a fix — the access levels control
+> which *domains* are reachable, not which *ports*, and all Anthropic-hosted
+> egress goes through an HTTPS proxy that carries no raw TCP. The Default
+> environment is already `Full` and `ssh.railway.com:22` still times out. The
+> alternatives to this document are running Claude Code **locally in a
+> terminal** (its own network; `claude --teleport <session-id>` carries an
+> existing cloud session over) or a **self-hosted environment**.
 
 Nothing here has been executed. Every block is a provider-write ceremony or a
 read; run them **in order** and stop at the first unexpected output.
