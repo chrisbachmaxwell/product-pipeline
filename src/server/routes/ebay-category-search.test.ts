@@ -365,3 +365,46 @@ describe('eBay category suggestion search', () => {
     expect(JSON.stringify(failed)).not.toMatch(/secret-value|Bearer/);
   });
 });
+
+describe('eBay category browse route', () => {
+  const BROWSE_ENDPOINT = '/api/ebay-category-browse';
+
+  it('is registered on the shadow API GET allowlist', () => {
+    expect(SHADOW_API_GET_PATHS).toContain(BROWSE_ENDPOINT);
+  });
+
+  it('serves one browse level through the shadow route', async () => {
+    const router = createShadowApiRouter({
+      getSnapshot: async () => { throw new Error('unused'); },
+      browseEbayCategories: async (parentId) => ({
+        parentId: typeof parentId === 'string' && parentId !== '' ? parentId : null,
+        breadcrumb: Object.freeze([Object.freeze({ id: '625', name: 'Cameras & Photo' })]),
+        children: Object.freeze([
+          Object.freeze({ id: '30086', name: 'Slaves & Trigger Systems', leaf: true, childCount: 0 }),
+        ]),
+      }),
+    });
+    const response = await requestJson(router, `${BROWSE_ENDPOINT}?parent=30090`);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      parentId: '30090',
+      breadcrumb: [{ id: '625', name: 'Cameras & Photo' }],
+      children: [{ id: '30086', name: 'Slaves & Trigger Systems', leaf: true, childCount: 0 }],
+    });
+  });
+
+  it('maps a bad id to 400 and every other failure to one generic 503', async () => {
+    const router = createShadowApiRouter({
+      getSnapshot: async () => { throw new Error('unused'); },
+      browseEbayCategories: async (parentId) => {
+        if (parentId === 'bogus') throw new EbayCategorySearchError('INVALID_QUERY');
+        throw new EbayCategorySearchError('REMOTE_READ_FAILED');
+      },
+    });
+    const invalid = await requestJson(router, `${BROWSE_ENDPOINT}?parent=bogus`);
+    expect(invalid).toEqual({ status: 400, body: { error: 'Invalid category id' } });
+
+    const failed = await requestJson(router, `${BROWSE_ENDPOINT}?parent=30090`);
+    expect(failed).toEqual({ status: 503, body: { error: 'Category browse is unavailable' } });
+  });
+});

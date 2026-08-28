@@ -27,6 +27,23 @@ const MAX_NAME_LENGTH = 256;
 const MAX_ANCESTORS = 10;
 const QUERY_CACHE_TTL_MS = 60 * 60_000;
 const MAX_CACHED_QUERIES = 500;
+/**
+ * Full-tree browse limits. `get_category_suggestions` answers "what matches
+ * this text" and cannot answer "what is under this node", so top-down
+ * browsing needs the whole tree. eBay serves it on the same host, the same
+ * `/commerce/taxonomy/v1/` prefix, and the same `api_scope` token, in ONE
+ * response — measured 2026-08-27 at 4.12 MB / 17,105 nodes / depth 6 / 34
+ * top-level children for EBAY_US, fetched in ~190ms. It is therefore fetched
+ * once, projected immediately to a compact id/name/parent/leaf index (a few
+ * hundred KB; the 4 MB body is not retained), and cached in-process exactly
+ * like the tree id. Every drill-down level is then served from memory with
+ * zero further provider calls. The larger cap applies ONLY to the full-tree
+ * path; suggestions keep the 2 MB bound.
+ */
+const FULL_TREE_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_TREE_NODES = 50_000;
+const MAX_TREE_DEPTH = 12;
+const MAX_BROWSE_CHILDREN = 1_000;
 export const EBAY_CATEGORY_SEARCH_FAILURE_CODES = Object.freeze([
     'INVALID_QUERY',
     'AUTHORITY_UNAVAILABLE',
@@ -41,6 +58,8 @@ export class EbayCategorySearchError extends Error {
         this.code = code;
     }
 }
+/** Sentinel parent key for the tree root; a real category id is never empty. */
+const ROOT_PARENT_KEY = '';
 function fail(code) {
     throw new EbayCategorySearchError(code);
 }
@@ -79,7 +98,7 @@ function safeCategoryId(value) {
         : value;
     return typeof text === 'string' && /^\d{1,32}$/u.test(text) ? text : null;
 }
-async function boundedTaxonomyGet(fetchImpl, path, accessToken) {
+async function boundedTaxonomyGet(fetchImpl, path, accessToken, maxResponseBytes = MAX_RESPONSE_BYTES) {
     if (!path.startsWith('/commerce/taxonomy/v1/'))
         return fail('REMOTE_READ_FAILED');
     const controller = new AbortController();
@@ -98,11 +117,11 @@ async function boundedTaxonomyGet(fetchImpl, path, accessToken) {
             signal: controller.signal,
         });
         const declaredLength = Number(response.headers.get('content-length') ?? '0');
-        if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+        if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
             return fail('REMOTE_READ_FAILED');
         }
         text = await response.text();
-        if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES)
+        if (Buffer.byteLength(text, 'utf8') > maxResponseBytes)
             return fail('REMOTE_READ_FAILED');
         status = response.status;
     }
@@ -258,10 +277,152 @@ export function createEbayCategorySearch(dependencies) {
     };
 }
 /**
+ * Project the full category tree into the compact browse index. Malformed
+ * individual nodes are dropped exactly like malformed suggestions; only a
+ * structurally invalid tree, an implausible depth, or an implausible node
+ * count fails the whole read. The 4 MB source body is discarded once this
+ * returns — only ids, names, parent links and child counts are retained.
+ */
+function buildBrowseIndex(body) {
+    const root = asRecord(body.rootCategoryNode);
+    if (root === null)
+        return fail('INVALID_RESPONSE');
+    const childrenByParent = new Map();
+    const parentById = new Map();
+    const nameById = new Map();
+    let nodeCount = 0;
+    const visit = (node, parentKey, depth) => {
+        if (depth > MAX_TREE_DEPTH)
+            fail('INVALID_RESPONSE');
+        const rawChildren = node.childCategoryTreeNodes;
+        if (rawChildren === undefined || rawChildren === null)
+            return;
+        if (!Array.isArray(rawChildren))
+            fail('INVALID_RESPONSE');
+        for (const rawChild of rawChildren) {
+            const child = asRecord(rawChild);
+            if (child === null)
+                continue;
+            const category = asRecord(child.category);
+            if (category === null)
+                continue;
+            const id = safeCategoryId(category.categoryId);
+            const name = safeName(category.categoryName);
+            if (id === null || name === null)
+                continue;
+            nodeCount += 1;
+            if (nodeCount > MAX_TREE_NODES)
+                fail('INVALID_RESPONSE');
+            const grandchildren = child.childCategoryTreeNodes;
+            const childCount = Array.isArray(grandchildren) ? grandchildren.length : 0;
+            const rawLeaf = child.leafCategoryTreeNode;
+            const entry = Object.freeze({
+                id,
+                name,
+                leaf: typeof rawLeaf === 'boolean' ? rawLeaf : childCount === 0,
+                childCount,
+            });
+            const bucket = childrenByParent.get(parentKey);
+            if (bucket === undefined)
+                childrenByParent.set(parentKey, [entry]);
+            else if (bucket.length < MAX_BROWSE_CHILDREN)
+                bucket.push(entry);
+            parentById.set(id, parentKey);
+            nameById.set(id, name);
+            visit(child, id, depth + 1);
+        }
+    };
+    visit(root, ROOT_PARENT_KEY, 0);
+    if (nodeCount === 0)
+        return fail('INVALID_RESPONSE');
+    for (const bucket of childrenByParent.values()) {
+        bucket.sort((left, right) => left.name.localeCompare(right.name, 'en-US'));
+    }
+    return Object.freeze({ childrenByParent, parentById, nameById });
+}
+/** Absent/empty means the top level; anything else must be an exact id. */
+export function validateEbayCategoryParentId(value) {
+    if (value === undefined || value === null || value === '')
+        return null;
+    const id = safeCategoryId(value);
+    return id === null ? fail('INVALID_QUERY') : id;
+}
+/**
+ * Top-down category browsing served entirely from the in-process index: one
+ * tree fetch on first use, then zero provider calls per level. An unknown
+ * parent id yields an empty level rather than an error, so a stale saved id
+ * can never break the picker.
+ */
+export function createEbayCategoryBrowse(dependencies) {
+    const fetchImpl = dependencies.fetchImpl ?? fetch;
+    let cachedIndex = null;
+    let indexFlight = null;
+    async function accessToken() {
+        let token = '';
+        try {
+            token = await dependencies.getAccessToken();
+        }
+        catch {
+            return fail('AUTHORITY_UNAVAILABLE');
+        }
+        if (typeof token !== 'string' || token.length === 0 || token.length > 4_096) {
+            return fail('AUTHORITY_UNAVAILABLE');
+        }
+        return token;
+    }
+    async function index() {
+        if (cachedIndex !== null)
+            return cachedIndex;
+        if (indexFlight)
+            return indexFlight;
+        indexFlight = (async () => {
+            const idBody = await boundedTaxonomyGet(fetchImpl, DEFAULT_TREE_PATH, await accessToken());
+            const treeId = safeCategoryId(idBody.categoryTreeId);
+            if (treeId === null)
+                return fail('INVALID_RESPONSE');
+            const treeBody = await boundedTaxonomyGet(fetchImpl, `/commerce/taxonomy/v1/category_tree/${treeId}`, await accessToken(), FULL_TREE_MAX_RESPONSE_BYTES);
+            const built = buildBrowseIndex(treeBody);
+            cachedIndex = built;
+            return built;
+        })();
+        try {
+            return await indexFlight;
+        }
+        finally {
+            indexFlight = null;
+        }
+    }
+    return async (rawParentId) => {
+        const parentId = validateEbayCategoryParentId(rawParentId);
+        const built = await index();
+        const children = built.childrenByParent.get(parentId ?? ROOT_PARENT_KEY) ?? [];
+        const breadcrumb = [];
+        let cursor = parentId;
+        while (cursor !== null && cursor !== ROOT_PARENT_KEY && breadcrumb.length <= MAX_TREE_DEPTH) {
+            const name = built.nameById.get(cursor);
+            if (name === undefined)
+                break;
+            breadcrumb.push({ id: cursor, name });
+            const next = built.parentById.get(cursor);
+            cursor = next === undefined || next === ROOT_PARENT_KEY ? null : next;
+        }
+        breadcrumb.reverse();
+        return Object.freeze({
+            parentId,
+            breadcrumb: Object.freeze(breadcrumb.map((entry) => Object.freeze(entry))),
+            children: Object.freeze([...children]),
+        });
+    };
+}
+/**
  * Production instance backed by the existing transient eBay read token
  * (already minted with `api_scope`; no new scope is requested).
  */
 export const searchEbayCategories = createEbayCategorySearch({
+    getAccessToken: getRuntimeEbayReadToken,
+});
+/** Production browse instance sharing the same token provider. */
+export const browseEbayCategories = createEbayCategoryBrowse({
     getAccessToken: getRuntimeEbayReadToken,
 });
 export const EBAY_CATEGORY_SEARCH_TESTING = Object.freeze({
@@ -273,4 +434,9 @@ export const EBAY_CATEGORY_SEARCH_TESTING = Object.freeze({
     QUERY_CACHE_TTL_MS,
     MAX_RESPONSE_BYTES,
     REQUEST_TIMEOUT_MS,
+    FULL_TREE_MAX_RESPONSE_BYTES,
+    MAX_TREE_NODES,
+    MAX_TREE_DEPTH,
+    MAX_BROWSE_CHILDREN,
+    buildBrowseIndex,
 });
