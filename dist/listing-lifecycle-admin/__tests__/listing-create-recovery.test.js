@@ -15,6 +15,7 @@ import { createMigrationStore, deriveScopeKey, openMigrationStoreReadOnly, } fro
 import { initializeListingControlStore, openListingControlStoreReadOnly, } from '../../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
 import { createListingDraftService, parseSaveListingDraftRequest, } from '../../server/listing-draft-service.js';
+import { recomputeUnpublishedArtifactResultDigest, requireRecordedUnpublishedOffer, } from '../recovery.js';
 import { buildListingLifecycleAdminProgram, } from '../program.js';
 import { ListingRecoverDispatchError, } from '../recover-dispatch-adapter.js';
 const MIGRATION_SCOPE = {
@@ -191,12 +192,17 @@ async function createWorld() {
         scope: MIGRATION_SCOPE,
         createdAtUtc: '2026-08-27T18:00:00.000Z',
     }).close();
+    // When true, the post-createOffer capture takes the shape the REAL catalog
+    // emits for an unpublished offer (no observable offer id, L40) instead of
+    // the legacy fixture. Off by default so existing cases keep exercising the
+    // "capture did surface an id" branch.
+    let productionCaptureShape = false;
     // The create adapter used only to manufacture the unpublished residue: the
     // publish call always fails, exactly like the production incident.
     const createAdapter = Object.freeze({
         putInventoryItem: async () => { current = inventoryOnlyWorkspace(); },
         createOffer: async () => {
-            current = offerPendingWorkspace();
+            current = productionCaptureShape ? productionResidueWorkspace() : offerPendingWorkspace();
             return OFFER_ID;
         },
         publishOffer: async () => {
@@ -263,6 +269,7 @@ async function createWorld() {
         revision,
         setWorkspace: (dto) => { current = dto; },
         recoverCalls,
+        useProductionCaptureShape: (on) => { productionCaptureShape = on; },
         setOfferStatus: (status) => { offerStatus = status; },
         setOfferSku: (sku) => { offerSku = sku; },
         failDeleteOffer: (fail) => { deleteOfferFails = fail; },
@@ -461,6 +468,55 @@ describe('listing-lifecycle operator CLI — recover-create', () => {
         });
         expect(world.recoverCalls).toHaveLength(0);
         expect(jobState(world, source.jobId)).toBe('reconciliation_required');
+    });
+    // L40 second layer, end to end. With the capture in its REAL shape the
+    // dispatch must still bind the provider-returned offer id into the recorded
+    // reconciliation evidence, so the recovery ceremony's evidence check finds
+    // an exact match. Before the dispatch-side repair the recorded digest bound
+    // null and this denied RECOVER_ARTIFACT_EVIDENCE_MISMATCH.
+    it('binds the provider offer id into recorded evidence when the capture cannot (L40)', async () => {
+        const world = await createWorld();
+        world.useProductionCaptureShape(true);
+        const source = await dispatchUnpublishedCreate(world);
+        // The dispatch-side repair is what this asserts: the capture reported no
+        // offer id, so the recorded evidence must carry the id the Offer POST
+        // returned. Without it the digest binds null and the store holds no
+        // record of which offer the residue is.
+        const recorded = openMigrationStoreReadOnly({
+            databasePath: world.migrationDatabasePath,
+            expectedScope: MIGRATION_SCOPE,
+        });
+        try {
+            const evidence = recorded.listArtifactEvidence({
+                intentKey: source.intentKey,
+                exceptionCode: 'CREATE_OFFER_UNPUBLISHED',
+            });
+            expect(evidence.length).toBeGreaterThan(0);
+            const bindsProviderOfferId = evidence.some((entry) => recomputeUnpublishedArtifactResultDigest({
+                sourceApprovalEvidenceDigest: source.manifestDigest,
+                offerId: OFFER_ID,
+                targetSnapshotDigest: entry.targetSnapshotDigest,
+            }) === entry.resultDigest);
+            expect(bindsProviderOfferId, 'recorded evidence must bind the provider offer id').toBe(true);
+        }
+        finally {
+            recorded.close();
+        }
+        await world.run(recoverArguments(world, source));
+        expect(lastJson(world.stdout)).toMatchObject({
+            command: 'recover-create',
+            status: 'recovered-and-reconciled',
+            offerId: OFFER_ID,
+            effect: 'residue_removed',
+            sourceResolution: 'resolved_residue_removed',
+        });
+        expect(world.recoverCalls).toEqual([
+            `getOffer:${OFFER_ID}`,
+            `deleteOffer:${OFFER_ID}`,
+            `getOffer:${OFFER_ID}`,
+            `deleteInventoryItem:${SKU}`,
+            `getInventoryItem:${SKU}`,
+        ]);
     });
     it('denies every identity mismatch with a fixed code before any provider call', async () => {
         const world = await createWorld();
@@ -670,5 +726,68 @@ describe('listing-lifecycle operator CLI — recover-create', () => {
             }
             expect(source, `${file} must not perform network access`).not.toMatch(/fetch\s*\(/);
         }
+    });
+});
+describe('recorded unpublished-offer evidence (L40 second layer)', () => {
+    const EVIDENCE = `sha256:${'5'.repeat(64)}`;
+    const SNAPSHOT = `sha256:${'6'.repeat(64)}`;
+    const run = (offerId) => ({
+        resultDigest: recomputeUnpublishedArtifactResultDigest({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId,
+            targetSnapshotDigest: SNAPSHOT,
+        }),
+        targetSnapshotDigest: SNAPSHOT,
+    });
+    // The Production case: every run recorded before the dispatch-side repair
+    // binds null, because the capture could never surface an offer id for an
+    // unpublished offer. Such a run proves the residue exists; the offer id is
+    // bound to the SKU by the caller's getOffer, not by this digest.
+    it('accepts a run recorded with a null offer id', () => {
+        expect(() => requireRecordedUnpublishedOffer({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId: '247267392011',
+            evidenceRuns: [run(null)],
+        })).not.toThrow();
+    });
+    it('accepts a run recorded with the exact offer id', () => {
+        expect(() => requireRecordedUnpublishedOffer({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId: '247267392011',
+            evidenceRuns: [run('247267392011')],
+        })).not.toThrow();
+    });
+    // Safety retained: evidence that positively names a DIFFERENT offer is a
+    // contradiction, not a gap, and must still deny.
+    it('denies a run recorded with a different non-null offer id', () => {
+        expect(() => requireRecordedUnpublishedOffer({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId: '247267392011',
+            evidenceRuns: [run('999999999999')],
+        })).toThrow(expect.objectContaining({ code: 'RECOVER_ARTIFACT_EVIDENCE_MISMATCH' }));
+    });
+    it('denies when there is no recorded artifact evidence at all', () => {
+        expect(() => requireRecordedUnpublishedOffer({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId: '247267392011',
+            evidenceRuns: [],
+        })).toThrow(expect.objectContaining({ code: 'RECOVER_ARTIFACT_EVIDENCE_MISMATCH' }));
+    });
+    // A run for a different intent/approval must not satisfy this check even if
+    // its offer id matches, since the digest binds the manifest too.
+    it('denies a run bound to a different approval evidence digest', () => {
+        const foreign = {
+            resultDigest: recomputeUnpublishedArtifactResultDigest({
+                sourceApprovalEvidenceDigest: `sha256:${'7'.repeat(64)}`,
+                offerId: '247267392011',
+                targetSnapshotDigest: SNAPSHOT,
+            }),
+            targetSnapshotDigest: SNAPSHOT,
+        };
+        expect(() => requireRecordedUnpublishedOffer({
+            sourceApprovalEvidenceDigest: EVIDENCE,
+            offerId: '247267392011',
+            evidenceRuns: [foreign],
+        })).toThrow(expect.objectContaining({ code: 'RECOVER_ARTIFACT_EVIDENCE_MISMATCH' }));
     });
 });

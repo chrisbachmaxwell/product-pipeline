@@ -826,12 +826,34 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     uuid,
                     manifestDigest: target.derived.manifestDigest,
                     authorityEvidenceDigest: target.derived.manifest.baseEbayObservationDigest,
-                    classify: (workspace) => classifyCreateOutcome({
-                        workspace,
-                        sku,
-                        expectedListingId: listingId,
-                        expectedDescriptionHtml: target.derived.manifest.proposed.description,
-                    }),
+                    classify: (workspace) => {
+                        const outcome = classifyCreateOutcome({
+                            workspace,
+                            sku,
+                            expectedListingId: listingId,
+                            expectedDescriptionHtml: target.derived.manifest.proposed.description,
+                        });
+                        // L40 root cause. `classifyCreateOutcome` reads
+                        // `observedOfferId` from the live capture, and
+                        // `live-listing-catalog.ts` populates that field only when an
+                        // active PUBLISHED listing exists — so a
+                        // created-offer-but-publish-failed artifact always classified
+                        // with `null`, and the recorded reconciliation digest bound
+                        // `null` rather than the offer that actually exists. That left
+                        // the offer id nowhere in the store and made the recovery
+                        // ceremony's evidence check unsatisfiable.
+                        //
+                        // The Offer POST response is the authoritative source for the
+                        // id, and it is in scope here, so bind it into the recorded
+                        // evidence. Only the artifact outcome is adjusted, and only to
+                        // fill a null: a capture that did surface an id is left exactly
+                        // as observed, so this can never overwrite real evidence.
+                        return outcome.kind === 'artifact'
+                            && outcome.observedOfferId === null
+                            && offerId !== null
+                            ? Object.freeze({ ...outcome, observedOfferId: offerId })
+                            : outcome;
+                    },
                     // Absence may auto-confirm only for a definite first-PUT rejection.
                     // A lost/ambiguous response may hide a committed Inventory item,
                     // and any later-stage failure necessarily follows an earlier write.
