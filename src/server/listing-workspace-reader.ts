@@ -17,6 +17,11 @@ import {
   type EnrichedListingDetail,
   type EnrichedListingDetailRequest,
 } from './enriched-listing-detail.js';
+import {
+  createShopifyProductContentReader,
+  type ShopifyProductContent,
+} from './shopify-product-content.js';
+import { getRuntimeShopifyReadToken } from './live-listing-catalog-source.js';
 
 const BACKGROUND_REFRESH_SECONDS = 60;
 const MAX_ROW_ID_LENGTH = 512;
@@ -56,6 +61,13 @@ export type ListingWorkspaceDto = Readonly<{
     editMode: 'read_only';
   }>;
   ebayDetail: EnrichedListingDetail | null;
+  /**
+   * Per-product Shopify description and media, read on demand for the draft
+   * editor. Null when the read is unavailable or was not attempted — the
+   * editor degrades to manual entry exactly as before, so a Shopify hiccup
+   * can never block opening a draft.
+   */
+  shopifyContent?: ShopifyProductContent | null;
 }>;
 
 export class ListingWorkspaceReaderError extends Error {
@@ -77,6 +89,12 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
   getSnapshotStatus?: () => LiveListingCatalogCacheStatus;
   getEbayAccessToken: () => Promise<string>;
   readEbayDetail: ReadEbayDetail;
+  /**
+   * Optional per-product Shopify description/media read. Omitted in tests and
+   * in any caller that does not need draft defaults; a failure is swallowed
+   * so it can never make a workspace unavailable.
+   */
+  readShopifyContent?: (productGid: string) => Promise<ShopifyProductContent>;
   now?: () => number;
   maximumSnapshotAgeMs?: number;
 }>;
@@ -245,6 +263,21 @@ export function createListingWorkspaceReader(
       }
     }
 
+    // Per-product Shopify description and media, for draft defaults. Strictly
+    // best-effort: the bulk sweep does not carry this, and a failure here must
+    // never make a workspace unavailable — the editor simply falls back to
+    // manual entry, exactly as it behaved before.
+    let shopifyContent: ShopifyProductContent | null = null;
+    const shopifyProductId = row.shopify?.productId ?? '';
+    if (dependencies.readShopifyContent && shopifyProductId !== '') {
+      try {
+        shopifyContent = await dependencies.readShopifyContent(shopifyProductId);
+      } catch {
+        warn('LISTING_SHOPIFY_CONTENT_READ_FAILED');
+        shopifyContent = null;
+      }
+    }
+
     return Object.freeze({
       schemaVersion: 1 as const,
       evidence: Object.freeze({
@@ -258,17 +291,22 @@ export function createListingWorkspaceReader(
       catalog: row,
       mapping,
       ebayDetail,
+      shopifyContent,
     });
   };
 }
 
 const runtimeEbayDetailReader = createEnrichedListingDetailReader();
+const runtimeShopifyContentReader = createShopifyProductContentReader({
+  getAccessToken: getRuntimeShopifyReadToken,
+});
 
 export const readListingWorkspace = createListingWorkspaceReader({
   getSnapshot: getLiveListingCatalogSnapshot,
   getSnapshotStatus: getLiveListingCatalogSnapshot.status,
   getEbayAccessToken: getRuntimeEbayReadToken,
   readEbayDetail: runtimeEbayDetailReader,
+  readShopifyContent: runtimeShopifyContentReader,
 });
 
 export const LISTING_WORKSPACE_READER_TESTING = Object.freeze({

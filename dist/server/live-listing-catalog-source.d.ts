@@ -26,6 +26,14 @@ export declare function exchangeRuntimeEbayToken(auth: RuntimeAuthMaterial, fetc
  */
 export declare function getRuntimeEbayReadToken(): Promise<string>;
 /**
+ * Same read-authority seam for the exact Shopify GET readers. The bulk
+ * catalog sweep deliberately does NOT carry per-product description or media
+ * — that is thousands of variants of payload refreshed on a timer for data
+ * only one open draft needs — so the draft path reads it per item and needs
+ * the same stored token. Callers must never return, persist, or log it.
+ */
+export declare function getRuntimeShopifyReadToken(): Promise<string>;
+/**
  * Accept a Shopify CDN image URL, or null when it is absent or not exactly
  * that shape.
  *

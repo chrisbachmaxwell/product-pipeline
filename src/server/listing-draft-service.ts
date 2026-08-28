@@ -405,8 +405,19 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     condition_description: null,
     price: money(shopify.price),
     quantity: quantity(shopify.available),
-    description: null,
-    images: null,
+    // Description and images now come from Shopify, which is where the
+    // merchandising actually lives. Before this they were hardcoded null, so
+    // a NEW listing had no basis for either field (there is no eBay side to
+    // observe yet) and both had to be typed by hand for every item —
+    // and an empty `images` made preflight deny
+    // CREATE_REQUIRED_FIELD_MISSING outright.
+    //
+    // These remain the SOURCE layer, so they are defaults: an operator
+    // override still wins for any individual listing.
+    description: htmlToPlainText(workspace.shopifyContent?.descriptionHtml ?? null),
+    images: workspace.shopifyContent && workspace.shopifyContent.imageUrls.length > 0
+      ? json([...workspace.shopifyContent.imageUrls])
+      : null,
     item_specifics: null,
     identifiers: null,
     fulfillment_policy: null,
