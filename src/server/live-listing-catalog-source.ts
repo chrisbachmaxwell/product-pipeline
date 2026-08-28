@@ -268,6 +268,42 @@ async function shopifyGraphql(
   return asRecord(body.data);
 }
 
+/**
+ * Accept a Shopify CDN image URL, or null when it is absent or not exactly
+ * that shape.
+ *
+ * This previously required an empty query string, which rejected EVERY image
+ * in the store: Shopify serves every CDN asset with a `?v=<epoch>`
+ * cache-buster. Verified against Production — 0 of 156 image-bearing rows
+ * resolved a URL — which made `preflight-create` deny
+ * `CREATE_REQUIRED_FIELD_MISSING: images` for every possible listing, so no
+ * listing could ever be created.
+ *
+ * The safety property is the pinned scheme and host, not the absence of a
+ * query. The version parameter is benign and identifies the exact asset
+ * revision, so it is preserved rather than stripped. It is accepted ONLY in
+ * that exact shape — a single `v` key whose value is all digits; any other
+ * parameter, any fragment, any other host or scheme still rejects.
+ */
+export function safeShopifyImageUrl(value: string | null | undefined): string | null {
+  if (typeof value !== 'string' || value === '') return null;
+  let image: URL;
+  try {
+    image = new URL(value);
+  } catch {
+    return null;
+  }
+  if (image.protocol !== 'https:' || image.hostname !== 'cdn.shopify.com') return null;
+  if (image.hash !== '') return null;
+  if (image.search !== '') {
+    const keys = [...image.searchParams.keys()];
+    if (keys.length !== 1
+      || keys[0] !== 'v'
+      || !/^\d{1,20}$/u.test(image.searchParams.get('v') ?? '')) return null;
+  }
+  return image.toString();
+}
+
 async function captureShopify(accessToken: string): Promise<{
   variants: CapturedShopifyVariant[];
   coverage: Omit<LiveListingCatalogSnapshot['coverage']['shopify'], never>;
@@ -325,16 +361,7 @@ async function captureShopify(accessToken: string): Promise<{
         excludedZeroInventory += 1;
       }
       const imageValue = optionalText(node.image?.url ?? product.featuredMedia?.preview?.image?.url, 2048);
-      let primaryImageUrl: string | null = null;
-      if (imageValue) {
-        try {
-          const image = new URL(imageValue);
-          if (image.protocol === 'https:' && image.hostname === 'cdn.shopify.com'
-            && image.search === '' && image.hash === '') primaryImageUrl = image.toString();
-        } catch {
-          primaryImageUrl = null;
-        }
-      }
+      const primaryImageUrl = safeShopifyImageUrl(imageValue);
       variants.push(Object.freeze({
         productId: safeText(product.id, 256),
         variantId,
