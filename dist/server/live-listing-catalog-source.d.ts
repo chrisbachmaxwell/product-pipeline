@@ -25,6 +25,32 @@ export declare function exchangeRuntimeEbayToken(auth: RuntimeAuthMaterial, fetc
  * method allowlists as this module.
  */
 export declare function getRuntimeEbayReadToken(): Promise<string>;
+/**
+ * Same read-authority seam for the exact Shopify GET readers. The bulk
+ * catalog sweep deliberately does NOT carry per-product description or media
+ * — that is thousands of variants of payload refreshed on a timer for data
+ * only one open draft needs — so the draft path reads it per item and needs
+ * the same stored token. Callers must never return, persist, or log it.
+ */
+export declare function getRuntimeShopifyReadToken(): Promise<string>;
+/**
+ * Accept a Shopify CDN image URL, or null when it is absent or not exactly
+ * that shape.
+ *
+ * This previously required an empty query string, which rejected EVERY image
+ * in the store: Shopify serves every CDN asset with a `?v=<epoch>`
+ * cache-buster. Verified against Production — 0 of 156 image-bearing rows
+ * resolved a URL — which made `preflight-create` deny
+ * `CREATE_REQUIRED_FIELD_MISSING: images` for every possible listing, so no
+ * listing could ever be created.
+ *
+ * The safety property is the pinned scheme and host, not the absence of a
+ * query. The version parameter is benign and identifies the exact asset
+ * revision, so it is preserved rather than stripped. It is accepted ONLY in
+ * that exact shape — a single `v` key whose value is all digits; any other
+ * parameter, any fragment, any other host or scheme still rejects.
+ */
+export declare function safeShopifyImageUrl(value: string | null | undefined): string | null;
 declare function captureShopify(accessToken: string): Promise<{
     variants: CapturedShopifyVariant[];
     coverage: Omit<LiveListingCatalogSnapshot['coverage']['shopify'], never>;

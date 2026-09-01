@@ -2,6 +2,8 @@ import { warn } from '../utils/logger.js';
 import { MAX_LIVE_LISTING_SNAPSHOT_AGE_MS, } from './live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, getRuntimeEbayReadToken, hasUnresolvedLiveListingRefreshFailure, } from './live-listing-catalog-source.js';
 import { createEnrichedListingDetailReader, EBAY_LISTING_DETAIL_MARKETPLACE_ID, EBAY_LISTING_DETAIL_SELLER_ID, } from './enriched-listing-detail.js';
+import { createShopifyProductContentReader, } from './shopify-product-content.js';
+import { getRuntimeShopifyReadToken } from './live-listing-catalog-source.js';
 const BACKGROUND_REFRESH_SECONDS = 60;
 const MAX_ROW_ID_LENGTH = 512;
 export class ListingWorkspaceReaderError extends Error {
@@ -168,6 +170,21 @@ export function createListingWorkspaceReader(dependencies) {
                 return unavailable();
             }
         }
+        // Per-product Shopify description and media, for draft defaults. Strictly
+        // best-effort: the bulk sweep does not carry this, and a failure here must
+        // never make a workspace unavailable — the editor simply falls back to
+        // manual entry, exactly as it behaved before.
+        let shopifyContent = null;
+        const shopifyProductId = row.shopify?.productId ?? '';
+        if (dependencies.readShopifyContent && shopifyProductId !== '') {
+            try {
+                shopifyContent = await dependencies.readShopifyContent(shopifyProductId);
+            }
+            catch {
+                warn('LISTING_SHOPIFY_CONTENT_READ_FAILED');
+                shopifyContent = null;
+            }
+        }
         return Object.freeze({
             schemaVersion: 1,
             evidence: Object.freeze({
@@ -181,15 +198,20 @@ export function createListingWorkspaceReader(dependencies) {
             catalog: row,
             mapping,
             ebayDetail,
+            shopifyContent,
         });
     };
 }
 const runtimeEbayDetailReader = createEnrichedListingDetailReader();
+const runtimeShopifyContentReader = createShopifyProductContentReader({
+    getAccessToken: getRuntimeShopifyReadToken,
+});
 export const readListingWorkspace = createListingWorkspaceReader({
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
     getEbayAccessToken: getRuntimeEbayReadToken,
     readEbayDetail: runtimeEbayDetailReader,
+    readShopifyContent: runtimeShopifyContentReader,
 });
 export const LISTING_WORKSPACE_READER_TESTING = Object.freeze({
     BACKGROUND_REFRESH_SECONDS,

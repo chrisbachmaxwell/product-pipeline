@@ -1,6 +1,7 @@
 import { type LiveListingCatalogRow, type LiveListingCatalogSnapshot } from './live-listing-catalog.js';
 import { type LiveListingCatalogCacheStatus } from './live-listing-catalog-source.js';
 import { type EnrichedListingDetail, type EnrichedListingDetailRequest } from './enriched-listing-detail.js';
+import { type ShopifyProductContent } from './shopify-product-content.js';
 export type ListingWorkspaceMappingState = 'mapped' | 'shopify_only' | 'ebay_only_unmapped' | 'attention';
 export type ListingWorkspaceDto = Readonly<{
     schemaVersion: 1;
@@ -31,6 +32,13 @@ export type ListingWorkspaceDto = Readonly<{
         editMode: 'read_only';
     }>;
     ebayDetail: EnrichedListingDetail | null;
+    /**
+     * Per-product Shopify description and media, read on demand for the draft
+     * editor. Null when the read is unavailable or was not attempted — the
+     * editor degrades to manual entry exactly as before, so a Shopify hiccup
+     * can never block opening a draft.
+     */
+    shopifyContent?: ShopifyProductContent | null;
 }>;
 export declare class ListingWorkspaceReaderError extends Error {
     readonly kind: 'not_found' | 'unavailable';
@@ -42,6 +50,12 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
     getSnapshotStatus?: () => LiveListingCatalogCacheStatus;
     getEbayAccessToken: () => Promise<string>;
     readEbayDetail: ReadEbayDetail;
+    /**
+     * Optional per-product Shopify description/media read. Omitted in tests and
+     * in any caller that does not need draft defaults; a failure is swallowed
+     * so it can never make a workspace unavailable.
+     */
+    readShopifyContent?: (productGid: string) => Promise<ShopifyProductContent>;
     now?: () => number;
     maximumSnapshotAgeMs?: number;
 }>;
