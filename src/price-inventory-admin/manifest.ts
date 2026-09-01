@@ -134,6 +134,65 @@ function buildManifest(input: {
 }
 
 /**
+ * Canonical decimal form of a money amount, for comparison only.
+ *
+ * Trailing fractional zeros are removed exactly — no float parsing, so no
+ * rounding is introduced: "1899.0" and "1899.00" both fold to "1899", and
+ * "164.950" folds to "164.95". Anything that is not a plain decimal is
+ * returned unchanged so it can never compare equal to something it is not.
+ */
+function canonicalAmount(amount: string): string {
+  if (!/^-?\d+(\.\d+)?$/u.test(amount)) return amount;
+  if (!amount.includes('.')) return amount;
+  const trimmed = amount.replace(/0+$/u, '').replace(/\.$/u, '');
+  return trimmed === '' || trimmed === '-' ? amount : trimmed;
+}
+
+/**
+ * True when the eBay observed value and the Shopify source value are the same
+ * aligned value, ignoring representation.
+ *
+ * Plain string equality reported false drift on live data: eBay returns
+ * `{"amount":"1899.0"}` where Shopify holds `{"amount":"1899.00"}` for a
+ * listing whose price is identical. Planning that as drift would dispatch a
+ * real provider write that changes nothing — wasted eBay calls, noise in the
+ * audit chain, and an avoidable chance of a failed write on a listing that
+ * needed no work at all.
+ *
+ * Only the numeric amount is normalized. Currency must still match exactly,
+ * malformed values never fold together, and the manifest is still built from
+ * the ORIGINAL strings so the value dispatched to eBay is Shopify's own, not
+ * a rewritten one.
+ */
+function isSameAlignedValue(
+  field: AlignmentField,
+  before: string | null,
+  after: string,
+): boolean {
+  if (before === after) return true;
+  if (field !== 'price' || before === null) return false;
+  let left: unknown;
+  let right: unknown;
+  try {
+    left = JSON.parse(before);
+    right = JSON.parse(after);
+  } catch {
+    return false;
+  }
+  const asMoney = (value: unknown): { amount: string; currency: string } | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      && typeof (value as Record<string, unknown>).amount === 'string'
+      && typeof (value as Record<string, unknown>).currency === 'string'
+      ? value as { amount: string; currency: string }
+      : null;
+  const leftMoney = asMoney(left);
+  const rightMoney = asMoney(right);
+  if (leftMoney === null || rightMoney === null) return false;
+  return leftMoney.currency === rightMoney.currency
+    && canonicalAmount(leftMoney.amount) === canonicalAmount(rightMoney.amount);
+}
+
+/**
  * Derive the deterministic alignment manifest from one fresh workspace
  * basis: before = current eBay observed value, after = Shopify source value.
  * Fails closed on an unmanaged or partially-bound target, a missing or
@@ -151,7 +210,7 @@ export function deriveAlignmentManifest(input: {
   if (after === null) return deny('PLAN_SOURCE_VALUE_INVALID');
   assertValidAfterValue(field, after);
   const before = basis.observed[field];
-  if (before === after) deny('PLAN_NO_DRIFT');
+  if (isSameAlignedValue(field, before, after)) deny('PLAN_NO_DRIFT');
   return buildManifest({ identity: basis.identity, field, before, after });
 }
 
