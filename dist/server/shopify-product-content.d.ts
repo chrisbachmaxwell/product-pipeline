@@ -1,14 +1,20 @@
 /**
- * Manufacturer part number, derived by removing this store's per-unit suffix.
+ * Manufacturer part number, derived by removing this store's unit tag.
  *
- * Verified against the live catalog: SKUs are the manufacturer part number
- * plus a unit tag — `ILCE7M3/B-U406` -> `ILCE7M3/B`, `2882A001-U002` ->
- * `2882A001`, `MT-24EX-U167` -> `MT-24EX`.
+ * The store's convention, per the operator: the SKU is the manufacturer part
+ * number, then `-U`, then the last three of that unit's serial number.
+ * Everything from `-U` onward — including the `-U` itself — is the unit tag,
+ * not the part number.
  *
- * ONLY the `-U<digits>` unit suffix is stripped. Other trailing tags seen in
- * the catalog (`-OB` open box, `-DISP` display) are condition markers whose
- * relationship to the part number is not established, so they are left
- * intact: emitting a slightly long MPN is harmless, inventing a wrong one is
+ * An earlier version required digits after `-U`. That was wrong on real data:
+ * serials contain letters and units can carry an extra tag, so
+ * `SEL24F14GM-U84M-new` and `16443058-U` (2 of 174 live SKUs) were left whole.
+ * The split is therefore on the LAST `-U`, which keeps a part number that
+ * legitimately contains `-U` earlier in the string intact.
+ *
+ * Other trailing tags with no `-U` (`-OB` open box, `-DISP` display) are
+ * condition markers whose relationship to the part number is not established,
+ * so they are left alone: a slightly long MPN is harmless, an invented one is
  * not. MPN is an optional free-text aspect on eBay.
  */
 export declare function mpnFromSku(sku: string | null | undefined): string | null;

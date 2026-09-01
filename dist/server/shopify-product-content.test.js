@@ -199,10 +199,18 @@ describe('shopify field mappings', () => {
         expect(mpnFromSku('2882A001-U002')).toBe('2882A001');
         expect(mpnFromSku('MT-24EX-U167')).toBe('MT-24EX');
         expect(mpnFromSku('STE2-U809')).toBe('STE2');
-        // Condition tags are NOT unit numbers and are left intact rather than
-        // guessed at — a slightly long MPN beats an invented one.
+        // The two live SKUs an earlier digits-only rule got wrong: serials can
+        // contain letters, and a unit can carry a further tag.
+        expect(mpnFromSku('SEL24F14GM-U84M-new')).toBe('SEL24F14GM');
+        expect(mpnFromSku('16443058-U')).toBe('16443058');
+        // Condition tags with no -U are NOT unit tags and are left intact rather
+        // than guessed at — a slightly long MPN beats an invented one.
         expect(mpnFromSku('APD0170A3B-OB')).toBe('APD0170A3B-OB');
         expect(mpnFromSku('AP30126A20-DISP')).toBe('AP30126A20-DISP');
+        // Splitting on the LAST -U keeps an earlier legitimate -U in the part
+        // number, and a leading -U is never treated as a tag.
+        expect(mpnFromSku('ABC-UNIT-U123')).toBe('ABC-UNIT');
+        expect(mpnFromSku('-U123')).toBe('-U123');
         expect(mpnFromSku(null)).toBeNull();
         expect(mpnFromSku('  ')).toBeNull();
     });
