@@ -176,9 +176,10 @@ export function createListingWorkspaceReader(dependencies) {
         // manual entry, exactly as it behaved before.
         let shopifyContent = null;
         const shopifyProductId = row.shopify?.productId ?? '';
-        if (dependencies.readShopifyContent && shopifyProductId !== '') {
+        const shopifyVariantId = row.shopify?.variantId ?? '';
+        if (dependencies.readShopifyContent && shopifyProductId !== '' && shopifyVariantId !== '') {
             try {
-                shopifyContent = await dependencies.readShopifyContent(shopifyProductId);
+                shopifyContent = await dependencies.readShopifyContent(shopifyProductId, shopifyVariantId);
             }
             catch {
                 warn('LISTING_SHOPIFY_CONTENT_READ_FAILED');

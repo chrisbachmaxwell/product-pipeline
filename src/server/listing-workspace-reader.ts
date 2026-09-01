@@ -94,7 +94,10 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
    * in any caller that does not need draft defaults; a failure is swallowed
    * so it can never make a workspace unavailable.
    */
-  readShopifyContent?: (productGid: string) => Promise<ShopifyProductContent>;
+  readShopifyContent?: (
+    productGid: string,
+    variantGid: string,
+  ) => Promise<ShopifyProductContent>;
   now?: () => number;
   maximumSnapshotAgeMs?: number;
 }>;
@@ -269,9 +272,13 @@ export function createListingWorkspaceReader(
     // manual entry, exactly as it behaved before.
     let shopifyContent: ShopifyProductContent | null = null;
     const shopifyProductId = row.shopify?.productId ?? '';
-    if (dependencies.readShopifyContent && shopifyProductId !== '') {
+    const shopifyVariantId = row.shopify?.variantId ?? '';
+    if (dependencies.readShopifyContent && shopifyProductId !== '' && shopifyVariantId !== '') {
       try {
-        shopifyContent = await dependencies.readShopifyContent(shopifyProductId);
+        shopifyContent = await dependencies.readShopifyContent(
+          shopifyProductId,
+          shopifyVariantId,
+        );
       } catch {
         warn('LISTING_SHOPIFY_CONTENT_READ_FAILED');
         shopifyContent = null;

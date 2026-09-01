@@ -55,7 +55,7 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
      * in any caller that does not need draft defaults; a failure is swallowed
      * so it can never make a workspace unavailable.
      */
-    readShopifyContent?: (productGid: string) => Promise<ShopifyProductContent>;
+    readShopifyContent?: (productGid: string, variantGid: string) => Promise<ShopifyProductContent>;
     now?: () => number;
     maximumSnapshotAgeMs?: number;
 }>;

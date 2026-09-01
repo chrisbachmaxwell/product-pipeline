@@ -218,6 +218,41 @@ function canonicalJson(value) {
     const record = value;
     return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
+/**
+ * eBay item specifics sourced from Shopify: Brand from the vendor, MPN from
+ * the SKU. Returns null when neither is trustworthy so the field stays
+ * visibly empty for the operator rather than shipping a wrong aspect.
+ * Deliberately omits Model — see the note at the source values.
+ */
+function shopifyAspects(content) {
+    if (!content)
+        return null;
+    const aspects = {};
+    if (content.brand !== null)
+        aspects.Brand = [content.brand];
+    if (content.mpn !== null)
+        aspects.MPN = [content.mpn];
+    return Object.keys(aspects).length === 0 ? null : canonicalJson(aspects);
+}
+/**
+ * Product identifiers sourced from Shopify. `upc` is a list because eBay
+ * accepts several; the barcode yields at most one, already normalized to a
+ * 12/13-digit GTIN so the same product is not seen as two.
+ */
+function shopifyIdentifiers(content) {
+    if (!content)
+        return null;
+    if (content.brand === null && content.mpn === null && content.upc === null)
+        return null;
+    return canonicalJson({
+        brand: content.brand,
+        mpn: content.mpn,
+        upc: content.upc === null ? [] : [content.upc],
+        ean: [],
+        isbn: [],
+        epid: null,
+    });
+}
 function htmlToPlainText(value) {
     if (value === null)
         return null;
@@ -335,8 +370,16 @@ function eligibleBasis(workspace) {
         images: workspace.shopifyContent && workspace.shopifyContent.imageUrls.length > 0
             ? json([...workspace.shopifyContent.imageUrls])
             : null,
-        item_specifics: null,
-        identifiers: null,
+        // eBay requires Brand and Model for most categories. Brand comes from the
+        // Shopify vendor and MPN from the SKU (see shopify-product-content.ts);
+        // MODEL IS DELIBERATELY ABSENT — the catalog has no structured field for
+        // it, it exists only inside free-text titles, and guessing it would put
+        // "STE2" or "ILCE7M3/B" in front of buyers where the searched model is
+        // "ST-E2" or "a7 III". It stays an operator field until a Shopify
+        // metafield carries it. canonicalJson sorts keys, which the create
+        // manifest requires.
+        item_specifics: shopifyAspects(workspace.shopifyContent),
+        identifiers: shopifyIdentifiers(workspace.shopifyContent),
         fulfillment_policy: null,
         payment_policy: null,
         return_policy: null,

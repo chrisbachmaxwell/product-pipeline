@@ -15,6 +15,8 @@
  */
 import { safeShopifyImageUrl } from './live-listing-catalog-source.js';
 const SHOPIFY_ADMIN_ORIGIN = 'https://usedcameragear.myshopify.com';
+/** Guards against listing the store itself as a product's Brand. */
+const STORE_NAME = 'usedcameragear';
 const SHOPIFY_ADMIN_PATH = '/admin/api/2023-10/graphql.json';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -22,9 +24,10 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_IMAGES = 24;
 const MAX_DESCRIPTION_CHARACTERS = 500_000;
 const PRODUCT_GID_PATTERN = /^gid:\/\/shopify\/Product\/\d{1,32}$/u;
-const PRODUCT_CONTENT_QUERY = `query ListingDraftProductContent($id: ID!) {
+const PRODUCT_CONTENT_QUERY = `query ListingDraftProductContent($id: ID!, $variantId: ID!) {
   product(id: $id) {
     id
+    vendor
     descriptionHtml
     media(first: ${MAX_IMAGES}) {
       nodes {
@@ -32,7 +35,76 @@ const PRODUCT_CONTENT_QUERY = `query ListingDraftProductContent($id: ID!) {
       }
     }
   }
+  productVariant(id: $variantId) {
+    id
+    sku
+    barcode
+  }
 }`;
+const VARIANT_GID_PATTERN = /^gid:\/\/shopify\/ProductVariant\/\d{1,32}$/u;
+/** Unit-number suffix this store appends to the manufacturer part number. */
+const UNIT_SUFFIX_PATTERN = /-U\d{1,10}$/u;
+/**
+ * Manufacturer part number, derived by removing this store's per-unit suffix.
+ *
+ * Verified against the live catalog: SKUs are the manufacturer part number
+ * plus a unit tag — `ILCE7M3/B-U406` -> `ILCE7M3/B`, `2882A001-U002` ->
+ * `2882A001`, `MT-24EX-U167` -> `MT-24EX`.
+ *
+ * ONLY the `-U<digits>` unit suffix is stripped. Other trailing tags seen in
+ * the catalog (`-OB` open box, `-DISP` display) are condition markers whose
+ * relationship to the part number is not established, so they are left
+ * intact: emitting a slightly long MPN is harmless, inventing a wrong one is
+ * not. MPN is an optional free-text aspect on eBay.
+ */
+export function mpnFromSku(sku) {
+    if (typeof sku !== 'string')
+        return null;
+    const trimmed = sku.trim();
+    if (trimmed === '' || trimmed.length > 128)
+        return null;
+    const stripped = trimmed.replace(UNIT_SUFFIX_PATTERN, '');
+    return stripped === '' ? null : stripped;
+}
+/**
+ * Normalized GTIN from the Shopify barcode field, or null when it is absent
+ * or not a recognizable UPC/EAN.
+ *
+ * The live catalog stores the same product's UPC inconsistently — A7 III
+ * units carry both `027242910768` and `27242910768`. eBay treats those as
+ * different products, so an 11-digit value is zero-padded to a 12-digit
+ * UPC-A. Only 12-digit (UPC-A) and 13-digit (EAN-13) results are accepted.
+ */
+export function normalizedGtin(barcode) {
+    if (typeof barcode !== 'string')
+        return null;
+    const digits = barcode.trim().replace(/[\s-]/gu, '');
+    if (!/^\d+$/u.test(digits))
+        return null;
+    const padded = digits.length === 11 ? `0${digits}` : digits;
+    return padded.length === 12 || padded.length === 13 ? padded : null;
+}
+/**
+ * Brand from the Shopify vendor field, or null when it cannot be trusted.
+ *
+ * Verified populated across the catalog (Canon, Leica, Fujifilm, Sony,
+ * Aputure, Hasselblad, Tamron, DJI). The guard exists because at least one
+ * product carried the STORE name in `vendor` instead of a real brand, and
+ * listing "usedcameragear" as the Brand is worse than leaving it for the
+ * operator: this returns null so the field stays visibly empty.
+ */
+export function brandFromVendor(vendor, storeName) {
+    if (typeof vendor !== 'string')
+        return null;
+    const trimmed = vendor.trim();
+    if (trimmed === '' || trimmed.length > 65)
+        return null;
+    const folded = trimmed.toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '');
+    const foldedStore = storeName.toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '');
+    if (folded === '' || folded === foldedStore)
+        return null;
+    return trimmed;
+}
 export class ShopifyProductContentError extends Error {
     constructor() {
         super('Shopify product content is unavailable');
@@ -49,8 +121,10 @@ function asRecord(value) {
 }
 export function createShopifyProductContentReader(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
-    return async (productGid) => {
+    return async (productGid, variantGid) => {
         if (typeof productGid !== 'string' || !PRODUCT_GID_PATTERN.test(productGid))
+            fail();
+        if (typeof variantGid !== 'string' || !VARIANT_GID_PATTERN.test(variantGid))
             fail();
         let token = '';
         try {
@@ -75,7 +149,7 @@ export function createShopifyProductContentReader(dependencies) {
                 },
                 body: JSON.stringify({
                     query: PRODUCT_CONTENT_QUERY,
-                    variables: { id: productGid },
+                    variables: { id: productGid, variantId: variantGid },
                 }),
                 redirect: 'error',
                 signal: controller.signal,
@@ -132,9 +206,16 @@ export function createShopifyProductContentReader(dependencies) {
                     imageUrls.push(url);
             }
         }
+        // The variant is optional: a missing or mismatched one costs identifiers,
+        // never the whole read, so description and images still reach the editor.
+        const variant = asRecord(asRecord(body.data)?.productVariant);
+        const variantMatches = variant !== null && variant.id === variantGid;
         return Object.freeze({
             descriptionHtml,
             imageUrls: Object.freeze(imageUrls),
+            brand: brandFromVendor(product.vendor, STORE_NAME),
+            mpn: variantMatches ? mpnFromSku(variant.sku) : null,
+            upc: variantMatches ? normalizedGtin(variant.barcode) : null,
         });
     };
 }
