@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { openMigrationStore } from '../migration-store/index.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 import type { LiveListingCatalogSnapshot } from '../server/live-listing-catalog.js';
+import { type QuantityBeliefStore } from './quantity-beliefs.js';
 import { type PriceInventoryDispatchAdapter } from './dispatch-adapter.js';
 import { type TradingAlignDispatchAdapter } from './trading-dispatch-adapter.js';
 export type PriceInventoryAdminIo = {
@@ -16,6 +17,8 @@ export type PriceInventoryAdminDependencies = Readonly<{
     createTradingAdapter?: () => TradingAlignDispatchAdapter;
     /** Catalog enumeration for `align-sweep`; unused by the one-action path. */
     getSnapshot?: () => Promise<LiveListingCatalogSnapshot>;
+    /** Quantity-belief cache for `align-sweep`; unused by the one-action path. */
+    openBeliefs?: (databasePath: string) => QuantityBeliefStore;
     now?: () => Date;
     uuid?: () => string;
     io?: PriceInventoryAdminIo;
