@@ -44,6 +44,10 @@ import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js'
 import { getLiveListingCatalogSnapshot } from '../server/live-listing-catalog-source.js';
 import type { LiveListingCatalogSnapshot } from '../server/live-listing-catalog.js';
 import {
+  openQuantityBeliefStore,
+  type QuantityBeliefStore,
+} from './quantity-beliefs.js';
+import {
   compareAlignedState,
   deriveAlignmentManifest,
   parseAlignmentPrice,
@@ -88,6 +92,8 @@ export type PriceInventoryAdminDependencies = Readonly<{
   createTradingAdapter?: () => TradingAlignDispatchAdapter;
   /** Catalog enumeration for `align-sweep`; unused by the one-action path. */
   getSnapshot?: () => Promise<LiveListingCatalogSnapshot>;
+  /** Quantity-belief cache for `align-sweep`; unused by the one-action path. */
+  openBeliefs?: (databasePath: string) => QuantityBeliefStore;
   now?: () => Date;
   uuid?: () => string;
   io?: PriceInventoryAdminIo;
@@ -389,6 +395,7 @@ export function buildPriceInventoryAdminProgram(
       getAccessToken: createProductionDispatchTokenProvider(),
     }));
   const getSnapshot = dependencies.getSnapshot ?? getLiveListingCatalogSnapshot;
+  const openBeliefs = dependencies.openBeliefs ?? openQuantityBeliefStore;
   const now = dependencies.now ?? (() => new Date());
   const uuid = dependencies.uuid ?? randomUUID;
 
@@ -782,12 +789,24 @@ export function buildPriceInventoryAdminProgram(
       'Literal acknowledgement that this batch replaces per-action approval (G18 policy)',
     )
     .option('--max-actions <n>', `Provider writes to attempt, max ${SWEEP_HARD_CAP}`)
+    .option(
+      '--belief-store <path>',
+      'Quantity-belief cache path. Beliefs are recorded whenever eBay state is '
+      + 'observed, and with --suspected-only they also select which listings are read.',
+    )
+    .option(
+      '--suspected-only',
+      'Read eBay only for listings whose live Shopify quantity disagrees with the '
+      + 'remembered eBay quantity (or that have no belief yet). Requires --belief-store '
+      + 'and --field quantity.',
+    )
     .action(async (options: {
       migrationStore: string;
       confirmScope: string;
       field: string;
       maxActions?: string;
-      dryRun?: boolean;
+      beliefStore?: string;
+      suspectedOnly?: boolean;
     }) => {
       const started = new Date().toISOString();
       try {
@@ -800,6 +819,15 @@ export function buildPriceInventoryAdminProgram(
           : Number(options.maxActions);
         if (!Number.isSafeInteger(requested) || requested < 1) deny('SWEEP_MAX_ACTIONS_INVALID');
         const cap = Math.min(requested, SWEEP_HARD_CAP);
+        if (options.suspectedOnly) {
+          // Beliefs are about quantity only: eBay price does not move on its
+          // own the way quantity does when an order consumes stock.
+          if (field !== 'quantity') deny('SWEEP_SUSPECTED_REQUIRES_QUANTITY');
+          if (!options.beliefStore) deny('SWEEP_BELIEF_STORE_REQUIRED');
+        }
+        const beliefs = options.beliefStore
+          ? openBeliefs(options.beliefStore)
+          : null;
 
         const store = openMigration({
           databasePath: options.migrationStore,
@@ -817,12 +845,27 @@ export function buildPriceInventoryAdminProgram(
           }
 
           const snapshot = await getSnapshot();
-          const candidates = (snapshot.rows ?? []).filter((row) =>
+          const active = (snapshot.rows ?? []).filter((row) =>
             row.lifecycleStatus === 'active'
             && row.ebay.listingId !== null
             && row.ebay.sku !== null
             && row.ebay.sku !== ''
             && row.shopify !== null);
+
+          // Belief-gated selection. The remembered eBay quantity decides which
+          // listings are WORTH an eBay read; it never decides what is written.
+          // Every selected listing still goes through the real plan, which
+          // reads eBay for the true `before`. A stale belief can only cost an
+          // extra check or defer one to the scheduled full sweep.
+          const remembered = beliefs?.all() ?? new Map();
+          const candidates = options.suspectedOnly
+            ? active.filter((row) => {
+              const belief = remembered.get(row.ebay.sku as string);
+              if (!belief) return true; // never observed — must look
+              if (belief.listingId !== row.ebay.listingId) return true; // relisted
+              return belief.quantity !== (row.shopify?.available ?? null);
+            })
+            : active;
 
           const results: Array<Record<string, unknown>> = [];
           let scanned = 0;
@@ -847,8 +890,20 @@ export function buildPriceInventoryAdminProgram(
               // PLAN_NO_DRIFT is the overwhelmingly common case and is not a
               // failure: delta-only means an aligned listing is simply skipped.
               const code = safeErrorCode(error);
-              if (code === 'PLAN_NO_DRIFT') skippedNoDrift += 1;
-              else {
+              if (code === 'PLAN_NO_DRIFT') {
+                skippedNoDrift += 1;
+                // A real eBay read just proved eBay agrees with Shopify, so
+                // this is a genuine observation of eBay state, not a guess.
+                if (beliefs && field === 'quantity' && row.shopify?.available != null) {
+                  beliefs.record({
+                    sku: targetOptions.sku,
+                    listingId: targetOptions.listingId,
+                    quantity: row.shopify.available,
+                    source: 'observed_no_drift',
+                    observedAtUtc: new Date().toISOString(),
+                  });
+                }
+              } else {
                 failed += 1;
                 results.push({ sku: targetOptions.sku, status: 'skipped', code });
               }
@@ -860,11 +915,31 @@ export function buildPriceInventoryAdminProgram(
               });
               aligned += 1;
               results.push({ sku: targetOptions.sku, ...result });
+              // Only remember a value reconciliation confirmed landed. An
+              // unresolved dispatch leaves the belief absent, so the next
+              // sweep re-reads this listing rather than trusting a write we
+              // could not verify.
+              if (beliefs && field === 'quantity') {
+                if (result.resolution === 'resolved_existing'
+                  && row.shopify?.available != null) {
+                  beliefs.record({
+                    sku: targetOptions.sku,
+                    listingId: targetOptions.listingId,
+                    quantity: row.shopify.available,
+                    source: 'aligned',
+                    observedAtUtc: new Date().toISOString(),
+                  });
+                } else {
+                  beliefs.forget(targetOptions.sku);
+                }
+              }
             } catch (error) {
               failed += 1;
               results.push({
                 sku: targetOptions.sku, status: 'denied', code: safeErrorCode(error),
               });
+              // A failed action leaves eBay in an unknown state for this SKU.
+              if (beliefs && field === 'quantity') beliefs.forget(targetOptions.sku);
             }
           }
 
@@ -875,7 +950,10 @@ export function buildPriceInventoryAdminProgram(
             responsibility,
             startedAtUtc: started,
             completedAtUtc: new Date().toISOString(),
+            mode: options.suspectedOnly ? 'suspected-only' : 'full',
+            activeListings: active.length,
             candidates: candidates.length,
+            ebayReadsAvoided: active.length - candidates.length,
             scanned,
             aligned,
             skippedNoDrift,
@@ -886,6 +964,7 @@ export function buildPriceInventoryAdminProgram(
           }));
           if (failed > 0) io.setExitCode(1);
         } finally {
+          beliefs?.close();
           store.close();
         }
       } catch (error) {

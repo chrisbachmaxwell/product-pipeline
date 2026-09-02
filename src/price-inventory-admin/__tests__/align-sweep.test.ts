@@ -129,6 +129,30 @@ describe('price/inventory align-sweep', () => {
     expect(world.providerCalls).toHaveLength(0);
   });
 
+  // Beliefs are about quantity drift specifically; eBay price does not move on
+  // its own the way quantity does when an order consumes stock.
+  it('refuses --suspected-only for price', async () => {
+    const world = createWorld();
+    await world.run([
+      'align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'price',
+      '--confirm-sweep',
+      '--suspected-only',
+      '--belief-store', '/tmp/unused-beliefs.sqlite',
+    ]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'SWEEP_SUSPECTED_REQUIRES_QUANTITY' });
+    expect(world.providerCalls).toHaveLength(0);
+  });
+
+  it('refuses --suspected-only without a belief store', async () => {
+    const world = createWorld();
+    await world.run(sweepArgs(world, ['--suspected-only']));
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'SWEEP_BELIEF_STORE_REQUIRED' });
+    expect(world.providerCalls).toHaveLength(0);
+  });
+
   it('rejects a field that is not price or quantity', async () => {
     const world = createWorld();
     await world.run([
