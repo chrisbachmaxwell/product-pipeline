@@ -27,6 +27,7 @@ import { sha256Digest } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import { deriveListingDraftBasis, } from '../server/listing-draft-service.js';
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
+import { getLiveListingCatalogSnapshot } from '../server/live-listing-catalog-source.js';
 import { compareAlignedState, deriveAlignmentManifest, parseAlignmentPrice, parseAlignmentQuantity, reconstructAlignmentManifest, AlignmentManifestError, } from './manifest.js';
 import { createPriceInventoryDispatchAdapter, createProductionDispatchTokenProvider, AlignDispatchError, } from './dispatch-adapter.js';
 import { createTradingAlignDispatchAdapter, TradingAlignDispatchError, } from './trading-dispatch-adapter.js';
@@ -38,6 +39,13 @@ const defaultIo = {
         process.exitCode = code;
     },
 };
+/**
+ * Hard ceiling on provider writes per sweep, independent of --max-actions.
+ * A runaway sweep is the failure mode that matters here: this bounds it even
+ * if the flag is set absurdly high.
+ */
+const SWEEP_HARD_CAP = 50;
+const SWEEP_DEFAULT_CAP = 10;
 const MIGRATION_SCOPE = Object.freeze({
     shopifyStoreDomain: LISTING_DRAFT_SCOPE.shopifyStoreDomain,
     ebayEnvironment: LISTING_DRAFT_SCOPE.ebayEnvironment,
@@ -270,8 +278,175 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
     const createTradingAdapter = dependencies.createTradingAdapter ?? (() => createTradingAlignDispatchAdapter({
         getAccessToken: createProductionDispatchTokenProvider(),
     }));
+    const getSnapshot = dependencies.getSnapshot ?? getLiveListingCatalogSnapshot;
     const now = dependencies.now ?? (() => new Date());
     const uuid = dependencies.uuid ?? randomUUID;
+    /**
+     * THE single alignment write path. Both the one-action `dispatch` ceremony
+     * and the batched `align-sweep` call exactly this, so automation can never
+     * become a second, divergent writer with weaker checks: the ownership
+     * precheck, the idempotent intent, the single-use approval, the job
+     * reservation, the one bounded provider call, and the post-dispatch
+     * reconciliation are identical either way, and every action lands in the
+     * audit chain individually.
+     *
+     * The caller owns the store handle so a sweep can run many actions against
+     * one open store without reopening it per target.
+     */
+    async function dispatchOneAlignment(input) {
+        const { store, target, clock } = input;
+        const responsibility = FIELD_RESPONSIBILITY[target.field];
+        const action = FIELD_ACTION[target.field];
+        const ownership = store.getCurrentOwnership(responsibility);
+        if (!ownership || ownership.owner !== 'product_pipeline'
+            || !ownership.singleWriterVerified) {
+            deny('REALIGN_OWNERSHIP_NOT_ESTABLISHED');
+        }
+        const identityInputs = alignmentIdentityInputs(target.basis.identity, target.field);
+        const sourceIdentityKey = ensureIdentity(store, identityInputs.source, clock());
+        const targetIdentityKey = ensureIdentity(store, identityInputs.target, clock());
+        const intentKey = deriveIdempotencyKey({
+            scopeKey: deriveScopeKey(MIGRATION_SCOPE),
+            action,
+            sourceIdentityKey,
+            targetIdentityKey,
+            desiredStateDigest: target.derived.manifestDigest,
+        });
+        if (store.getIntent(intentKey) !== null) {
+            deny('REALIGN_INTENT_ALREADY_RECORDED');
+        }
+        const createdAtUtc = clock();
+        store.createIdempotencyIntent({
+            action,
+            sourceIdentityKey,
+            targetIdentityKey,
+            desiredStateDigest: target.derived.manifestDigest,
+            createdAtUtc,
+            audit: { eventId: `intent:${intentKey.slice(7, 27)}`, occurredAtUtc: createdAtUtc },
+        });
+        const approvalToken = `price-inventory-approval:${uuid()}`;
+        const issuedAtUtc = clock();
+        const expiresAtUtc = new Date(Date.parse(issuedAtUtc) + APPROVAL_TTL_MS).toISOString();
+        const ownershipVersion = ownership.version;
+        store.issueActionApproval({
+            approvalToken,
+            intentKey,
+            responsibility,
+            targetIdentityKey,
+            ownershipVersion,
+            issuedAtUtc,
+            expiresAtUtc,
+            evidenceDigest: target.derived.manifestDigest,
+            audit: { eventId: `approval:${uuid()}`, occurredAtUtc: issuedAtUtc },
+        });
+        const jobId = `price-inventory-job:${uuid()}`;
+        const attemptId = `price-inventory-attempt:${uuid()}`;
+        const reservedAtUtc = clock();
+        store.reserveExecutionJob({
+            jobId,
+            approvalToken,
+            intentKey,
+            responsibility,
+            targetIdentityKey,
+            ownershipVersion,
+            approvalEvidenceDigest: target.derived.manifestDigest,
+            reservedAtUtc,
+            evidenceDigest: target.derived.manifestDigest,
+            audit: { eventId: `job:${jobId}:reserved`, occurredAtUtc: reservedAtUtc },
+        });
+        const dispatchAtUtc = clock();
+        store.markDispatchingOutcomeUnknown({
+            jobId,
+            attemptId,
+            approvalToken,
+            approvalEvidenceDigest: target.derived.manifestDigest,
+            occurredAtUtc: dispatchAtUtc,
+            evidenceDigest: target.derived.manifestDigest,
+            audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
+        });
+        // Exactly ONE bounded provider call per dispatch, chosen by the
+        // target's management model.
+        let dispatchFailed = false;
+        const identity = target.basis.identity;
+        const after = target.derived.manifest.after;
+        try {
+            if (identity.managementModel === 'inventory_api') {
+                const adapter = createAdapter();
+                if (target.field === 'price') {
+                    await adapter.updateOfferPrice({
+                        sku: identity.ebayInventorySku,
+                        offerId: identity.ebayOfferId,
+                        price: parseAlignmentPrice(after),
+                    });
+                }
+                else {
+                    await adapter.updateOfferQuantity({
+                        sku: identity.ebayInventorySku,
+                        offerId: identity.ebayOfferId,
+                        quantity: parseAlignmentQuantity(after),
+                    });
+                }
+            }
+            else {
+                const tradingAdapter = createTradingAdapter();
+                await tradingAdapter.reviseInventoryStatus(target.field === 'price'
+                    ? {
+                        listingId: identity.ebayListingId,
+                        field: 'price',
+                        price: parseAlignmentPrice(after),
+                    }
+                    : {
+                        listingId: identity.ebayListingId,
+                        field: 'quantity',
+                        quantity: parseAlignmentQuantity(after),
+                    });
+            }
+        }
+        catch {
+            dispatchFailed = true;
+        }
+        const requiredAtUtc = clock();
+        store.requirePostDispatchReconciliation({
+            jobId,
+            attemptId,
+            occurredAtUtc: requiredAtUtc,
+            evidenceDigest: target.derived.manifestDigest,
+            audit: {
+                eventId: `job:${jobId}:reconciliation-required`,
+                occurredAtUtc: requiredAtUtc,
+            },
+        });
+        const reconciliation = await runReconciliation({
+            store,
+            derived: target.derived,
+            field: target.field,
+            intentKey,
+            targetIdentityKey,
+            jobId,
+            attemptId,
+            readWorkspace,
+            catalogId: input.catalogId,
+            clock,
+            uuid,
+            resolveAbsent: dispatchFailed,
+        });
+        return {
+            status: reconciliation.resolution === 'resolved_existing'
+                ? 'dispatched-and-reconciled'
+                : 'dispatched-unresolved',
+            jobId,
+            attemptId,
+            intentKey,
+            field: target.field,
+            responsibility,
+            manifestDigest: target.derived.manifestDigest,
+            providerDispatchReported: !dispatchFailed,
+            effect: reconciliation.effect,
+            resolution: reconciliation.resolution,
+            reconciliationRunId: reconciliation.runId,
+            externalCommerceWritesAttempted: 1,
+        };
+    }
     const program = new Command();
     program
         .name('price-inventory-admin')
@@ -420,165 +595,17 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
             if (target.derived.manifestDigest !== options.manifestDigest) {
                 deny('REALIGN_MANIFEST_DIGEST_MISMATCH');
             }
-            const responsibility = FIELD_RESPONSIBILITY[target.field];
-            const action = FIELD_ACTION[target.field];
             const store = openMigration({
                 databasePath: options.migrationStore,
                 expectedScope: MIGRATION_SCOPE,
             });
             const clock = createMonotonicClock(now);
             try {
-                const ownership = store.getCurrentOwnership(responsibility);
-                if (!ownership || ownership.owner !== 'product_pipeline'
-                    || !ownership.singleWriterVerified) {
-                    deny('REALIGN_OWNERSHIP_NOT_ESTABLISHED');
-                }
-                const identityInputs = alignmentIdentityInputs(target.basis.identity, target.field);
-                const sourceIdentityKey = ensureIdentity(store, identityInputs.source, clock());
-                const targetIdentityKey = ensureIdentity(store, identityInputs.target, clock());
-                const intentKey = deriveIdempotencyKey({
-                    scopeKey: deriveScopeKey(MIGRATION_SCOPE),
-                    action,
-                    sourceIdentityKey,
-                    targetIdentityKey,
-                    desiredStateDigest: target.derived.manifestDigest,
+                const result = await dispatchOneAlignment({
+                    store, target, catalogId: options.catalogId, clock,
                 });
-                if (store.getIntent(intentKey) !== null) {
-                    deny('REALIGN_INTENT_ALREADY_RECORDED');
-                }
-                const createdAtUtc = clock();
-                store.createIdempotencyIntent({
-                    action,
-                    sourceIdentityKey,
-                    targetIdentityKey,
-                    desiredStateDigest: target.derived.manifestDigest,
-                    createdAtUtc,
-                    audit: { eventId: `intent:${intentKey.slice(7, 27)}`, occurredAtUtc: createdAtUtc },
-                });
-                const approvalToken = `price-inventory-approval:${uuid()}`;
-                const issuedAtUtc = clock();
-                const expiresAtUtc = new Date(Date.parse(issuedAtUtc) + APPROVAL_TTL_MS).toISOString();
-                const ownershipVersion = ownership.version;
-                store.issueActionApproval({
-                    approvalToken,
-                    intentKey,
-                    responsibility,
-                    targetIdentityKey,
-                    ownershipVersion,
-                    issuedAtUtc,
-                    expiresAtUtc,
-                    evidenceDigest: target.derived.manifestDigest,
-                    audit: { eventId: `approval:${uuid()}`, occurredAtUtc: issuedAtUtc },
-                });
-                const jobId = `price-inventory-job:${uuid()}`;
-                const attemptId = `price-inventory-attempt:${uuid()}`;
-                const reservedAtUtc = clock();
-                store.reserveExecutionJob({
-                    jobId,
-                    approvalToken,
-                    intentKey,
-                    responsibility,
-                    targetIdentityKey,
-                    ownershipVersion,
-                    approvalEvidenceDigest: target.derived.manifestDigest,
-                    reservedAtUtc,
-                    evidenceDigest: target.derived.manifestDigest,
-                    audit: { eventId: `job:${jobId}:reserved`, occurredAtUtc: reservedAtUtc },
-                });
-                const dispatchAtUtc = clock();
-                store.markDispatchingOutcomeUnknown({
-                    jobId,
-                    attemptId,
-                    approvalToken,
-                    approvalEvidenceDigest: target.derived.manifestDigest,
-                    occurredAtUtc: dispatchAtUtc,
-                    evidenceDigest: target.derived.manifestDigest,
-                    audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
-                });
-                // Exactly ONE bounded provider call per dispatch, chosen by the
-                // target's management model.
-                let dispatchFailed = false;
-                const identity = target.basis.identity;
-                const after = target.derived.manifest.after;
-                try {
-                    if (identity.managementModel === 'inventory_api') {
-                        const adapter = createAdapter();
-                        if (target.field === 'price') {
-                            await adapter.updateOfferPrice({
-                                sku: identity.ebayInventorySku,
-                                offerId: identity.ebayOfferId,
-                                price: parseAlignmentPrice(after),
-                            });
-                        }
-                        else {
-                            await adapter.updateOfferQuantity({
-                                sku: identity.ebayInventorySku,
-                                offerId: identity.ebayOfferId,
-                                quantity: parseAlignmentQuantity(after),
-                            });
-                        }
-                    }
-                    else {
-                        const tradingAdapter = createTradingAdapter();
-                        await tradingAdapter.reviseInventoryStatus(target.field === 'price'
-                            ? {
-                                listingId: identity.ebayListingId,
-                                field: 'price',
-                                price: parseAlignmentPrice(after),
-                            }
-                            : {
-                                listingId: identity.ebayListingId,
-                                field: 'quantity',
-                                quantity: parseAlignmentQuantity(after),
-                            });
-                    }
-                }
-                catch {
-                    dispatchFailed = true;
-                }
-                const requiredAtUtc = clock();
-                store.requirePostDispatchReconciliation({
-                    jobId,
-                    attemptId,
-                    occurredAtUtc: requiredAtUtc,
-                    evidenceDigest: target.derived.manifestDigest,
-                    audit: {
-                        eventId: `job:${jobId}:reconciliation-required`,
-                        occurredAtUtc: requiredAtUtc,
-                    },
-                });
-                const reconciliation = await runReconciliation({
-                    store,
-                    derived: target.derived,
-                    field: target.field,
-                    intentKey,
-                    targetIdentityKey,
-                    jobId,
-                    attemptId,
-                    readWorkspace,
-                    catalogId: options.catalogId,
-                    clock,
-                    uuid,
-                    resolveAbsent: dispatchFailed,
-                });
-                io.stdout(JSON.stringify({
-                    command: 'dispatch',
-                    status: reconciliation.resolution === 'resolved_existing'
-                        ? 'dispatched-and-reconciled'
-                        : 'dispatched-unresolved',
-                    jobId,
-                    attemptId,
-                    intentKey,
-                    field: target.field,
-                    responsibility,
-                    manifestDigest: target.derived.manifestDigest,
-                    providerDispatchReported: !dispatchFailed,
-                    effect: reconciliation.effect,
-                    resolution: reconciliation.resolution,
-                    reconciliationRunId: reconciliation.runId,
-                    externalCommerceWritesAttempted: 1,
-                }));
-                if (reconciliation.resolution !== 'resolved_existing')
+                io.stdout(JSON.stringify({ command: 'dispatch', ...result }));
+                if (result.resolution !== 'resolved_existing')
                     io.setExitCode(1);
             }
             finally {
@@ -588,6 +615,124 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
         catch (error) {
             io.stderr(JSON.stringify({
                 command: 'dispatch', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
+    program
+        .command('align-sweep')
+        .description('Batched delta-only alignment of ONE field across every drifting listing, using the '
+        + 'identical per-target write path as dispatch. Bounded, kill-switchable, journaled.')
+        .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
+        .requiredOption('--confirm-scope <sha256>', 'Exact migration scope key confirming the one store')
+        .requiredOption('--field <field>', 'Exactly one aligned field: "price" or "quantity"')
+        .requiredOption('--confirm-sweep', 'Literal acknowledgement that this batch replaces per-action approval (G18 policy)')
+        .option('--max-actions <n>', `Provider writes to attempt, max ${SWEEP_HARD_CAP}`)
+        .action(async (options) => {
+        const started = new Date().toISOString();
+        try {
+            const field = exactField(options.field);
+            if (options.confirmScope !== deriveScopeKey(MIGRATION_SCOPE)) {
+                deny('REALIGN_SCOPE_CONFIRMATION_MISMATCH');
+            }
+            const requested = options.maxActions === undefined
+                ? SWEEP_DEFAULT_CAP
+                : Number(options.maxActions);
+            if (!Number.isSafeInteger(requested) || requested < 1)
+                deny('SWEEP_MAX_ACTIONS_INVALID');
+            const cap = Math.min(requested, SWEEP_HARD_CAP);
+            const store = openMigration({
+                databasePath: options.migrationStore,
+                expectedScope: MIGRATION_SCOPE,
+            });
+            const clock = createMonotonicClock(now);
+            try {
+                // Kill switch: ownership. Recording the responsibility back to
+                // `paused` stops every sweep immediately and needs no code change.
+                const responsibility = FIELD_RESPONSIBILITY[field];
+                const ownership = store.getCurrentOwnership(responsibility);
+                if (!ownership || ownership.owner !== 'product_pipeline'
+                    || !ownership.singleWriterVerified) {
+                    deny('REALIGN_OWNERSHIP_NOT_ESTABLISHED');
+                }
+                const snapshot = await getSnapshot();
+                const candidates = (snapshot.rows ?? []).filter((row) => row.lifecycleStatus === 'active'
+                    && row.ebay.listingId !== null
+                    && row.ebay.sku !== null
+                    && row.ebay.sku !== ''
+                    && row.shopify !== null);
+                const results = [];
+                let scanned = 0;
+                let aligned = 0;
+                let skippedNoDrift = 0;
+                let failed = 0;
+                for (const row of candidates) {
+                    if (aligned >= cap)
+                        break;
+                    scanned += 1;
+                    const targetOptions = {
+                        catalogId: row.id,
+                        sku: row.ebay.sku,
+                        listingId: row.ebay.listingId,
+                        offerId: row.ebay.offerId ?? 'none',
+                        field,
+                    };
+                    let target;
+                    try {
+                        target = await deriveExactTarget(readWorkspace, targetOptions);
+                    }
+                    catch (error) {
+                        // PLAN_NO_DRIFT is the overwhelmingly common case and is not a
+                        // failure: delta-only means an aligned listing is simply skipped.
+                        const code = safeErrorCode(error);
+                        if (code === 'PLAN_NO_DRIFT')
+                            skippedNoDrift += 1;
+                        else {
+                            failed += 1;
+                            results.push({ sku: targetOptions.sku, status: 'skipped', code });
+                        }
+                        continue;
+                    }
+                    try {
+                        const result = await dispatchOneAlignment({
+                            store, target, catalogId: row.id, clock,
+                        });
+                        aligned += 1;
+                        results.push({ sku: targetOptions.sku, ...result });
+                    }
+                    catch (error) {
+                        failed += 1;
+                        results.push({
+                            sku: targetOptions.sku, status: 'denied', code: safeErrorCode(error),
+                        });
+                    }
+                }
+                io.stdout(JSON.stringify({
+                    command: 'align-sweep',
+                    status: failed === 0 ? 'swept' : 'swept-with-failures',
+                    field,
+                    responsibility,
+                    startedAtUtc: started,
+                    completedAtUtc: new Date().toISOString(),
+                    candidates: candidates.length,
+                    scanned,
+                    aligned,
+                    skippedNoDrift,
+                    failed,
+                    cap,
+                    externalCommerceWritesAttempted: aligned,
+                    results,
+                }));
+                if (failed > 0)
+                    io.setExitCode(1);
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'align-sweep', status: 'denied', code: safeErrorCode(error),
             }));
             io.setExitCode(1);
         }
