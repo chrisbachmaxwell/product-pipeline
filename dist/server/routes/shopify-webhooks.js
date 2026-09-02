@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { verifyShopifyWebhookHmac } from '../../shopify/request-verification.js';
 import { info, warn } from '../../utils/logger.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
-import { createInventorySweepTrigger, isInventoryTopic, } from '../inventory-sweep-trigger.js';
+import { inventorySweepTrigger, isInventoryTopic, } from '../inventory-sweep-trigger.js';
 async function verifyShopifyWebhook(req) {
     return verifyShopifyWebhookHmac(req.get('X-Shopify-Hmac-Sha256'), req.rawBody);
 }
@@ -14,7 +14,7 @@ async function verifyShopifyWebhook(req) {
 export function createShopifyWebhookRouter(dependencies = {
     verify: verifyShopifyWebhook,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
-    notifyInventoryChanged: createInventorySweepTrigger().notifyInventoryChanged,
+    notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
 }) {
     const router = Router();
     router.post('/webhooks/shopify/:topic', async (req, res) => {

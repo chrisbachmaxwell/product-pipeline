@@ -3,7 +3,7 @@ import { verifyShopifyWebhookHmac } from '../../shopify/request-verification.js'
 import { info, warn } from '../../utils/logger.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
 import {
-  createInventorySweepTrigger,
+  inventorySweepTrigger,
   isInventoryTopic,
 } from '../inventory-sweep-trigger.js';
 
@@ -25,13 +25,13 @@ export function createShopifyWebhookRouter(
     refreshListings: () => Promise<unknown>;
     /**
      * Event-driven inventory alignment. Off unless
-     * INVENTORY_WEBHOOK_SWEEP_ENABLED=1, so this changes nothing on deploy.
+     * INVENTORY_SWEEP_ARGV, so this changes nothing on deploy.
      */
     notifyInventoryChanged?: () => boolean;
   }> = {
     verify: verifyShopifyWebhook,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
-    notifyInventoryChanged: createInventorySweepTrigger().notifyInventoryChanged,
+    notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
   },
 ): Router {
   const router = Router();
