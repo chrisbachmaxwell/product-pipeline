@@ -125,6 +125,37 @@ async function deriveExactTarget(readWorkspace, options) {
     const derived = deriveAlignmentManifest({ basis, field });
     return { basis, field, derived };
 }
+/**
+ * The Quantity value to send in a Trading `ReviseInventoryStatus`.
+ *
+ * Shopify tracks AVAILABLE stock. eBay Trading tracks TOTAL listed quantity
+ * and derives available as `total - sold` — the workspace reports exactly
+ * that, with `availableQuantityBasis: 'total_minus_sold'`. Drift is detected
+ * on available (correctly), but writing the Shopify available figure straight
+ * into `Quantity` sets the TOTAL, so on a listing with sales the result is
+ * always short by the sold count and the drift can never close.
+ *
+ * Observed in Production on SKU 16437396: Shopify available 106, eBay total
+ * 102 / sold 2 / available 100. Writing 106 would leave available at 104, so
+ * the identical manifest re-derives on the next sweep — and because the
+ * intent key is the manifest digest, idempotency then blocks the listing from
+ * ever being re-aligned (REALIGN_INTENT_ALREADY_RECORDED).
+ *
+ * Adding the sold count makes AVAILABLE converge, which is the quantity that
+ * actually matters to a buyer. Inventory-API offers are unaffected: that path
+ * sets availableQuantity directly and needs no adjustment.
+ */
+export function tradingQuantityToWrite(target, availableAfter) {
+    const commerce = target.basis.workspace?.ebayDetail?.actual.commerce;
+    const sold = commerce?.soldQuantity;
+    // Only adjust when eBay actually reported available as total-minus-sold.
+    // If eBay reported available directly, Quantity already means available.
+    if (commerce?.availableQuantityBasis !== 'total_minus_sold')
+        return availableAfter;
+    if (!Number.isSafeInteger(sold) || sold < 0)
+        return availableAfter;
+    return availableAfter + sold;
+}
 function ensureIdentity(store, input, occurredAtUtc) {
     const identityKey = deriveExternalIdentityKey(input);
     const existing = store.getIdentity(identityKey);
@@ -400,7 +431,7 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
                     : {
                         listingId: identity.ebayListingId,
                         field: 'quantity',
-                        quantity: parseAlignmentQuantity(after),
+                        quantity: tradingQuantityToWrite(target, parseAlignmentQuantity(after)),
                     });
             }
         }
