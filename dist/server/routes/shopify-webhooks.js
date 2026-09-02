@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { verifyShopifyWebhookHmac } from '../../shopify/request-verification.js';
 import { info, warn } from '../../utils/logger.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
+import { createInventorySweepTrigger, isInventoryTopic, } from '../inventory-sweep-trigger.js';
 async function verifyShopifyWebhook(req) {
     return verifyShopifyWebhookHmac(req.get('X-Shopify-Hmac-Sha256'), req.rawBody);
 }
@@ -13,6 +14,7 @@ async function verifyShopifyWebhook(req) {
 export function createShopifyWebhookRouter(dependencies = {
     verify: verifyShopifyWebhook,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
+    notifyInventoryChanged: createInventorySweepTrigger().notifyInventoryChanged,
 }) {
     const router = Router();
     router.post('/webhooks/shopify/:topic', async (req, res) => {
@@ -25,7 +27,16 @@ export function createShopifyWebhookRouter(dependencies = {
             return;
         }
         info(`[Shopify Webhook] ${topic} verified in shadow mode; refreshing read-only listing evidence`);
-        void dependencies.refreshListings().catch(() => {
+        // The refresh must land BEFORE any sweep: the sweep compares remembered
+        // eBay quantities against the catalog snapshot, and a stale snapshot would
+        // make the change that triggered this webhook invisible.
+        void dependencies.refreshListings().then(() => {
+            if (!isInventoryTopic(topic) || !dependencies.notifyInventoryChanged)
+                return;
+            if (dependencies.notifyInventoryChanged()) {
+                info(`[Shopify Webhook] ${topic} queued an inventory alignment sweep`);
+            }
+        }).catch(() => {
             warn('LISTING_CATALOG_SHOPIFY_WEBHOOK_REFRESH_FAILED');
         });
     });
