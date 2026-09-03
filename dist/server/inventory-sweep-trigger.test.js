@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configuredSweepArgv, createInventorySweepTrigger, isInventoryTopic, } from './inventory-sweep-trigger.js';
+import { configuredSweepArgv, createInventorySweepTrigger, isInventoryTopic, summarizeSweepStdout, } from './inventory-sweep-trigger.js';
 /**
  * The trigger decides WHEN the standalone align-sweep CLI runs. It never
  * writes to a provider itself, and it must stay inert until an operator opts
@@ -296,5 +296,65 @@ describe('transient capture failures are retried', () => {
         // A completed sweep already did its work; repeating it could multiply
         // provider writes.
         expect(h.attempts.length).toBe(1);
+    });
+});
+/**
+ * A sweep that reports failed=N without naming the listings is not actionable:
+ * production hit exactly that, and the unaligned listing -- the live oversell
+ * risk -- could not be identified from the log at all.
+ */
+describe('summarizeSweepStdout', () => {
+    const sweep = (extra) => JSON.stringify({
+        command: 'align-sweep',
+        status: 'swept-with-failures',
+        candidates: 2,
+        aligned: 0,
+        skippedNoDrift: 0,
+        failed: 2,
+        ...extra,
+    });
+    it('names each failing listing and its code', () => {
+        const summary = summarizeSweepStdout(sweep({
+            results: [
+                { sku: 'A-1', status: 'denied', code: 'ALIGN_DISPATCH_REJECTED' },
+                { sku: 'B-2', status: 'skipped', code: 'ALIGN_MANIFEST_STALE' },
+            ],
+        }));
+        expect(summary).toContain('failed=2');
+        expect(summary).toContain('failures=A-1:ALIGN_DISPATCH_REJECTED,B-2:ALIGN_MANIFEST_STALE');
+    });
+    it('omits the failures clause when every listing aligned', () => {
+        const summary = summarizeSweepStdout(sweep({
+            status: 'swept',
+            failed: 0,
+            aligned: 2,
+            results: [
+                { sku: 'A-1', resolution: 'resolved_existing' },
+                { sku: 'B-2', resolution: 'resolved_existing' },
+            ],
+        }));
+        expect(summary).toContain('failed=0');
+        expect(summary).not.toContain('failures=');
+    });
+    it('caps the named failures so one bad sweep cannot flood the log', () => {
+        const summary = summarizeSweepStdout(sweep({
+            results: Array.from({ length: 40 }, (_, index) => ({
+                sku: `S-${index}`, status: 'denied', code: 'ALIGN_DISPATCH_REJECTED',
+            })),
+        }));
+        expect(summary?.match(/ALIGN_DISPATCH_REJECTED/g)).toHaveLength(8);
+        // The true total still comes from the counter, so the cap hides nothing.
+        expect(summary).toContain('failed=2');
+    });
+    it('returns null when the process produced no summary, so the run retries', () => {
+        expect(summarizeSweepStdout('')).toBeNull();
+        expect(summarizeSweepStdout('boom: unhandled rejection\n')).toBeNull();
+        expect(summarizeSweepStdout('{not json\n')).toBeNull();
+    });
+    it('tolerates a sweep whose results are absent or malformed', () => {
+        expect(summarizeSweepStdout(sweep({}))).toContain('failed=2');
+        expect(summarizeSweepStdout(sweep({ results: 'nope' }))).not.toContain('failures=');
+        expect(summarizeSweepStdout(sweep({ results: [null, 7, { code: 'X' }] })))
+            .toContain('failures=unknown:X');
     });
 });

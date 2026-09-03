@@ -25,6 +25,16 @@ export type SweepRunner = () => Promise<{
  * per-listing outcomes are already reported in the counters. Only a genuine
  * process failure — crash, timeout, no output — counts as failed.
  */
+/**
+ * Reduce a sweep's stdout to one bounded log line, or null when the process
+ * produced no parseable summary at all (crash, timeout, no output) -- which is
+ * the sole condition that marks a run failed and eligible for retry.
+ *
+ * Reports bounded counters and failure codes only, never provider payloads.
+ * Exported for testing: this used to be inline in the spawn callback, where it
+ * could not be exercised without launching a real sweep.
+ */
+export declare function summarizeSweepStdout(stdout: string): string | null;
 export declare function createConfiguredRunner(argv: readonly string[]): SweepRunner;
 /**
  * Debounced single-flight trigger.
