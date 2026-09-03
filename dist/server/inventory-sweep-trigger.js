@@ -57,6 +57,21 @@ export function writeLastFullSweepMs(completedAtMs) {
 }
 /** Coalesce a burst of webhooks (a multi-line order moves several items). */
 const DEBOUNCE_MS = 5_000;
+/**
+ * Retries for a run that never produced a summary.
+ *
+ * The catalog capture fails transiently in production — LISTING_CATALOG_
+ * SHOPIFY_CAPTURE_FAILED and LISTING_CATALOG_INVENTORY_CAPTURE_FAILED are both
+ * observed — and a sweep that dies that way emits nothing. Without a retry a
+ * single blip silently drops the inventory change until the next full sweep,
+ * which is exactly the oversell gap this whole path exists to close.
+ *
+ * Only whole-process failures retry. A run that produced a summary already
+ * did its work and is never repeated, so retries can never multiply provider
+ * writes.
+ */
+const RUN_MAX_ATTEMPTS = 3;
+const RUN_RETRY_BASE_MS = 20_000;
 /** A run that has not finished in this long is treated as stuck. */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -205,6 +220,8 @@ export function createInventorySweepTrigger(dependencies = {}) {
         ?? ((callback, ms) => setTimeout(callback, ms).unref?.());
     const setTicker = dependencies.setTicker
         ?? ((callback, ms) => setInterval(callback, ms).unref?.());
+    const delay = dependencies.delay
+        ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); }));
     let running = false;
     let pendingFast = false;
     let pendingFull = false;
@@ -222,7 +239,14 @@ export function createInventorySweepTrigger(dependencies = {}) {
                 const run = full ? runFullSweep : runSweep;
                 if (run === null)
                     continue;
-                const result = await run();
+                // Retry ONLY a run that produced no summary, i.e. one that never
+                // completed a sweep. A completed run is never repeated.
+                let result = await run();
+                for (let attempt = 2; !result.ok && attempt <= RUN_MAX_ATTEMPTS; attempt += 1) {
+                    warn(`INVENTORY_ALIGNMENT_RETRY_${attempt}`);
+                    await delay(RUN_RETRY_BASE_MS * (attempt - 1));
+                    result = await run();
+                }
                 if (result.ok) {
                     info(`[Inventory Alignment${full ? ' full' : ''}] ${result.summary}`);
                     if (full) {
