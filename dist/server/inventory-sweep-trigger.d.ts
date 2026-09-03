@@ -8,7 +8,23 @@ export type SweepRunner = () => Promise<{
     ok: boolean;
     summary: string;
 }>;
-/** Spawns the operator's command. Never imports writer code into this process. */
+/**
+ * Spawns the operator's command. Never imports writer code into this process.
+ *
+ * A NON-ZERO EXIT IS NOT NECESSARILY A FAILED RUN. `align-sweep` exits 1
+ * whenever any single listing failed, even though it swept every other one
+ * successfully. Treating that as a failed run was actively harmful: the
+ * periodic backstop only records its completion on success, so one
+ * permanently-stuck listing meant completion was never recorded, the sweep
+ * was always "overdue", and a full 124-read sweep ran every 15 minutes
+ * instead of every 12 hours — roughly 11,900 eBay reads a day, straight
+ * through the rate limit.
+ *
+ * The run is therefore judged by whether it produced its summary, not by the
+ * exit code. A parseable summary means the sweep ran to completion and its
+ * per-listing outcomes are already reported in the counters. Only a genuine
+ * process failure — crash, timeout, no output — counts as failed.
+ */
 export declare function createConfiguredRunner(argv: readonly string[]): SweepRunner;
 /**
  * Debounced single-flight trigger.
