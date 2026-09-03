@@ -44,6 +44,7 @@ export declare function createInventorySweepTrigger(dependencies?: Readonly<{
     readDueState?: () => number | null;
     writeDueState?: (completedAtMs: number) => void;
     now?: () => number;
+    delay?: (ms: number) => Promise<void>;
 }>): {
     /** Returns true when the change was accepted for an alignment run. */
     notifyInventoryChanged(): boolean;

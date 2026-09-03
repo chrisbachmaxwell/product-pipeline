@@ -284,3 +284,53 @@ describe('run outcome is judged by the summary, not the exit code', () => {
     expect(written === null || written === now).toBe(true);
   });
 });
+
+describe('transient capture failures are retried', () => {
+  // A sweep that dies on LISTING_CATALOG_SHOPIFY_CAPTURE_FAILED emits no
+  // summary. Without a retry that single blip silently drops the inventory
+  // change until the next full sweep — observed in production 2026-09-03,
+  // where a real 3->2 change never reached eBay.
+  function retryHarness(outcomes: Array<{ ok: boolean }>) {
+    const attempts: number[] = [];
+    let index = 0;
+    const trigger = createInventorySweepTrigger({
+      runSweep: async () => {
+        attempts.push(index);
+        const outcome = outcomes[Math.min(index, outcomes.length - 1)]!;
+        index += 1;
+        return { ok: outcome.ok, summary: outcome.ok ? 'status=swept failed=0' : 'no summary' };
+      },
+      runFullSweep: null,
+      setTimer: (cb) => { (cb as () => void)(); },
+      setTicker: () => {},
+      delay: async () => {},
+      readDueState: () => Date.now(),
+      writeDueState: () => {},
+    });
+    return { trigger, attempts };
+  }
+
+  it('retries a run that produced no summary and stops once one succeeds', async () => {
+    const h = retryHarness([{ ok: false }, { ok: true }]);
+    h.trigger.notifyInventoryChanged();
+    await new Promise((r) => { setTimeout(r, 0); });
+    await new Promise((r) => { setTimeout(r, 0); });
+    expect(h.attempts.length).toBe(2);
+  });
+
+  it('gives up after the attempt cap rather than looping forever', async () => {
+    const h = retryHarness([{ ok: false }]);
+    h.trigger.notifyInventoryChanged();
+    for (let i = 0; i < 8; i += 1) await new Promise((r) => { setTimeout(r, 0); });
+    expect(h.attempts.length).toBe(3);
+  });
+
+  it('never repeats a run that already produced a summary', async () => {
+    const h = retryHarness([{ ok: true }]);
+    h.trigger.notifyInventoryChanged();
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => { setTimeout(r, 0); });
+    // A completed sweep already did its work; repeating it could multiply
+    // provider writes.
+    expect(h.attempts.length).toBe(1);
+  });
+});
