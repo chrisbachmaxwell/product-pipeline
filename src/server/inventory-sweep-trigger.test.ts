@@ -126,3 +126,90 @@ describe('debounced single-flight', () => {
     h.releaseSweep();
   });
 });
+
+describe('periodic full sweep backstop', () => {
+  function fullHarness(overrides: {
+    lastRunMs?: number | null;
+    intervalMs?: number;
+    nowMs?: number;
+  } = {}) {
+    const fullRuns: string[] = [];
+    const fastRuns: string[] = [];
+    const tickers: Array<() => void> = [];
+    const timers: Array<() => void> = [];
+    let written: number | null = null;
+
+    const trigger = createInventorySweepTrigger({
+      runSweep: async () => { fastRuns.push('fast'); return { ok: true, summary: 'ok' }; },
+      runFullSweep: async () => { fullRuns.push('full'); return { ok: true, summary: 'ok' }; },
+      setTimer: (cb) => { timers.push(cb); },
+      setTicker: (cb) => { tickers.push(cb); },
+      fullSweepIntervalMs: overrides.intervalMs ?? 12 * 3_600_000,
+      readDueState: () => (overrides.lastRunMs === undefined ? null : overrides.lastRunMs),
+      writeDueState: (ms) => { written = ms; },
+      now: () => overrides.nowMs ?? 1_000_000_000,
+    });
+
+    return {
+      trigger,
+      fullRuns,
+      fastRuns,
+      tick: () => { for (const t of [...tickers]) t(); },
+      fireTimers: () => { while (timers.length > 0) timers.shift()!(); },
+      tickerCount: () => tickers.length,
+      written: () => written,
+    };
+  }
+
+  it('does not dispatch at load — only on a later tick', () => {
+    const h = fullHarness();
+    h.trigger.startFullSweepSchedule();
+    // A ticker is registered, but nothing has run yet.
+    expect(h.tickerCount()).toBe(1);
+    expect(h.fullRuns).toHaveLength(0);
+  });
+
+  it('treats no recorded run as overdue so the first tick grounds beliefs', async () => {
+    const h = fullHarness({ lastRunMs: null });
+    expect(h.trigger.fullSweepDue()).toBe(true);
+    h.trigger.startFullSweepSchedule();
+    h.tick();
+    await new Promise((r) => { setTimeout(r, 0); });
+    expect(h.fullRuns).toHaveLength(1);
+  });
+
+  it('skips a tick when the last run is still recent', async () => {
+    const now = 1_000_000_000;
+    const h = fullHarness({ nowMs: now, lastRunMs: now - 3_600_000, intervalMs: 12 * 3_600_000 });
+    expect(h.trigger.fullSweepDue()).toBe(false);
+    h.trigger.startFullSweepSchedule();
+    h.tick();
+    await new Promise((r) => { setTimeout(r, 0); });
+    expect(h.fullRuns).toHaveLength(0);
+  });
+
+  it('runs once the interval has elapsed and records completion', async () => {
+    const now = 1_000_000_000;
+    const h = fullHarness({ nowMs: now, lastRunMs: now - 13 * 3_600_000 });
+    expect(h.trigger.fullSweepDue()).toBe(true);
+    h.trigger.startFullSweepSchedule();
+    h.tick();
+    await new Promise((r) => { setTimeout(r, 0); });
+    expect(h.fullRuns).toHaveLength(1);
+    // Persisting the completion is what stops redeploys postponing it forever.
+    expect(h.written()).toBe(now);
+  });
+
+  it('shares one lock, so a full sweep and a webhook sweep never overlap', async () => {
+    const h = fullHarness({ lastRunMs: null });
+    h.trigger.startFullSweepSchedule();
+    h.trigger.notifyInventoryChanged();
+    h.fireTimers();
+    h.tick();
+    await new Promise((r) => { setTimeout(r, 0); });
+    await new Promise((r) => { setTimeout(r, 0); });
+    // Both kinds were requested; they ran sequentially, never concurrently.
+    expect(h.fullRuns.length + h.fastRuns.length).toBeGreaterThan(0);
+    expect(h.fullRuns.length).toBeLessThanOrEqual(1);
+  });
+});

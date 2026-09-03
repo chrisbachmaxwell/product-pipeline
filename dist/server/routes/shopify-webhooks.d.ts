@@ -9,7 +9,7 @@ export declare function createShopifyWebhookRouter(dependencies?: Readonly<{
     refreshListings: () => Promise<unknown>;
     /**
      * Event-driven inventory alignment. Off unless
-     * INVENTORY_WEBHOOK_SWEEP_ENABLED=1, so this changes nothing on deploy.
+     * INVENTORY_SWEEP_ARGV, so this changes nothing on deploy.
      */
     notifyInventoryChanged?: () => boolean;
 }>): Router;

@@ -25,7 +25,36 @@
  * it touches anything.
  */
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { info, warn } from '../utils/logger.js';
+/**
+ * Where the last full-sweep completion is recorded. On the volume so it
+ * survives restarts and redeploys — an in-memory timer would be reset by every
+ * deploy, letting a busy day postpone the backstop indefinitely. Operator
+ * supplied, so this module holds no knowledge of the data layout.
+ */
+function fullSweepStatePath(env = process.env) {
+    const raw = env.INVENTORY_FULL_SWEEP_STATE_PATH;
+    return typeof raw === 'string' && raw.trim() !== '' ? raw : null;
+}
+export function readLastFullSweepMs() {
+    const statePath = fullSweepStatePath();
+    if (statePath === null)
+        return null;
+    try {
+        const parsed = Number(fs.readFileSync(statePath, 'utf8').trim());
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+export function writeLastFullSweepMs(completedAtMs) {
+    const statePath = fullSweepStatePath();
+    if (statePath === null)
+        return;
+    fs.writeFileSync(statePath, String(completedAtMs), 'utf8');
+}
 /** Coalesce a burst of webhooks (a multi-line order moves several items). */
 const DEBOUNCE_MS = 5_000;
 /** A run that has not finished in this long is treated as stuck. */
@@ -53,8 +82,7 @@ export function isInventoryTopic(rawTopic) {
  * it never falls back to a built-in command, because a default would be this
  * module deciding what to dispatch.
  */
-export function configuredSweepArgv(env = process.env) {
-    const raw = env.INVENTORY_SWEEP_ARGV;
+function parseArgv(raw) {
     if (typeof raw !== 'string' || raw.trim() === '')
         return null;
     let parsed;
@@ -70,6 +98,40 @@ export function configuredSweepArgv(env = process.env) {
     if (!parsed.every((entry) => typeof entry === 'string' && entry.length > 0))
         return null;
     return Object.freeze([...parsed]);
+}
+export function configuredSweepArgv(env = process.env) {
+    return parseArgv(env.INVENTORY_SWEEP_ARGV);
+}
+/**
+ * The periodic FULL sweep, which the webhook path cannot replace.
+ *
+ * A webhook only fires when Shopify changes. Three things it will never tell
+ * us: a delivery Shopify dropped, eBay ending or relisting a listing on its
+ * own, and a manual quantity edit in Seller Hub. The full sweep re-reads every
+ * active listing and re-grounds every remembered eBay quantity.
+ *
+ * It lives here rather than in an external scheduler because the alternatives
+ * do not hold: a sibling Railway cron service cannot mount the /data volume
+ * (a volume attaches to exactly ONE service), and a laptop cron only runs when
+ * that laptop is awake — neither is a backstop you can rely on.
+ *
+ * The due time is persisted on the volume, so it survives restarts and
+ * redeploys: a deploy cannot indefinitely postpone the sweep by resetting an
+ * in-memory timer, and an overdue sweep runs on the next tick.
+ */
+const FULL_SWEEP_TICK_MS = 15 * 60_000;
+const DEFAULT_FULL_SWEEP_INTERVAL_HOURS = 12;
+const MAX_FULL_SWEEP_INTERVAL_HOURS = 24 * 7;
+export function configuredFullSweepArgv(env = process.env) {
+    return parseArgv(env.INVENTORY_FULL_SWEEP_ARGV);
+}
+export function configuredFullSweepIntervalMs(env = process.env) {
+    const raw = env.INVENTORY_FULL_SWEEP_INTERVAL_HOURS;
+    const hours = raw === undefined ? DEFAULT_FULL_SWEEP_INTERVAL_HOURS : Number(raw);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > MAX_FULL_SWEEP_INTERVAL_HOURS) {
+        return DEFAULT_FULL_SWEEP_INTERVAL_HOURS * 3_600_000;
+    }
+    return Math.round(hours * 3_600_000);
 }
 /** Spawns the operator's command. Never imports writer code into this process. */
 export function createConfiguredRunner(argv) {
@@ -109,46 +171,115 @@ export function createInventorySweepTrigger(dependencies = {}) {
     const runSweep = dependencies.runSweep !== undefined
         ? dependencies.runSweep
         : (configured === null ? null : createConfiguredRunner(configured));
+    const configuredFull = configuredFullSweepArgv();
+    const runFullSweep = dependencies.runFullSweep !== undefined
+        ? dependencies.runFullSweep
+        : (configuredFull === null ? null : createConfiguredRunner(configuredFull));
     const debounceMs = dependencies.debounceMs ?? DEBOUNCE_MS;
+    const now = dependencies.now ?? Date.now;
+    const fullIntervalMs = dependencies.fullSweepIntervalMs ?? configuredFullSweepIntervalMs();
+    const readDueState = dependencies.readDueState ?? readLastFullSweepMs;
+    const writeDueState = dependencies.writeDueState ?? writeLastFullSweepMs;
     const setTimer = dependencies.setTimer
         ?? ((callback, ms) => setTimeout(callback, ms).unref?.());
+    const setTicker = dependencies.setTicker
+        ?? ((callback, ms) => setInterval(callback, ms).unref?.());
     let running = false;
-    let pending = false;
+    let pendingFast = false;
+    let pendingFull = false;
     let scheduled = false;
-    async function drain(run) {
+    // One lock for both kinds. A full sweep and a webhook sweep must never run
+    // at once: they would read the same listings and could both dispatch for the
+    // same drift. A queued full sweep wins, since it supersedes a fast one.
+    async function drain() {
         running = true;
         try {
-            do {
-                pending = false;
+            while (pendingFull || pendingFast) {
+                const full = pendingFull;
+                pendingFull = false;
+                pendingFast = false;
+                const run = full ? runFullSweep : runSweep;
+                if (run === null)
+                    continue;
                 const result = await run();
-                if (result.ok)
-                    info(`[Inventory Alignment] ${result.summary}`);
-                else
-                    warn('INVENTORY_WEBHOOK_ALIGNMENT_FAILED');
-            } while (pending);
+                if (result.ok) {
+                    info(`[Inventory Alignment${full ? ' full' : ''}] ${result.summary}`);
+                    if (full) {
+                        try {
+                            writeDueState(now());
+                        }
+                        catch {
+                            warn('INVENTORY_FULL_SWEEP_STATE_WRITE_FAILED');
+                        }
+                    }
+                }
+                else {
+                    warn(full ? 'INVENTORY_FULL_SWEEP_FAILED' : 'INVENTORY_WEBHOOK_ALIGNMENT_FAILED');
+                }
+            }
         }
         finally {
             running = false;
         }
     }
+    function requestFast() {
+        if (runSweep === null)
+            return false;
+        if (running) {
+            pendingFast = true;
+            return true;
+        }
+        if (scheduled)
+            return true;
+        scheduled = true;
+        setTimer(() => {
+            scheduled = false;
+            pendingFast = true;
+            void drain();
+        }, debounceMs);
+        return true;
+    }
+    function fullSweepDue() {
+        if (runFullSweep === null)
+            return false;
+        const last = readDueState();
+        // No recorded run means overdue: the first tick after enabling grounds it.
+        if (last === null)
+            return true;
+        return now() - last >= fullIntervalMs;
+    }
+    function startFullSweepSchedule() {
+        if (runFullSweep === null)
+            return;
+        setTicker(() => {
+            if (!fullSweepDue())
+                return;
+            pendingFull = true;
+            if (!running)
+                void drain();
+        }, FULL_SWEEP_TICK_MS);
+    }
     return {
         /** Returns true when the change was accepted for an alignment run. */
         notifyInventoryChanged() {
-            if (runSweep === null)
-                return false;
-            if (running) {
-                // A run is mid-flight; guarantee one more pass after it.
-                pending = true;
-                return true;
-            }
-            if (scheduled)
-                return true;
-            scheduled = true;
-            setTimer(() => {
-                scheduled = false;
-                void drain(runSweep);
-            }, debounceMs);
-            return true;
+            return requestFast();
         },
+        /**
+         * Begins the periodic full sweep. Deliberately NOT run at load: nothing
+         * dispatches on deploy. The first tick is a quarter hour out, and only
+         * runs then if genuinely overdue by the persisted due time — which is what
+         * stops frequent redeploys from postponing it forever.
+         */
+        startFullSweepSchedule,
+        fullSweepDue,
     };
 }
+/**
+ * The one shared trigger.
+ *
+ * The webhook route and the periodic schedule MUST use the same instance:
+ * each instance owns its own single-flight lock, so two instances would let a
+ * full sweep and a webhook sweep run at once over the same listings, each
+ * able to dispatch for the same drift.
+ */
+export const inventorySweepTrigger = createInventorySweepTrigger();
