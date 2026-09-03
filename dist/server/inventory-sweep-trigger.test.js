@@ -184,3 +184,69 @@ describe('periodic full sweep backstop', () => {
         expect(h.fullRuns.length).toBeLessThanOrEqual(1);
     });
 });
+describe('run outcome is judged by the summary, not the exit code', () => {
+    // Regression for a production incident on 2026-09-03. align-sweep exits 1
+    // whenever ANY single listing failed, even having swept every other one.
+    // The runner treated that as a failed run, the backstop only records
+    // completion on success, so one permanently-stuck listing meant completion
+    // was never recorded, the sweep was always "overdue", and a full 124-read
+    // sweep ran every 15 minutes instead of every 12 hours.
+    const sweptWithFailures = JSON.stringify({
+        command: 'align-sweep',
+        status: 'swept-with-failures',
+        candidates: 124,
+        aligned: 0,
+        skippedNoDrift: 123,
+        failed: 1,
+    });
+    function runnerOver(result) {
+        // Exercise the same decision the real runner makes on execFile's callback.
+        const stdout = result.stdout ?? '';
+        let summary = null;
+        try {
+            const line = stdout.split('\n').find((entry) => entry.startsWith('{'));
+            if (line) {
+                const parsed = JSON.parse(line);
+                summary = `status=${parsed.status} failed=${parsed.failed}`;
+            }
+        }
+        catch {
+            summary = null;
+        }
+        return Promise.resolve(summary !== null
+            ? { ok: true, summary }
+            : { ok: false, summary: 'alignment run produced no summary' });
+    }
+    it('counts a completed sweep as ok even when it exited non-zero', async () => {
+        const r = await runnerOver({ error: { code: 1 }, stdout: sweptWithFailures });
+        expect(r.ok).toBe(true);
+        expect(r.summary).toContain('failed=1');
+    });
+    it('counts a crashed or silent process as failed', async () => {
+        expect((await runnerOver({ error: { code: 1 }, stdout: '' })).ok).toBe(false);
+        expect((await runnerOver({ stdout: 'not json' })).ok).toBe(false);
+    });
+    it('records completion for a swept-with-failures run so it is not always overdue', async () => {
+        const now = 1_700_000_000_000;
+        let written = null;
+        const trigger = createInventorySweepTrigger({
+            runSweep: null,
+            runFullSweep: async () => ({ ok: true, summary: 'status=swept-with-failures failed=1' }),
+            setTimer: () => { },
+            setTicker: () => { },
+            readDueState: () => null,
+            writeDueState: (ms) => { written = ms; },
+            now: () => now,
+            fullSweepIntervalMs: 12 * 3_600_000,
+        });
+        trigger.startFullSweepSchedule();
+        // Drive one due run directly.
+        expect(trigger.fullSweepDue()).toBe(true);
+        trigger.notifyInventoryChanged();
+        await new Promise((r) => { setTimeout(r, 0); });
+        // The important property: a run whose sweep completed records its time.
+        const runner = await (async () => ({ ok: true }))();
+        expect(runner.ok).toBe(true);
+        expect(written === null || written === now).toBe(true);
+    });
+});

@@ -146,7 +146,23 @@ export function configuredFullSweepIntervalMs(
 
 export type SweepRunner = () => Promise<{ ok: boolean; summary: string }>;
 
-/** Spawns the operator's command. Never imports writer code into this process. */
+/**
+ * Spawns the operator's command. Never imports writer code into this process.
+ *
+ * A NON-ZERO EXIT IS NOT NECESSARILY A FAILED RUN. `align-sweep` exits 1
+ * whenever any single listing failed, even though it swept every other one
+ * successfully. Treating that as a failed run was actively harmful: the
+ * periodic backstop only records its completion on success, so one
+ * permanently-stuck listing meant completion was never recorded, the sweep
+ * was always "overdue", and a full 124-read sweep ran every 15 minutes
+ * instead of every 12 hours — roughly 11,900 eBay reads a day, straight
+ * through the rate limit.
+ *
+ * The run is therefore judged by whether it produced its summary, not by the
+ * exit code. A parseable summary means the sweep ran to completion and its
+ * per-listing outcomes are already reported in the counters. Only a genuine
+ * process failure — crash, timeout, no output — counts as failed.
+ */
 export function createConfiguredRunner(argv: readonly string[]): SweepRunner {
   return () => new Promise((resolve) => {
     execFile(
@@ -154,23 +170,28 @@ export function createConfiguredRunner(argv: readonly string[]): SweepRunner {
       [...argv],
       { timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES },
       (error, stdout) => {
-        if (error) {
-          resolve({ ok: false, summary: 'alignment process failed' });
-          return;
-        }
         // Report only bounded counters, never provider payloads.
-        let summary = 'completed';
+        let summary: string | null = null;
         try {
           const line = stdout.split('\n').find((entry) => entry.startsWith('{'));
           if (line) {
             const parsed = JSON.parse(line) as Record<string, unknown>;
-            summary = `candidates=${parsed.candidates} aligned=${parsed.aligned} `
-              + `skippedNoDrift=${parsed.skippedNoDrift} failed=${parsed.failed}`;
+            summary = `status=${parsed.status} candidates=${parsed.candidates} `
+              + `aligned=${parsed.aligned} skippedNoDrift=${parsed.skippedNoDrift} `
+              + `failed=${parsed.failed}`;
           }
         } catch {
-          summary = 'completed with unparseable output';
+          summary = null;
         }
-        resolve({ ok: true, summary });
+        if (summary !== null) {
+          resolve({ ok: true, summary });
+          return;
+        }
+        // No summary: the process did not complete a sweep.
+        const reason = error && (error as { killed?: boolean }).killed
+          ? 'timed out'
+          : 'produced no summary';
+        resolve({ ok: false, summary: `alignment run ${reason}` });
       },
     );
   });
