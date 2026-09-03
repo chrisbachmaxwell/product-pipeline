@@ -1,0 +1,302 @@
+export type AuthoritativeListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
+export type ListingAttentionReason = 'shopify_product_not_active' | 'shopify_sku_missing' | 'shopify_sku_duplicate' | 'shopify_sku_near_collision' | 'ebay_sku_near_collision' | 'ebay_multiple_active_matches' | 'ebay_unpublished_artifact' | 'ebay_inventory_coverage_unavailable' | 'ebay_active_without_shopify_variant' | 'ebay_active_without_sku' | 'shopify_inventory_not_positive' | 'source_snapshot_stale' | 'source_refresh_failed';
+export interface AuthoritativeListingItem {
+    id: string;
+    shopify: {
+        productId: string;
+        variantId: string;
+        sku: string;
+        title: string;
+        variantTitle: string;
+        productStatus: string;
+        primaryImageUrl: string | null;
+        imageCount: number;
+        available: number | null;
+        price: {
+            amount: string;
+            currency: string;
+        };
+    } | null;
+    ebay: {
+        sku: string;
+        state: AuthoritativeListingStatus;
+        listingId: string | null;
+        offerId: string | null;
+        url: string | null;
+        activeMatchCount: number;
+        inventoryItemCount: number;
+        offerCount: number;
+        unpublishedArtifactCount: number;
+    };
+    lifecycleStatus: AuthoritativeListingStatus;
+    lastVerifiedAtUtc: string;
+    audit: {
+        verified: boolean;
+        evidenceState: 'live_verified' | 'stale';
+        unresolvedCount: number;
+        attentionReasons: ListingAttentionReason[];
+        recoverySupported: false;
+        currentRemoteStateVerified: boolean;
+    };
+}
+export interface AuthoritativeListingsResponse {
+    schemaVersion: 3;
+    data: AuthoritativeListingItem[];
+    total: number;
+    limit: number;
+    offset: number;
+    source: 'shopify-admin-graphql+ebay-active-listings';
+    evidenceKind: 'live_read';
+    authoritative: boolean;
+    remoteReadPerformed: true;
+    externalWritesPerformed: 0;
+    observedAtUtc: string;
+    summary: {
+        active: number;
+        notListed: number;
+        attention: number;
+        unknown: number;
+        totalInStock: number;
+        totalVisible: number;
+    };
+    coverage: {
+        shopify: {
+            source: 'shopify-admin-graphql';
+            storeDomain: string;
+            shopId: string;
+            observedAtUtc: string;
+            paginationComplete: true;
+            variantPageCount: number;
+            totalVariantsCaptured: number;
+            positiveStockVariants: number;
+            excludedZeroInventory: number;
+            excludedUnknownInventory: number;
+            productStatusCounts: Record<string, number>;
+        };
+        ebay: {
+            source: 'ebay-trading-api+ebay-inventory-api';
+            marketplaceId: 'EBAY_US';
+            sellerAccountVerified: true;
+            observedAtUtc: string;
+            trading: {
+                paginationComplete: true;
+                pageCount: number;
+                activeListingCount: number;
+            };
+            inventory: {
+                inventoryItemsComplete: true;
+                inventoryItemPageCount: number;
+                inventoryItemCount: number;
+                offersComplete: true;
+                offerPageCount: number;
+                offerCount: number;
+                unpublishedArtifactsChecked: true;
+            };
+        };
+        join: {
+            key: 'exact_raw_sku';
+            missingShopifySkuCount: number;
+            duplicateShopifySkuCount: number;
+            shopifyNearCollisionCount: number;
+            ebayNearCollisionCount: number;
+            ambiguousActiveMatchCount: number;
+            unpublishedArtifactSkuCount: number;
+            zeroStockActiveShopifyCount: number;
+            unmatchedEbaySkuCount: number;
+            unmatchedEbayListingCount: number;
+        };
+    };
+    freshness: {
+        state: 'fresh' | 'stale' | 'refresh_failed';
+        ageMs: number;
+        maxAgeMs: number;
+    };
+}
+export declare const useAuthoritativeListings: (params?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    status?: AuthoritativeListingStatus;
+    id?: string;
+}) => import("@tanstack/react-query").UseQueryResult<AuthoritativeListingsResponse, Error>;
+export declare const useAuthoritativeListing: (id: string | undefined) => {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    error: Error;
+    isError: true;
+    isPending: false;
+    isLoading: false;
+    isLoadingError: false;
+    isRefetchError: true;
+    isSuccess: false;
+    isPlaceholderData: false;
+    status: "error";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+} | {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    error: null;
+    isError: false;
+    isPending: false;
+    isLoading: false;
+    isLoadingError: false;
+    isRefetchError: false;
+    isSuccess: true;
+    isPlaceholderData: false;
+    status: "success";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+} | {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    error: Error;
+    isError: true;
+    isPending: false;
+    isLoading: false;
+    isLoadingError: true;
+    isRefetchError: false;
+    isSuccess: false;
+    isPlaceholderData: false;
+    status: "error";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+} | {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    error: null;
+    isError: false;
+    isPending: true;
+    isLoading: true;
+    isLoadingError: false;
+    isRefetchError: false;
+    isSuccess: false;
+    isPlaceholderData: false;
+    status: "pending";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+} | {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    error: null;
+    isError: false;
+    isPending: true;
+    isLoadingError: false;
+    isRefetchError: false;
+    isSuccess: false;
+    isPlaceholderData: false;
+    status: "pending";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isLoading: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+} | {
+    data: {
+        listing: AuthoritativeListingItem;
+        evidence: AuthoritativeListingsResponse;
+    } | undefined;
+    isError: false;
+    error: null;
+    isPending: false;
+    isLoading: false;
+    isLoadingError: false;
+    isRefetchError: false;
+    isSuccess: true;
+    isPlaceholderData: true;
+    status: "success";
+    dataUpdatedAt: number;
+    errorUpdatedAt: number;
+    failureCount: number;
+    failureReason: Error | null;
+    errorUpdateCount: number;
+    isFetched: boolean;
+    isFetchedAfterMount: boolean;
+    isFetching: boolean;
+    isInitialLoading: boolean;
+    isPaused: boolean;
+    isRefetching: boolean;
+    isStale: boolean;
+    isEnabled: boolean;
+    refetch: (options?: import("@tanstack/query-core").RefetchOptions) => Promise<import("@tanstack/query-core").QueryObserverResult<AuthoritativeListingsResponse, Error>>;
+    fetchStatus: import("@tanstack/query-core").FetchStatus;
+    promise: Promise<AuthoritativeListingsResponse>;
+};

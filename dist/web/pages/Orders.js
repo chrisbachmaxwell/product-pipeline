@@ -1,0 +1,10 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Badge, BlockStack, Card, Divider, InlineStack, Page, SkeletonBodyText, Text, } from '@shopify/polaris';
+import { useMigrationStatus } from '../hooks/useApi';
+const Orders = () => {
+    const migration = useMigrationStatus();
+    const status = migration.data;
+    const historicalCount = status?.reconciliation?.counts?.historicalEbayOrders;
+    return (_jsx(Page, { title: "Orders", fullWidth: true, children: _jsxs(BlockStack, { gap: "500", children: [_jsx(Card, { children: migration.isLoading ? (_jsx(SkeletonBodyText, { lines: 4 })) : migration.error ? (_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "p", children: "Order status unavailable" }), _jsx(Badge, { tone: "critical", children: "Unavailable" })] })) : (_jsxs(BlockStack, { gap: "300", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Order import" }), _jsx(Badge, { tone: "attention", children: "Marketplace Connect" })] }), _jsx(Text, { as: "p", tone: "subdued", children: "ProductPipeline order import is off." }), _jsx(Divider, {}), _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "p", children: "Cutover" }), _jsx(Badge, { tone: "info", children: "Not started" })] }), _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "p", children: "Historical import" }), _jsx(Badge, { tone: "success", children: "Blocked" })] })] })) }), typeof historicalCount === 'number' && (_jsx(Card, { children: _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsxs(BlockStack, { gap: "100", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Historical records" }), _jsx(Text, { as: "p", tone: "subdued", children: "View only \u00B7 never eligible for import" })] }), _jsx(Text, { as: "p", variant: "headingXl", children: historicalCount.toLocaleString() })] }) }))] }) }));
+};
+export default Orders;

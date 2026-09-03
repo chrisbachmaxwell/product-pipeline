@@ -70,6 +70,12 @@ const DEBOUNCE_MS = 5_000;
  * did its work and is never repeated, so retries can never multiply provider
  * writes.
  */
+/**
+ * Failing listings named in a single summary line. A sweep is capped at 50
+ * actions, so this bounds the log line without hiding a systemic failure:
+ * the counters still report the true total.
+ */
+const MAX_LOGGED_FAILURES = 8;
 const RUN_MAX_ATTEMPTS = 3;
 const RUN_RETRY_BASE_MS = 20_000;
 /** A run that has not finished in this long is treated as stuck. */
@@ -165,23 +171,50 @@ export function configuredFullSweepIntervalMs(env = process.env) {
  * per-listing outcomes are already reported in the counters. Only a genuine
  * process failure — crash, timeout, no output — counts as failed.
  */
+/**
+ * Reduce a sweep's stdout to one bounded log line, or null when the process
+ * produced no parseable summary at all (crash, timeout, no output) -- which is
+ * the sole condition that marks a run failed and eligible for retry.
+ *
+ * Reports bounded counters and failure codes only, never provider payloads.
+ * Exported for testing: this used to be inline in the spawn callback, where it
+ * could not be exercised without launching a real sweep.
+ */
+export function summarizeSweepStdout(stdout) {
+    try {
+        const line = stdout.split('\n').find((entry) => entry.startsWith('{'));
+        if (!line)
+            return null;
+        const parsed = JSON.parse(line);
+        let summary = `status=${parsed.status} candidates=${parsed.candidates} `
+            + `aligned=${parsed.aligned} skippedNoDrift=${parsed.skippedNoDrift} `
+            + `failed=${parsed.failed}`;
+        // Name the listings that did not align. Counters alone proved insufficient
+        // in production: a sweep reporting failed=1 gave no way to tell WHICH
+        // listing was left unsynced, and an unsynced listing is the exact oversell
+        // risk this path exists to close. Only entries carrying a code are
+        // failures, and every code comes from safeErrorCode -- a fixed code set
+        // that never carries an error message or a provider payload. Capped so a
+        // wholly failing sweep cannot flood the log.
+        const failures = (Array.isArray(parsed.results) ? parsed.results : [])
+            .filter((entry) => typeof entry?.code === 'string')
+            .slice(0, MAX_LOGGED_FAILURES)
+            .map((entry) => {
+            const { sku, code } = entry;
+            return `${typeof sku === 'string' ? sku : 'unknown'}:${code}`;
+        });
+        if (failures.length > 0)
+            summary += ` failures=${failures.join(',')}`;
+        return summary;
+    }
+    catch {
+        return null;
+    }
+}
 export function createConfiguredRunner(argv) {
     return () => new Promise((resolve) => {
         execFile(process.execPath, [...argv], { timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES }, (error, stdout) => {
-            // Report only bounded counters, never provider payloads.
-            let summary = null;
-            try {
-                const line = stdout.split('\n').find((entry) => entry.startsWith('{'));
-                if (line) {
-                    const parsed = JSON.parse(line);
-                    summary = `status=${parsed.status} candidates=${parsed.candidates} `
-                        + `aligned=${parsed.aligned} skippedNoDrift=${parsed.skippedNoDrift} `
-                        + `failed=${parsed.failed}`;
-                }
-            }
-            catch {
-                summary = null;
-            }
+            const summary = summarizeSweepStdout(stdout);
             if (summary !== null) {
                 resolve({ ok: true, summary });
                 return;
