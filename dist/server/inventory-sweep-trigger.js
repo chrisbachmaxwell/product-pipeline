@@ -76,8 +76,19 @@ const DEBOUNCE_MS = 5_000;
  * the counters still report the true total.
  */
 const MAX_LOGGED_FAILURES = 8;
-const RUN_MAX_ATTEMPTS = 3;
-const RUN_RETRY_BASE_MS = 20_000;
+const RUN_MAX_ATTEMPTS = 4;
+/**
+ * Linear backoff step between attempts: 5s, 10s, 15s.
+ *
+ * The target is the incumbent's behaviour -- an inventory change reaching eBay
+ * in about 30 seconds -- and a retry schedule is part of that budget, not
+ * separate from it. An earlier 20s step meant two transient capture failures
+ * pushed a real change past two minutes, which reads to a seller as simply
+ * broken. Four attempts inside ~30s of waiting beats three spread over a
+ * minute: the failures being absorbed are brief Shopify read blips, so trying
+ * sooner is both faster and likelier to land.
+ */
+const RUN_RETRY_BASE_MS = 5_000;
 /** A run that has not finished in this long is treated as stuck. */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -211,18 +222,42 @@ export function summarizeSweepStdout(stdout) {
         return null;
     }
 }
+/**
+ * The refusal code a sweep printed on stderr, or a fixed label when it printed
+ * nothing recognisable. Never surfaces free-form error text: only the CLI's
+ * own code field, which is drawn from a fixed set.
+ */
+export function deniedCode(stderr) {
+    try {
+        const line = stderr.split('\n').reverse().find((entry) => entry.startsWith('{'));
+        if (!line)
+            return stderr.trim().length > 0 ? 'no-code' : 'no-output';
+        const parsed = JSON.parse(line);
+        return typeof parsed.code === 'string' ? parsed.code : 'no-code';
+    }
+    catch {
+        return 'unparseable';
+    }
+}
 export function createConfiguredRunner(argv) {
     return () => new Promise((resolve) => {
-        execFile(process.execPath, [...argv], { timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES }, (error, stdout) => {
+        execFile(process.execPath, [...argv], { timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES }, (error, stdout, stderr) => {
             const summary = summarizeSweepStdout(stdout);
             if (summary !== null) {
                 resolve({ ok: true, summary });
                 return;
             }
-            // No summary: the process did not complete a sweep.
+            // No summary: the process did not complete a sweep. Say WHY.
+            //
+            // This callback used to discard stderr entirely, so a sweep that died
+            // before emitting anything was undiagnosable from the logs -- three
+            // separate production failures were each chased blind because of it.
+            // The CLI reports its refusals as {status:'denied', code} on stderr,
+            // and every such code comes from safeErrorCode: a fixed code set that
+            // never carries a message or a provider payload.
             const reason = error && error.killed
                 ? 'timed out'
-                : 'produced no summary';
+                : `produced no summary (${deniedCode(stderr)})`;
             resolve({ ok: false, summary: `alignment run ${reason}` });
         });
     });

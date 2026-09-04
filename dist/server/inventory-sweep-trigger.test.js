@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configuredSweepArgv, createInventorySweepTrigger, isInventoryTopic, summarizeSweepStdout, } from './inventory-sweep-trigger.js';
+import { configuredSweepArgv, createInventorySweepTrigger, deniedCode, isInventoryTopic, summarizeSweepStdout, } from './inventory-sweep-trigger.js';
 /**
  * The trigger decides WHEN the standalone align-sweep CLI runs. It never
  * writes to a provider itself, and it must stay inert until an operator opts
@@ -284,9 +284,11 @@ describe('transient capture failures are retried', () => {
     it('gives up after the attempt cap rather than looping forever', async () => {
         const h = retryHarness([{ ok: false }]);
         h.trigger.notifyInventoryChanged();
-        for (let i = 0; i < 8; i += 1)
+        for (let i = 0; i < 12; i += 1)
             await new Promise((r) => { setTimeout(r, 0); });
-        expect(h.attempts.length).toBe(3);
+        // Bounded, and bounded LOW: every attempt is a fresh catalog read, so a
+        // persistently failing sweep must not grind against the eBay call budget.
+        expect(h.attempts.length).toBe(4);
     });
     it('never repeats a run that already produced a summary', async () => {
         const h = retryHarness([{ ok: true }]);
@@ -356,5 +358,31 @@ describe('summarizeSweepStdout', () => {
         expect(summarizeSweepStdout(sweep({ results: 'nope' }))).not.toContain('failures=');
         expect(summarizeSweepStdout(sweep({ results: [null, 7, { code: 'X' }] })))
             .toContain('failures=unknown:X');
+    });
+});
+/**
+ * A sweep that dies before emitting a summary used to be undiagnosable: the
+ * runner discarded stderr, so three separate production failures were each
+ * chased blind. The CLI states its refusal as {status:'denied', code}.
+ */
+describe('deniedCode', () => {
+    it('reports the code the sweep refused with', () => {
+        expect(deniedCode('{"command":"align-sweep","status":"denied","code":"SWEEP_BELIEF_STORE_REQUIRED"}'))
+            .toBe('SWEEP_BELIEF_STORE_REQUIRED');
+    });
+    it('takes the last code when a run printed several', () => {
+        expect(deniedCode('{"code":"FIRST"}\n{"code":"SECOND"}\n')).toBe('SECOND');
+    });
+    it('distinguishes silence from unrecognised output', () => {
+        expect(deniedCode('')).toBe('no-output');
+        expect(deniedCode('   \n')).toBe('no-output');
+        expect(deniedCode('Killed\n')).toBe('no-code');
+        expect(deniedCode('{"status":"denied"}')).toBe('no-code');
+        expect(deniedCode('{oops')).toBe('unparseable');
+    });
+    it('never leaks free-form error text into the log line', () => {
+        const leaked = 'Error: connect ETIMEDOUT 10.0.0.1:443 token=abc123';
+        expect(deniedCode(leaked)).toBe('no-code');
+        expect(deniedCode(leaked)).not.toContain('abc123');
     });
 });
