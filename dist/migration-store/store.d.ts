@@ -55,6 +55,20 @@ export declare function deriveIdempotencyKey(input: {
     sourceIdentityKey: string;
     targetIdentityKey?: string | null;
     desiredStateDigest: string;
+    /**
+     * Which attempt at this exact desired state this is, counting from 0.
+     *
+     * A price/quantity alignment is a RECURRING action: stock legitimately
+     * moves 2 -> 3 today and 2 -> 3 again next week, and both are real writes
+     * that must reach eBay. Keying an intent on the desired state alone made
+     * the first occurrence consume that transition forever, so the listing
+     * silently stopped syncing the second time it repeated. Observed in
+     * production on SKUs 9199A001 and 16437396.
+     *
+     * Occasion 0 is omitted from the digest, so every key already recorded in
+     * a store reproduces byte-for-byte and no history is invalidated.
+     */
+    occasion?: number;
 }): Digest;
 declare class MigrationStoreImpl {
     private readonly database;
@@ -113,10 +127,25 @@ declare class MigrationStoreImpl {
         sourceIdentityKey: string;
         targetIdentityKey?: string | null;
         desiredStateDigest: string;
+        /** See deriveIdempotencyKey: which attempt at this desired state this is. */
+        occasion?: number;
         createdAtUtc: string;
         audit: AuditContext;
     }): Digest;
     getIntent(intentKey: string): IntentRow | null;
+    /**
+     * Does this intent have a job that has NOT reached a terminal resolution?
+     *
+     * Distinguishes an occasion that is genuinely mid-flight from one that is
+     * merely finished. A job whose attempt resolved -- to resolved_existing,
+     * confirmed_missing, or resolved_residue_removed -- is history and can
+     * never dispatch again; only an unsettled job may still be in progress.
+     *
+     * An intent with no job at all is NOT unsettled: nothing was ever
+     * dispatched under it, which is the state left behind when an attempt died
+     * between recording the intent and issuing its approval.
+     */
+    hasUnsettledJobForIntent(intentKeyInput: string): boolean;
     /** Read-only approval/job state for an exact intent. Used to permit safe re-approval only after expiry. */
     getIntentApprovalState(intentKeyInput: string): {
         latestApprovalDigest: Digest | null;

@@ -33,6 +33,12 @@ import { compareAlignedState, deriveAlignmentManifest, parseAlignmentPrice, pars
 import { createPriceInventoryDispatchAdapter, createProductionDispatchTokenProvider, AlignDispatchError, } from './dispatch-adapter.js';
 import { createTradingAlignDispatchAdapter, TradingAlignDispatchError, } from './trading-dispatch-adapter.js';
 const APPROVAL_TTL_MS = 10 * 60_000;
+/**
+ * Ceiling on how many times one exact transition may recur on one listing.
+ * High enough never to bind in real trading, low enough that a corrupted
+ * store can never make intent-key probing unbounded.
+ */
+const MAX_ALIGNMENT_OCCASIONS = 10_000;
 const defaultIo = {
     stdout: (message) => process.stdout.write(`${message}\n`),
     stderr: (message) => process.stderr.write(`${message}\n`),
@@ -338,15 +344,57 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
         const identityInputs = alignmentIdentityInputs(target.basis.identity, target.field);
         const sourceIdentityKey = ensureIdentity(store, identityInputs.source, clock());
         const targetIdentityKey = ensureIdentity(store, identityInputs.target, clock());
-        const intentKey = deriveIdempotencyKey({
-            scopeKey: deriveScopeKey(MIGRATION_SCOPE),
+        // Find this alignment's OCCASION.
+        //
+        // Alignment recurs: stock moves 2 -> 3 today and 2 -> 3 again next week,
+        // and both must reach eBay. Blocking on "an intent for this desired state
+        // exists" made the first occurrence consume that transition forever, so a
+        // listing silently stopped syncing the second time a quantity repeated --
+        // which for used stock (1 -> 0 on sale, 0 -> 1 on a return) is the normal
+        // pattern, not an edge case. It stranded 9199A001 and 16437396 in
+        // production with no recovery path.
+        //
+        // What must still be blocked is a CONCURRENT dispatch of the same
+        // transition. An occasion whose approval has expired can never dispatch
+        // again -- it is dead, not in flight -- so the next occasion is safe to
+        // open. An occasion with a live approval may be mid-flight, so it denies.
+        //
+        // Re-writing an already-written value is harmless here in a way it would
+        // never be for a create: both provider calls set an ABSOLUTE quantity or
+        // price, so the worst case of an occasion opened after a crashed attempt
+        // is that eBay is set to the value it already holds.
+        const scopeKeyForIntent = deriveScopeKey(MIGRATION_SCOPE);
+        const nowEpochMs = Date.parse(clock());
+        let occasion = 0;
+        let intentKey = deriveIdempotencyKey({
+            scopeKey: scopeKeyForIntent,
             action,
             sourceIdentityKey,
             targetIdentityKey,
             desiredStateDigest: target.derived.manifestDigest,
         });
-        if (store.getIntent(intentKey) !== null) {
-            deny('REALIGN_INTENT_ALREADY_RECORDED');
+        while (store.getIntent(intentKey) !== null) {
+            // In flight means BOTH that some job under this occasion never reached
+            // a terminal resolution AND that its approval can still be acted on.
+            // Expiry alone is too coarse: it would stall a finished occasion for
+            // the whole approval TTL, and a quantity that moves 3 -> 2 and back
+            // within that window is ordinary trading, not an anomaly.
+            const expiresAt = store.getIntentApprovalState(intentKey).latestExpiresEpochMs;
+            const approvalActionable = expiresAt !== null && expiresAt > nowEpochMs;
+            if (approvalActionable && store.hasUnsettledJobForIntent(intentKey)) {
+                deny('REALIGN_INTENT_IN_FLIGHT');
+            }
+            occasion += 1;
+            if (occasion > MAX_ALIGNMENT_OCCASIONS)
+                deny('REALIGN_INTENT_OCCASIONS_EXHAUSTED');
+            intentKey = deriveIdempotencyKey({
+                scopeKey: scopeKeyForIntent,
+                action,
+                sourceIdentityKey,
+                targetIdentityKey,
+                desiredStateDigest: target.derived.manifestDigest,
+                occasion,
+            });
         }
         const createdAtUtc = clock();
         store.createIdempotencyIntent({
@@ -354,6 +402,7 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
             sourceIdentityKey,
             targetIdentityKey,
             desiredStateDigest: target.derived.manifestDigest,
+            occasion,
             createdAtUtc,
             audit: { eventId: `intent:${intentKey.slice(7, 27)}`, occurredAtUtc: createdAtUtc },
         });
