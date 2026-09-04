@@ -35,6 +35,12 @@ export type SweepRunner = () => Promise<{
  * could not be exercised without launching a real sweep.
  */
 export declare function summarizeSweepStdout(stdout: string): string | null;
+/**
+ * The refusal code a sweep printed on stderr, or a fixed label when it printed
+ * nothing recognisable. Never surfaces free-form error text: only the CLI's
+ * own code field, which is drawn from a fixed set.
+ */
+export declare function deniedCode(stderr: string): string;
 export declare function createConfiguredRunner(argv: readonly string[]): SweepRunner;
 /**
  * Debounced single-flight trigger.
