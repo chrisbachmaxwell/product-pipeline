@@ -311,7 +311,10 @@ export function createInventorySweepTrigger(dependencies = {}) {
                 // completed a sweep. A completed run is never repeated.
                 let result = await run();
                 for (let attempt = 2; !result.ok && attempt <= RUN_MAX_ATTEMPTS; attempt += 1) {
-                    warn(`INVENTORY_ALIGNMENT_RETRY_${attempt}`);
+                    // Carry the reason. Logging the retry without it made the sweep's
+                    // own denial code -- the whole point of capturing stderr --
+                    // invisible, so a failing run still could not be diagnosed.
+                    warn(`INVENTORY_ALIGNMENT_RETRY_${attempt}: ${result.summary}`);
                     await delay(RUN_RETRY_BASE_MS * (attempt - 1));
                     result = await run();
                 }
@@ -327,7 +330,8 @@ export function createInventorySweepTrigger(dependencies = {}) {
                     }
                 }
                 else {
-                    warn(full ? 'INVENTORY_FULL_SWEEP_FAILED' : 'INVENTORY_WEBHOOK_ALIGNMENT_FAILED');
+                    const code = full ? 'INVENTORY_FULL_SWEEP_FAILED' : 'INVENTORY_WEBHOOK_ALIGNMENT_FAILED';
+                    warn(`${code}: ${result.summary}`);
                 }
             }
         }
