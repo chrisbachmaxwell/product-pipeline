@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-08-27. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-04. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,20 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-04: Event-Driven Inventory Sync, and the Once-Ever Idempotency Defect (L42-L48)
+
+Inventory drift between Shopify and eBay was the urgent gap: an item selling in-store or on Shopify did not decrement eBay, so the listing could oversell. Marketplace Connect propagated such a change in about 30 seconds, and that is the bar this work had to meet.
+
+The sync is event-driven rather than polled. A Shopify `inventory_levels/update` webhook refreshes the read-only catalog and then queues a bounded `align-sweep`; the refresh must land BEFORE the sweep, because the sweep compares remembered eBay quantities against the catalog snapshot and a stale snapshot would make the very change that triggered the webhook invisible. A periodic full sweep backstops it, since a webhook cannot see a dropped delivery, an eBay-side ending or relist, or a Seller Hub edit. Provider reads are bounded by a quantity-belief cache that gates the READ and never the WRITE (L45): 156s / 117 reads became 12s / 1 read, which matters against a ~5,000/day eBay call budget. No writer is mounted in the server; the trigger spawns the operator's standalone ceremony command and is inert unless the operator has set its argv.
+
+The defect that made this urgent was not the webhook. Alignment intents were keyed on a digest of `{identity, field, before, after}` and dispatch denied if that key already existed, so **each exact transition on each listing could occur once, for the life of the store** (L42). Used stock oscillates -- `1 -> 0` on a sale, `0 -> 1` on a return -- so the second time any transition repeated, the listing silently stopped syncing forever, visible only as a counter. Two SKUs were already dead from it; left alone it would have spread one SKU at a time. Intents now carry an `occasion`, and dispatch opens the next one when the previous is finished, denying only while a job under it has no terminal resolution and its approval is still actionable. Occasion 0 is omitted from the digest, so every key already recorded hashes byte-for-byte. The never-double-import absolute was strengthened rather than left adjacent to a loosened rule: the derivation now throws on a non-zero occasion for `import_shopify_order`.
+
+Three supporting corrections: a batch sweep is judged by its summary and not its exit code (L44, which had been re-running the full sweep every 15 minutes at ~11,900 reads/day); Trading `Quantity` is TOTAL and needs the sold count added back or the drift can never close (L43); and a failure reason must survive every layer or the bug stays invisible (L48 -- four failures in one session were each chased blind because a reason was captured at one layer and dropped by the next).
+
+Separately recorded: Marketplace Connect's inventory sync was still enabled from 2026-09-01 to 2026-09-03, so two live writers existed for the `inventory` responsibility during that window (L47). The bound ownership evidence is deliberately not re-issued; the correction stands beside the append-only chain.
+
+Verified in production on SKU `9199A001` across four consecutive changes, the last clean and first-try: `status=swept candidates=2 aligned=2 skippedNoDrift=0 failed=0`. The long-stranded `16437396` converged in the same sweep. Full suite 96 files / 1059 tests green. Still open: the recurring `LISTING_CATALOG_SHOPIFY_CAPTURE_FAILED` / `LISTING_CATALOG_INVENTORY_CAPTURE_FAILED` reads, which retry absorbs but does not explain, and which are the remaining distance to the 30-second bar.
 
 ### 2026-08-27: Drill-Down eBay Category Browser in the Listing Editor (L41)
 
