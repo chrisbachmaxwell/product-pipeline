@@ -620,14 +620,19 @@ describe('price/inventory alignment operator CLI (inventory model)', () => {
     expect(store.verifyAuditChain()).toMatchObject({ valid: true });
     store.close();
 
-    // The drift is unchanged, so a replay of the same manifest reaches — and
-    // is denied by — the durable intent-uniqueness layer before any call.
+    // A provider-rejected dispatch is recorded confirmed_missing, which is
+    // only ever written when the provider ITSELF reported the failure -- so
+    // it is known, not assumed, that no write landed. The next sweep must
+    // therefore be free to try again: this is the ordinary way a transient
+    // provider error heals. Blocking it here is what stranded 9199A001 and
+    // 16437396 in production, permanently, with no recovery path.
     await world.run(['dispatch', ...targetArguments('price'),
       '--manifest-digest', manifestDigest,
       '--migration-store', world.migrationDatabasePath,
     ]);
-    expect(lastJson(world.stderr)).toMatchObject({ code: 'REALIGN_INTENT_ALREADY_RECORDED' });
-    expect(world.requests).toHaveLength(1);
+    expect(world.stderr).toHaveLength(0);
+    // Exactly one further provider call -- a retry, never an amplification.
+    expect(world.requests).toHaveLength(2);
   });
 
   it('derives manifests only for valid drift and builds contamination-free bodies', () => {

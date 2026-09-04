@@ -217,6 +217,26 @@ describe('duplicate-order incident safeguards', () => {
             desiredStateDigest: digest('payload-b'),
         });
         expect(keyA).toBe(keyB);
+        // An order import has exactly one occasion, forever. Alignment intents
+        // gained an occasion so a repeated price/quantity transition can dispatch
+        // again; applying that to an order import would mean a duplicate order,
+        // so the derivation refuses it outright rather than trusting callers.
+        expect(() => deriveIdempotencyKey({
+            scopeKey: lane.store.scopeKey,
+            action: 'import_shopify_order',
+            sourceIdentityKey: lane.newOrderKey,
+            desiredStateDigest: digest('payload-a'),
+            occasion: 1,
+        })).toThrow(/exactly one occasion/i);
+        // Occasion 0 is the historical shape and must hash identically, or every
+        // intent key already recorded in the live store would be orphaned.
+        expect(deriveIdempotencyKey({
+            scopeKey: lane.store.scopeKey,
+            action: 'import_shopify_order',
+            sourceIdentityKey: lane.newOrderKey,
+            desiredStateDigest: digest('payload-a'),
+            occasion: 0,
+        })).toBe(keyA);
         const intentKey = createOrderIntent(lane);
         expect(intentKey).toBe(keyA);
         expect(() => lane.store.createIdempotencyIntent({
@@ -436,5 +456,38 @@ describe('duplicate-order incident safeguards', () => {
             raw.close();
         }
         expect(fs.statSync(lane.databasePath).mode & 0o777).toBe(0o600);
+    });
+});
+/**
+ * Alignment is a RECURRING action, unlike an order import. Keying its intent
+ * on the desired state alone let the first 2 -> 3 consume that transition
+ * forever, so the listing silently stopped syncing the next time stock
+ * repeated a value -- the normal pattern for used stock that sells and comes
+ * back. These pin the key algebra that fix depends on.
+ */
+describe('alignment intent occasions', () => {
+    const scopeKey = digest('scope');
+    const sourceIdentityKey = digest('source');
+    const targetIdentityKey = digest('target');
+    const desiredStateDigest = digest('desired');
+    const keyFor = (occasion) => deriveIdempotencyKey({
+        scopeKey,
+        action: 'update_ebay_inventory',
+        sourceIdentityKey,
+        targetIdentityKey,
+        desiredStateDigest,
+        occasion,
+    });
+    it('leaves occasion 0 byte-identical to the historical key', () => {
+        expect(keyFor(0)).toBe(keyFor(undefined));
+    });
+    it('gives each later occasion of one transition a distinct key', () => {
+        const keys = [keyFor(0), keyFor(1), keyFor(2), keyFor(3)];
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+    it('refuses an occasion that is not a whole count', () => {
+        expect(() => keyFor(-1)).toThrow(/occasion/i);
+        expect(() => keyFor(1.5)).toThrow(/occasion/i);
+        expect(() => keyFor(Number.NaN)).toThrow(/occasion/i);
     });
 });

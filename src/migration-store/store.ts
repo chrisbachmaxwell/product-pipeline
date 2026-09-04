@@ -769,6 +769,20 @@ export function deriveIdempotencyKey(input: {
   sourceIdentityKey: string;
   targetIdentityKey?: string | null;
   desiredStateDigest: string;
+  /**
+   * Which attempt at this exact desired state this is, counting from 0.
+   *
+   * A price/quantity alignment is a RECURRING action: stock legitimately
+   * moves 2 -> 3 today and 2 -> 3 again next week, and both are real writes
+   * that must reach eBay. Keying an intent on the desired state alone made
+   * the first occurrence consume that transition forever, so the listing
+   * silently stopped syncing the second time it repeated. Observed in
+   * production on SKUs 9199A001 and 16437396.
+   *
+   * Occasion 0 is omitted from the digest, so every key already recorded in
+   * a store reproduces byte-for-byte and no history is invalidated.
+   */
+  occasion?: number;
 }): Digest {
   const scopeKey = assertDigest(input.scopeKey, 'scopeKey');
   const sourceIdentityKey = assertDigest(input.sourceIdentityKey, 'sourceIdentityKey');
@@ -776,10 +790,24 @@ export function deriveIdempotencyKey(input: {
     throw new MigrationStoreError('INVALID_INPUT', 'action is invalid');
   }
 
+  const occasion = input.occasion ?? 0;
+  if (!Number.isSafeInteger(occasion) || occasion < 0) {
+    throw new MigrationStoreError('INVALID_INPUT', 'occasion is invalid');
+  }
+
   // The source eBay order is the forever-unique identity of an order-create
   // intent. Ownership, approval, attempt, payload, and time must never make a
   // second Shopify create appear to be a different action.
   if (input.action === 'import_shopify_order') {
+    // An order import has exactly one occasion, forever. Recurrence is
+    // meaningful for alignment and catastrophic here: a second occasion would
+    // be a duplicate order. The absolute is enforced, not merely documented.
+    if (occasion !== 0) {
+      throw new MigrationStoreError(
+        'INVALID_INPUT',
+        'An order import intent has exactly one occasion',
+      );
+    }
     return sha256Digest({
       schemaVersion: 1,
       scopeKey,
@@ -790,14 +818,16 @@ export function deriveIdempotencyKey(input: {
 
   const targetIdentityKey = assertDigest(input.targetIdentityKey ?? '', 'targetIdentityKey');
   const desiredStateDigest = assertDigest(input.desiredStateDigest, 'desiredStateDigest');
-  return sha256Digest({
+  const base = {
     schemaVersion: 1,
     scopeKey,
     action: input.action,
     sourceIdentityKey,
     targetIdentityKey,
     desiredStateDigest,
-  });
+  };
+  // Occasion 0 hashes exactly the historical shape.
+  return sha256Digest(occasion === 0 ? base : { ...base, occasion });
 }
 
 function currentJobState(
@@ -1268,6 +1298,8 @@ class MigrationStoreImpl {
     sourceIdentityKey: string;
     targetIdentityKey?: string | null;
     desiredStateDigest: string;
+    /** See deriveIdempotencyKey: which attempt at this desired state this is. */
+    occasion?: number;
     createdAtUtc: string;
     audit: AuditContext;
   }): Digest {
@@ -1342,6 +1374,7 @@ class MigrationStoreImpl {
       sourceIdentityKey: source.identity_key,
       targetIdentityKey: target?.identity_key ?? null,
       desiredStateDigest,
+      occasion: input.occasion,
     });
     const approvalTargetIdentityKey = target?.identity_key ?? source.identity_key;
 
@@ -1413,6 +1446,38 @@ class MigrationStoreImpl {
         )
         .get(key, this.scopeKey) as IntentRow | undefined) ?? null
     );
+  }
+
+  /**
+   * Does this intent have a job that has NOT reached a terminal resolution?
+   *
+   * Distinguishes an occasion that is genuinely mid-flight from one that is
+   * merely finished. A job whose attempt resolved -- to resolved_existing,
+   * confirmed_missing, or resolved_residue_removed -- is history and can
+   * never dispatch again; only an unsettled job may still be in progress.
+   *
+   * An intent with no job at all is NOT unsettled: nothing was ever
+   * dispatched under it, which is the state left behind when an attempt died
+   * between recording the intent and issuing its approval.
+   */
+  hasUnsettledJobForIntent(intentKeyInput: string): boolean {
+    this.assertOpen();
+    const intentKey = assertDigest(intentKeyInput, 'intentKey');
+    return this.database.prepare(
+      `SELECT 1
+       FROM execution_jobs job
+       WHERE job.scope_key = ? AND job.intent_key = ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM intent_attempts attempt
+           JOIN attempt_resolutions resolution
+             ON resolution.attempt_id = attempt.attempt_id
+           WHERE attempt.job_id = job.job_id
+             AND resolution.resolution IN
+               ('resolved_existing', 'confirmed_missing', 'resolved_residue_removed')
+         )
+       LIMIT 1`,
+    ).get(this.scopeKey, intentKey) !== undefined;
   }
 
   /** Read-only approval/job state for an exact intent. Used to permit safe re-approval only after expiry. */
