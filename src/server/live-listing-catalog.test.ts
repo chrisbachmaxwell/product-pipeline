@@ -179,6 +179,36 @@ describe('live listing catalog truth reducer', () => {
     expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
   });
 
+  it('keeps an ARCHIVED sold-out product with one live eBay listing fully syncable', () => {
+    // This store archives a product when it sells. Flagging non-active
+    // status unconditionally excluded exactly the just-sold rows from the
+    // sweep, so eBay kept offering stock Shopify no longer had (production
+    // 2026-09-08, SKU 6473A003-U639: archived at 0, eBay still selling 1).
+    const built = snapshot({
+      variants: [variant({ available: 0, productStatus: 'ARCHIVED' })],
+      active: [active()],
+    });
+    expect(built.rows).toHaveLength(1);
+    expect(built.rows[0]).toMatchObject({
+      lifecycleStatus: 'active',
+      audit: { attentionReasons: [] },
+    });
+  });
+
+  it('still flags a non-active product that has no live eBay listing', () => {
+    // Without a listing there is nothing to maintain, and the flag keeps
+    // draft/archived products out of the not-listed create-candidate bucket.
+    const built = snapshot({
+      variants: [variant({ available: 2, productStatus: 'DRAFT' })],
+      active: [],
+    });
+    expect(built.rows).toHaveLength(1);
+    expect(built.rows[0]).toMatchObject({
+      lifecycleStatus: 'attention',
+      audit: { attentionReasons: ['shopify_product_not_active'] },
+    });
+  });
+
   it('still flags an active row whose Shopify inventory is UNKNOWN', () => {
     // null is ignorance, not knowledge of zero: there is no value that could
     // be safely written to eBay, so this row genuinely needs attention.

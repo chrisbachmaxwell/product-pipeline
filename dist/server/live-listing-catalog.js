@@ -142,8 +142,6 @@ export function buildLiveListingCatalogSnapshot(input) {
     let zeroStockActiveShopifyCount = 0;
     const shopifyRows = input.shopifyVariants.flatMap((variant) => {
         const reasons = new Set();
-        if (variant.productStatus.toUpperCase() !== 'ACTIVE')
-            reasons.add('shopify_product_not_active');
         if (variant.sku.trim() === '') {
             reasons.add('shopify_sku_missing');
             missingShopifySkuCount += 1;
@@ -162,6 +160,18 @@ export function buildLiveListingCatalogSnapshot(input) {
         if (activeMatches.length > 1) {
             reasons.add('ebay_multiple_active_matches');
             ambiguousActiveMatchCount += 1;
+        }
+        // A DRAFT or ARCHIVED product blocks nothing when it has exactly one
+        // live eBay listing: the SKU join is exact and price/quantity are known,
+        // and that listing still needs maintaining -- above all its zero written
+        // when the item sells out. This store's workflow ARCHIVES a product on
+        // sale, so flagging non-active status unconditionally excluded precisely
+        // the just-sold rows from the sweep: observed in production 2026-09-08 on
+        // SKU 6473A003-U639, archived at 0 stock while eBay still offered 1.
+        // Without a live listing the flag stands, which also keeps draft and
+        // archived products out of the not-listed (create-candidate) bucket.
+        if (variant.productStatus.toUpperCase() !== 'ACTIVE' && activeMatches.length !== 1) {
+            reasons.add('shopify_product_not_active');
         }
         const activeListing = activeMatches.length === 1 ? activeMatches[0] : null;
         const shouldInclude = (variant.available !== null && variant.available > 0)
