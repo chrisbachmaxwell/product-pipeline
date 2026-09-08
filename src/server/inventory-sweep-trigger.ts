@@ -58,6 +58,25 @@ export function writeLastFullSweepMs(completedAtMs: number): void {
 
 /** Coalesce a burst of webhooks (a multi-line order moves several items). */
 const DEBOUNCE_MS = 5_000;
+
+/**
+ * One confirmation sweep after each webhook-triggered run.
+ *
+ * The sweep process captures Shopify itself, seconds after the webhook -- and
+ * Shopify's variant reads are eventually consistent, so that capture can still
+ * carry the PRE-change quantity. Then the very change that queued the sweep is
+ * invisible to it: observed in production 2026-09-08, a 3 -> 0 sell-out whose
+ * sweep reported the item skippedNoDrift while eBay kept selling it. Earlier
+ * tests masked this because capture-failure retries happened to delay the
+ * sweep past the consistency window; making the path faster surfaced it.
+ *
+ * So every webhook-triggered sweep is followed by exactly one more, this much
+ * later. If the first capture was already fresh the follow-up is nearly free:
+ * belief-gated selection reads eBay only for listings that still disagree.
+ * The budget is reset by webhooks and only ever spent by completed runs, so
+ * follow-ups can never chain into a loop.
+ */
+const FOLLOW_UP_MS = 45_000;
 /**
  * Retries for a run that never produced a summary.
  *
@@ -291,6 +310,7 @@ export function createInventorySweepTrigger(dependencies: Readonly<{
   runSweep?: SweepRunner | null;
   runFullSweep?: SweepRunner | null;
   debounceMs?: number;
+  followUpMs?: number;
   setTimer?: (callback: () => void, ms: number) => unknown;
   setTicker?: (callback: () => void, ms: number) => unknown;
   fullSweepIntervalMs?: number;
@@ -308,6 +328,7 @@ export function createInventorySweepTrigger(dependencies: Readonly<{
     ? dependencies.runFullSweep
     : (configuredFull === null ? null : createConfiguredRunner(configuredFull));
   const debounceMs = dependencies.debounceMs ?? DEBOUNCE_MS;
+  const followUpMs = dependencies.followUpMs ?? FOLLOW_UP_MS;
   const now = dependencies.now ?? Date.now;
   const fullIntervalMs = dependencies.fullSweepIntervalMs ?? configuredFullSweepIntervalMs();
   const readDueState = dependencies.readDueState ?? readLastFullSweepMs;
@@ -324,6 +345,7 @@ export function createInventorySweepTrigger(dependencies: Readonly<{
   let pendingFast = false;
   let pendingFull = false;
   let scheduled = false;
+  let followUpBudget = 0;
 
   // One lock for both kinds. A full sweep and a webhook sweep must never run
   // at once: they would read the same listings and could both dispatch for the
@@ -360,6 +382,13 @@ export function createInventorySweepTrigger(dependencies: Readonly<{
         } else {
           const code = full ? 'INVENTORY_FULL_SWEEP_FAILED' : 'INVENTORY_WEBHOOK_ALIGNMENT_FAILED';
           warn(`${code}: ${result.summary}`);
+        }
+        if (!full && followUpBudget > 0) {
+          followUpBudget -= 1;
+          setTimer(() => {
+            pendingFast = true;
+            if (!running) void drain();
+          }, followUpMs);
         }
       }
     } finally {
@@ -403,7 +432,10 @@ export function createInventorySweepTrigger(dependencies: Readonly<{
   return {
     /** Returns true when the change was accepted for an alignment run. */
     notifyInventoryChanged(): boolean {
-      return requestFast();
+      const accepted = requestFast();
+      // A real webhook (never a follow-up) grants one confirmation sweep.
+      if (accepted) followUpBudget = 1;
+      return accepted;
     },
     /**
      * Begins the periodic full sweep. Deliberately NOT run at load: nothing

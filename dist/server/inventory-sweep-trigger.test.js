@@ -257,6 +257,9 @@ describe('transient capture failures are retried', () => {
     // where a real 3->2 change never reached eBay.
     function retryHarness(outcomes) {
         const attempts = [];
+        // Confirmation sweeps are queued, never auto-fired: each retry test
+        // controls exactly when (and whether) the follow-up runs.
+        const followUps = [];
         let index = 0;
         const trigger = createInventorySweepTrigger({
             runSweep: async () => {
@@ -266,13 +269,19 @@ describe('transient capture failures are retried', () => {
                 return { ok: outcome.ok, summary: outcome.ok ? 'status=swept failed=0' : 'no summary' };
             },
             runFullSweep: null,
-            setTimer: (cb) => { cb(); },
+            followUpMs: 45_000,
+            setTimer: (cb, ms) => {
+                if (ms >= 45_000)
+                    followUps.push(cb);
+                else
+                    cb();
+            },
             setTicker: () => { },
             delay: async () => { },
             readDueState: () => Date.now(),
             writeDueState: () => { },
         });
-        return { trigger, attempts };
+        return { trigger, attempts, followUps };
     }
     it('retries a run that produced no summary and stops once one succeeds', async () => {
         const h = retryHarness([{ ok: false }, { ok: true }]);
@@ -289,6 +298,26 @@ describe('transient capture failures are retried', () => {
         // Bounded, and bounded LOW: every attempt is a fresh catalog read, so a
         // persistently failing sweep must not grind against the eBay call budget.
         expect(h.attempts.length).toBe(4);
+    });
+    it('schedules exactly ONE confirmation sweep per webhook, and it cannot chain', async () => {
+        // The sweep captures Shopify itself, and that read is eventually
+        // consistent -- a capture seconds after the webhook can still carry the
+        // PRE-change quantity, making the very change that queued the sweep
+        // invisible to it (production 2026-09-08: a 3 -> 0 sell-out reported
+        // skippedNoDrift while eBay kept selling). The follow-up closes that
+        // window; its budget comes only from webhooks, so it can never loop.
+        const h = retryHarness([{ ok: true }]);
+        h.trigger.notifyInventoryChanged();
+        for (let i = 0; i < 4; i += 1)
+            await new Promise((r) => { setTimeout(r, 0); });
+        expect(h.attempts.length).toBe(1);
+        expect(h.followUps.length).toBe(1);
+        h.followUps.shift()();
+        for (let i = 0; i < 4; i += 1)
+            await new Promise((r) => { setTimeout(r, 0); });
+        expect(h.attempts.length).toBe(2);
+        // The follow-up spent the budget: no further confirmation is queued.
+        expect(h.followUps.length).toBe(0);
     });
     it('never repeats a run that already produced a summary', async () => {
         const h = retryHarness([{ ok: true }]);

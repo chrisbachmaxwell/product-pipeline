@@ -54,6 +54,7 @@ export declare function createInventorySweepTrigger(dependencies?: Readonly<{
     runSweep?: SweepRunner | null;
     runFullSweep?: SweepRunner | null;
     debounceMs?: number;
+    followUpMs?: number;
     setTimer?: (callback: () => void, ms: number) => unknown;
     setTicker?: (callback: () => void, ms: number) => unknown;
     fullSweepIntervalMs?: number;
