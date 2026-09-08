@@ -14,8 +14,8 @@ type ReceiverCredentials = Readonly<{
  * performed here: that responsibility stays with the incumbent until its own
  * ceremony-gated cutover.
  *
- * Always 202: eBay retries aggressively on other statuses, and a retry storm
- * of unverifiable payloads helps no one.
+ * Always 200: eBay counts anything else as a failed delivery, retries
+ * aggressively, and can suspend a persistently failing endpoint.
  */
 export declare function createEbayNotificationRouter(dependencies?: Readonly<{
     credentials: () => Promise<ReceiverCredentials>;

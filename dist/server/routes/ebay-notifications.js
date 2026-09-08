@@ -31,8 +31,8 @@ async function receiverCredentials() {
  * performed here: that responsibility stays with the incumbent until its own
  * ceremony-gated cutover.
  *
- * Always 202: eBay retries aggressively on other statuses, and a retry storm
- * of unverifiable payloads helps no one.
+ * Always 200: eBay counts anything else as a failed delivery, retries
+ * aggressively, and can suspend a persistently failing endpoint.
  */
 export function createEbayNotificationRouter(dependencies = {
     credentials: receiverCredentials,
@@ -42,7 +42,9 @@ export function createEbayNotificationRouter(dependencies = {
 }) {
     const router = Router();
     router.post('/webhooks/ebay/notifications', async (req, res) => {
-        res.status(202).send('ACCEPTED_READ_ONLY');
+        // eBay's delivery contract wants 200 OK as the acknowledgement; a 202
+        // risks being counted a failed delivery and the endpoint backed off.
+        res.status(200).send('OK_READ_ONLY');
         let verdict;
         try {
             verdict = verifyEbayNotification({
