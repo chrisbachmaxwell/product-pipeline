@@ -9,7 +9,7 @@ import { info, error as logError } from '../utils/logger.js';
 import healthRoutes from './routes/health.js';
 import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
-import { inventorySweepTrigger } from './inventory-sweep-trigger.js';
+import { inventorySweepTrigger, priceSweepTrigger } from './inventory-sweep-trigger.js';
 import shadowApiRoutes from './routes/shadow-api.js';
 import listingDraftRoutes, {
   listingDraftJsonErrorHandler,
@@ -187,6 +187,9 @@ async function start() {
     // delivery, eBay ending or relisting on its own, or a Seller Hub edit.
     // No writer is mounted here: it spawns the operator's standalone command.
     inventorySweepTrigger.startFullSweepSchedule();
+    // Price backstop (24h): catches eBay-side price edits. Inert unless the
+    // operator has set PRICE_SWEEP_ARGV.
+    priceSweepTrigger.startFullSweepSchedule();
 
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);

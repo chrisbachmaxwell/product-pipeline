@@ -5,6 +5,8 @@ import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js
 import {
   inventorySweepTrigger,
   isInventoryTopic,
+  isPriceTopic,
+  priceSweepTrigger,
 } from '../inventory-sweep-trigger.js';
 
 async function verifyShopifyWebhook(req: Request): Promise<boolean> {
@@ -28,10 +30,13 @@ export function createShopifyWebhookRouter(
      * INVENTORY_SWEEP_ARGV, so this changes nothing on deploy.
      */
     notifyInventoryChanged?: () => boolean;
+    /** Price alignment; off unless PRICE_SWEEP_ARGV. */
+    notifyPriceChanged?: () => boolean;
   }> = {
     verify: verifyShopifyWebhook,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
+    notifyPriceChanged: () => priceSweepTrigger.notifyInventoryChanged(),
   },
 ): Router {
   const router = Router();
@@ -52,9 +57,15 @@ export function createShopifyWebhookRouter(
     // eBay quantities against the catalog snapshot, and a stale snapshot would
     // make the change that triggered this webhook invisible.
     void dependencies.refreshListings().then(() => {
-      if (!isInventoryTopic(topic) || !dependencies.notifyInventoryChanged) return;
-      if (dependencies.notifyInventoryChanged()) {
+      if (isInventoryTopic(topic) && dependencies.notifyInventoryChanged
+        && dependencies.notifyInventoryChanged()) {
         info(`[Shopify Webhook] ${topic} queued an inventory alignment sweep`);
+      }
+      // A product edit can carry a price change; the price trigger's long
+      // debounce and two-hour spacing absorb edit bursts.
+      if (isPriceTopic(topic) && dependencies.notifyPriceChanged
+        && dependencies.notifyPriceChanged()) {
+        info(`[Shopify Webhook] ${topic} queued a price alignment sweep`);
       }
     }).catch(() => {
       warn('LISTING_CATALOG_SHOPIFY_WEBHOOK_REFRESH_FAILED');

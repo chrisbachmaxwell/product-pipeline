@@ -5,19 +5,27 @@ import { describe, expect, it } from 'vitest';
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const repositoryRoot = path.resolve(sourceRoot, '..');
 describe('repository credential and scope boundary', () => {
-    it('keeps the committed Shopify app request scopes read-only', async () => {
+    it('keeps the committed Shopify app request scopes to exactly the sanctioned set', async () => {
         const [config, testMode] = await Promise.all([
             fs.readFile(path.join(repositoryRoot, 'shopify.app.toml'), 'utf8'),
             fs.readFile(path.join(sourceRoot, 'server/middleware/test-mode.ts'), 'utf8'),
         ]);
         const scopeLine = config.match(/^scopes\s*=\s*"([^"]*)"$/m)?.[1] ?? '';
+        // write_orders was sanctioned 2026-09-08 by the G13 order-import cutover
+        // (runbook §5.1): app version productpipeline-9 released and approved,
+        // orderImport ownership product_pipeline v3, permanent watermark
+        // 2026-09-08T21:50:00Z established. It is the ONLY write scope: the
+        // import ceremony is the sole orderCreate path, and every other write
+        // stays quarantined. Any further write scope must clear the same bar.
         expect(scopeLine.split(',').filter(Boolean)).toEqual([
             'read_products',
             'read_orders',
+            'write_orders',
             'read_inventory',
             'read_fulfillments',
         ]);
-        expect(scopeLine).not.toMatch(/(?:^|,)write_/);
+        expect(scopeLine.split(',').filter((scope) => scope.startsWith('write_')))
+            .toEqual(['write_orders']);
         expect(testMode).not.toMatch(/scope:\s*['"][^'"]*write_/);
     });
     it('keeps the retired live mapping script network-inert and secret-free', async () => {
