@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-04. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-08. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,12 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-08: The Sell-Out Lifecycle, Truthful Counters, and eBay Push (L49-L54)
+
+The operator found sold-out Shopify items still buyable on eBay — the exact oversell the migration exists to prevent. The trail led through six findings in one day, each recorded as a learning: two catalog attention-flags that structurally excluded sold-out and archived rows from the sweep (L49); an eventual-consistency race where the triggering change was invisible to its own sweep, fixed with a one-shot confirmation sweep (L50); a summary counter that reported seventeen provider rejections as "aligned" while the store's ledger said the truth — the underlying rejection being eBay refusing zero-quantity revisions with the out-of-stock option off (L51); the operator deducing from that failure code that Marketplace Connect must have been ENDING listings, adopted as the `--end-at-zero` policy (L52); automatic relist-on-restock with hint-selected, provider-enforced targeting (L53); and eBay Platform Notifications subscribed live — verified read-only receiver in the server, subscription as a standalone ceremony (L54).
+
+End state: the sell-out lifecycle is fully automatic in both directions and event-driven end to end. Total API usage sits near 1,200 calls/day of the 5,000 budget, dropping further once the full sweep is demoted to a twice-daily backstop.
 
 ### 2026-09-04: Event-Driven Inventory Sync, and the Once-Ever Idempotency Defect (L42-L48)
 
