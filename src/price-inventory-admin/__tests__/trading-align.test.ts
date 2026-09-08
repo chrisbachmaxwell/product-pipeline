@@ -16,6 +16,7 @@ import {
 } from '../../migration-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
 import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.js';
+import type { LiveListingCatalogSnapshot } from '../../server/live-listing-catalog.js';
 import {
   buildReviseInventoryStatusXml,
   createTradingAlignDispatchAdapter,
@@ -231,6 +232,10 @@ function createTradingWorld(): TradingWorld {
       readWorkspace: async () => current,
       createAdapter: () => inventoryAdapter,
       createTradingAdapter: () => tradingAdapter,
+      // One-row catalog derived from the live workspace, so align-sweep can
+      // run end to end against the same captured transport as dispatch.
+      getSnapshot: async () =>
+        ({ rows: [current.catalog] }) as unknown as LiveListingCatalogSnapshot,
       io,
     }).parseAsync(argv, { from: 'user' });
   };
@@ -562,6 +567,42 @@ describe('trading-model price/inventory alignment dispatch', () => {
     expect(world.stderr).toHaveLength(0);
     // Exactly one further provider call -- a retry, never an amplification.
     expect(world.requests).toHaveLength(2);
+  });
+
+
+  it('reports a provider-rejected sweep dispatch as FAILED with its code, never as aligned', async () => {
+    // Production 2026-09-08: eight consecutive eBay rejections (Trading
+    // refuses an available-quantity-0 revision unless the account's
+    // out-of-stock option is on) were summarized as aligned=8 failed=0,
+    // because "aligned" counted dispatch attempts. The operator was told the
+    // sell-out backlog was cleared while eBay kept selling stock that was
+    // gone -- the exact oversell the sweep exists to prevent.
+    const world = createTradingWorld();
+    await world.run(establishArguments('inventory', world.migrationDatabasePath));
+    world.setWorkspace(tradingWorkspace({ shopifyAvailable: 0, ebayQuantity: 1 }));
+    world.setResponseAck('Failure');
+
+    await world.run(['align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'quantity',
+      '--confirm-sweep',
+    ]);
+    const summary = lastJson(world.stdout);
+    expect(summary).toMatchObject({
+      command: 'align-sweep',
+      status: 'swept-with-failures',
+      aligned: 0,
+      failed: 1,
+    });
+    expect((summary.results as Array<Record<string, unknown>>)[0]).toMatchObject({
+      sku: SKU,
+      status: 'provider-rejected',
+      code: 'TRADING_ALIGN_REJECTED',
+    });
+    // The rejection reached eBay exactly once and set exit code 1.
+    expect(world.requests).toHaveLength(1);
+    expect(world.exitCodes.at(-1)).toBe(1);
   });
 
   it('requires a numeric offer id for inventory targets and "none" for trading targets', async () => {
