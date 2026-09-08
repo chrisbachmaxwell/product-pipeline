@@ -23,6 +23,7 @@ const EBAY_TRADING_COMPATIBILITY_LEVEL = '1349';
 const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
+const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -68,9 +69,23 @@ export type TradingAlignDispatchAdapter = Readonly<{
    * This is the sell-out path for this seller account: eBay refuses an
    * available-quantity-0 revision when the account's out-of-stock option is
    * off, which is also why the Marketplace Connect incumbent must have ended
-   * listings rather than zeroing them. A restock relists deliberately.
+   * listings rather than zeroing them.
    */
   endFixedPriceItem: (input: Readonly<{ listingId: string }>) => Promise<void>;
+  /**
+   * Relist one previously ended fixed-price listing because stock returned,
+   * overriding quantity and price to the current Shopify source values so the
+   * revived listing matches the store the moment it reappears. eBay restores
+   * everything else (title, photos, description, policies) from the ended
+   * listing, refuses a relist of anything that is not this seller's ended
+   * listing, and ages the option out ~90 days after ending. Returns the NEW
+   * listing id.
+   */
+  relistFixedPriceItem: (input: Readonly<{
+    listingId: string;
+    quantity: number;
+    price: Readonly<{ value: string; currency: string }>;
+  }>) => Promise<string>;
 }>;
 
 /**
@@ -142,6 +157,40 @@ export function buildEndFixedPriceItemXml(input: Readonly<{ listingId: string }>
   return xml;
 }
 
+/**
+ * Serialize the one bounded RelistFixedPriceItem request: the exact ended
+ * ItemID plus the two Shopify source values the revived listing must carry.
+ * Same strict grammars as the revise serializer; anything else is refused.
+ */
+export function buildRelistFixedPriceItemXml(input: Readonly<{
+  listingId: string;
+  quantity: number;
+  price: Readonly<{ value: string; currency: string }>;
+}>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  if (!Number.isSafeInteger(input.quantity) || input.quantity < 1) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  if (!PRICE_AMOUNT.test(input.price.value) || Number(input.price.value) <= 0
+    || !CURRENCY.test(input.price.currency)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<RelistFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + '<Item>'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + `<Quantity>${String(input.quantity)}</Quantity>`
+    + `<StartPrice currencyID="${input.price.currency}">${input.price.value}</StartPrice>`
+    + '</Item>'
+    + '</RelistFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || (xml.match(/<Quantity>/g) ?? []).length !== 1
+    || (xml.match(/<StartPrice /g) ?? []).length !== 1) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -202,6 +251,10 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   }
 
   async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
+    await dispatchBoundedCallReturningBody(body, callName);
+  }
+
+  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
@@ -223,6 +276,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       : null;
     const ack = isRecord(response) ? response.Ack : null;
     if (ack !== 'Success' && ack !== 'Warning') deny('TRADING_ALIGN_REJECTED');
+    return text;
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
@@ -233,5 +287,20 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
   }
 
-  return Object.freeze({ reviseInventoryStatus, endFixedPriceItem });
+  async function relistFixedPriceItem(input: Readonly<{
+    listingId: string;
+    quantity: number;
+    price: Readonly<{ value: string; currency: string }>;
+  }>): Promise<string> {
+    const text = await dispatchBoundedCallReturningBody(
+      buildRelistFixedPriceItemXml(input),
+      EBAY_TRADING_RELIST_CALL_NAME,
+    );
+    // The response's ItemID is the NEW listing eBay created.
+    const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
+    if (!newListingId) deny('TRADING_ALIGN_REJECTED');
+    return newListingId as string;
+  }
+
+  return Object.freeze({ reviseInventoryStatus, endFixedPriceItem, relistFixedPriceItem });
 }

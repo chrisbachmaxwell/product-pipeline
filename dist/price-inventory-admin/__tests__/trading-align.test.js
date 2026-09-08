@@ -138,6 +138,22 @@ function createTradingWorld() {
             body: String(init?.body ?? ''),
         });
         const callName = init?.headers?.['X-EBAY-API-CALL-NAME'] ?? 'ReviseInventoryStatus';
+        if (callName === 'RelistFixedPriceItem') {
+            if (responseAck === 'Success' && flipOnSuccess) {
+                // A successful relist puts a live listing back for the SKU.
+                const shopify = current.catalog.shopify;
+                current = tradingWorkspace({
+                    shopifyAvailable: shopify.available,
+                    ebayQuantity: shopify.available,
+                    shopifyPrice: shopify.price.amount,
+                    ebayPrice: shopify.price.amount,
+                });
+            }
+            return new Response('<?xml version="1.0" encoding="UTF-8"?>'
+                + '<RelistFixedPriceItemResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
+                + `<Ack>${responseAck}</Ack><ItemID>200000000001</ItemID>`
+                + '</RelistFixedPriceItemResponse>', { status: 200, headers: { 'Content-Type': 'text/xml' } });
+        }
         if (callName === 'EndFixedPriceItem') {
             if (responseAck === 'Success' && flipOnSuccess) {
                 // Ending flips the live lifecycle, exactly what reconciliation
@@ -544,6 +560,65 @@ describe('trading-model price/inventory alignment dispatch', () => {
             '--end-at-zero',
         ]);
         expect(lastJson(world.stderr)).toMatchObject({ code: 'SWEEP_END_REQUIRES_QUANTITY' });
+    });
+    it('ends at zero, then automatically relists when stock returns', async () => {
+        // The operator's restock policy: a listing this sweep ended is relisted
+        // automatically when Shopify shows stock again, carrying the live
+        // Shopify quantity and price. The ended-listing marker only selects the
+        // row; eBay and the post-dispatch check enforce correctness.
+        const world = createTradingWorld();
+        const beliefPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'relist-beliefs-')), 'beliefs.sqlite');
+        await world.run(establishArguments('inventory', world.migrationDatabasePath));
+        // Sell out: end the listing and remember it.
+        world.setWorkspace(tradingWorkspace({ shopifyAvailable: 0, ebayQuantity: 1 }));
+        await world.run(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'quantity', '--confirm-sweep',
+            '--end-at-zero', '--belief-store', beliefPath,
+        ]);
+        expect(lastJson(world.stdout)).toMatchObject({ status: 'swept', aligned: 1 });
+        // Restock: the row now has stock and NO live listing.
+        const restocked = JSON.parse(JSON.stringify(tradingWorkspace({ shopifyAvailable: 2, ebayQuantity: 2, shopifyPrice: '119.95' })));
+        restocked.catalog.ebay = {
+            sku: SKU, state: 'not_listed', listingId: null, offerId: null, url: null,
+            activeMatchCount: 0, inventoryItemCount: 0, offerCount: 0,
+            unpublishedArtifactCount: 0,
+        };
+        restocked.catalog.lifecycleStatus = 'not_listed';
+        restocked.ebayDetail = null;
+        restocked.mapping.state = 'shopify_only';
+        restocked.mapping.listingId = null;
+        world.setWorkspace(restocked);
+        await world.run(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'quantity', '--confirm-sweep',
+            '--end-at-zero', '--relist-on-restock', '--belief-store', beliefPath,
+        ]);
+        const summary = lastJson(world.stdout);
+        expect(summary).toMatchObject({ status: 'swept', relisted: 1, failed: 0 });
+        const relistResult = summary.results
+            .find((entry) => entry.dispatchMode === 'relisted_after_restock');
+        expect(relistResult).toMatchObject({
+            sku: SKU,
+            status: 'relisted',
+            newListingId: '200000000001',
+            resolution: 'resolved_existing',
+        });
+        const relistRequest = world.requests.find((request) => request.headers?.['X-EBAY-API-CALL-NAME'] === 'RelistFixedPriceItem'
+            || request.body.includes('RelistFixedPriceItemRequest'));
+        expect(relistRequest.body).toContain(`<ItemID>${LISTING_ID}</ItemID>`);
+        expect(relistRequest.body).toContain('<Quantity>2</Quantity>');
+        expect(relistRequest.body).toContain('<StartPrice currencyID="USD">119.95</StartPrice>');
+        // The marker is consumed: a third sweep does not relist again.
+        await world.run(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'quantity', '--confirm-sweep',
+            '--end-at-zero', '--relist-on-restock', '--belief-store', beliefPath,
+        ]);
+        expect(lastJson(world.stdout)).toMatchObject({ relisted: 0 });
     });
     it('reports a provider-rejected sweep dispatch as FAILED with its code, never as aligned', async () => {
         // Production 2026-09-08: eight consecutive eBay rejections (Trading

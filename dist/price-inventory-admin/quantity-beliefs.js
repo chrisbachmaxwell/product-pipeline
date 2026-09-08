@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS quantity_beliefs (
   source TEXT NOT NULL CHECK (source IN ('aligned', 'observed_no_drift')),
   observed_at_utc TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS ended_listings (
+  sku TEXT PRIMARY KEY,
+  listing_id TEXT NOT NULL,
+  ended_at_utc TEXT NOT NULL
+) STRICT;
 `;
 export function openQuantityBeliefStore(databasePath) {
     const database = new Database(databasePath);
@@ -43,6 +48,13 @@ export function openQuantityBeliefStore(databasePath) {
        source = excluded.source,
        observed_at_utc = excluded.observed_at_utc`);
     const remove = database.prepare('DELETE FROM quantity_beliefs WHERE sku = ?');
+    const upsertEnded = database.prepare(`INSERT INTO ended_listings (sku, listing_id, ended_at_utc)
+     VALUES (@sku, @listingId, @endedAtUtc)
+     ON CONFLICT(sku) DO UPDATE SET
+       listing_id = excluded.listing_id,
+       ended_at_utc = excluded.ended_at_utc`);
+    const selectEnded = database.prepare('SELECT sku, listing_id, ended_at_utc FROM ended_listings WHERE sku = ?');
+    const removeEnded = database.prepare('DELETE FROM ended_listings WHERE sku = ?');
     return Object.freeze({
         all() {
             const beliefs = new Map();
@@ -64,6 +76,20 @@ export function openQuantityBeliefStore(databasePath) {
         },
         forget(sku) {
             remove.run(sku);
+        },
+        recordEnded(marker) {
+            if (!/^[0-9]{6,20}$/u.test(marker.listingId))
+                return;
+            upsertEnded.run(marker);
+        },
+        endedFor(sku) {
+            const row = selectEnded.get(sku);
+            return row
+                ? Object.freeze({ sku: row.sku, listingId: row.listing_id, endedAtUtc: row.ended_at_utc })
+                : null;
+        },
+        forgetEnded(sku) {
+            removeEnded.run(sku);
         },
         close() {
             database.close();

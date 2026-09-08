@@ -44,12 +44,35 @@ CREATE TABLE IF NOT EXISTS quantity_beliefs (
   source TEXT NOT NULL CHECK (source IN ('aligned', 'observed_no_drift')),
   observed_at_utc TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS ended_listings (
+  sku TEXT PRIMARY KEY,
+  listing_id TEXT NOT NULL,
+  ended_at_utc TEXT NOT NULL
+) STRICT;
 `;
+
+/**
+ * Memory of a listing OUR sweep ended at quantity zero, kept so a restock can
+ * relist it automatically. Recorded only after reconciliation confirmed the
+ * end landed. Like a belief this is a HINT, not authority: the relist
+ * dispatch is what verifies -- eBay refuses a relist of a listing that is not
+ * ours, not ended, or past the 90-day window, and the post-dispatch check
+ * confirms a live listing actually exists before the job resolves. A stale
+ * or deleted marker only costs an automatic relist, never a wrong write.
+ */
+export type EndedListingMarker = Readonly<{
+  sku: string;
+  listingId: string;
+  endedAtUtc: string;
+}>;
 
 export type QuantityBeliefStore = Readonly<{
   all: () => Map<string, QuantityBelief>;
   record: (belief: QuantityBelief) => void;
   forget: (sku: string) => void;
+  recordEnded: (marker: EndedListingMarker) => void;
+  endedFor: (sku: string) => EndedListingMarker | null;
+  forgetEnded: (sku: string) => void;
   close: () => void;
 }>;
 
@@ -71,6 +94,17 @@ export function openQuantityBeliefStore(databasePath: string): QuantityBeliefSto
        observed_at_utc = excluded.observed_at_utc`,
   );
   const remove = database.prepare('DELETE FROM quantity_beliefs WHERE sku = ?');
+  const upsertEnded = database.prepare(
+    `INSERT INTO ended_listings (sku, listing_id, ended_at_utc)
+     VALUES (@sku, @listingId, @endedAtUtc)
+     ON CONFLICT(sku) DO UPDATE SET
+       listing_id = excluded.listing_id,
+       ended_at_utc = excluded.ended_at_utc`,
+  );
+  const selectEnded = database.prepare(
+    'SELECT sku, listing_id, ended_at_utc FROM ended_listings WHERE sku = ?',
+  );
+  const removeEnded = database.prepare('DELETE FROM ended_listings WHERE sku = ?');
 
   return Object.freeze({
     all(): Map<string, QuantityBelief> {
@@ -98,6 +132,20 @@ export function openQuantityBeliefStore(databasePath: string): QuantityBeliefSto
     },
     forget(sku: string): void {
       remove.run(sku);
+    },
+    recordEnded(marker: EndedListingMarker): void {
+      if (!/^[0-9]{6,20}$/u.test(marker.listingId)) return;
+      upsertEnded.run(marker);
+    },
+    endedFor(sku: string): EndedListingMarker | null {
+      const row = selectEnded.get(sku) as
+        { sku: string; listing_id: string; ended_at_utc: string } | undefined;
+      return row
+        ? Object.freeze({ sku: row.sku, listingId: row.listing_id, endedAtUtc: row.ended_at_utc })
+        : null;
+    },
+    forgetEnded(sku: string): void {
+      removeEnded.run(sku);
     },
     close(): void {
       database.close();

@@ -79,6 +79,9 @@ const APPROVAL_TTL_MS = 10 * 60_000;
  */
 const MAX_ALIGNMENT_OCCASIONS = 10_000;
 
+/** Relists attempted per sweep, independent of --max-actions. */
+const RELIST_HARD_CAP = 10;
+
 export type PriceInventoryAdminIo = {
   stdout: (message: string) => void;
   stderr: (message: string) => void;
@@ -709,6 +712,257 @@ export function buildPriceInventoryAdminProgram(
     };
   }
 
+  /**
+   * Relist ONE previously-ended listing because Shopify stock returned.
+   *
+   * Same ceremony spine as dispatchOneAlignment -- ownership precheck,
+   * occasioned idempotent intent, single-use approval, job reservation, one
+   * bounded provider call, post-dispatch reconciliation -- with a relist
+   * manifest binding the exact ended listing id and the exact Shopify
+   * quantity and price the revived listing must carry. The ended-listing
+   * marker that selected this row is a HINT only: eBay itself refuses a
+   * relist of anything that is not this seller's ended listing or that is
+   * past the ~90-day relist window.
+   */
+  async function dispatchOneRelist(input: {
+    store: ReturnType<typeof openMigration>;
+    row: {
+      id: string;
+      ebay: { sku: string | null };
+      shopify: { variantId: string; available: number | null;
+        price: { amount: string; currency: string } } | null;
+    };
+    endedListingId: string;
+    clock: () => string;
+  }): Promise<Record<string, unknown>> {
+    const { store, row, clock } = input;
+    const sku = row.ebay.sku as string;
+    const shopify = row.shopify as NonNullable<typeof row.shopify>;
+    const quantity = shopify.available as number;
+    const price = Object.freeze({
+      value: shopify.price.amount, currency: shopify.price.currency,
+    });
+    const ownership = store.getCurrentOwnership('inventory');
+    if (!ownership || ownership.owner !== 'product_pipeline'
+      || !ownership.singleWriterVerified) {
+      deny('REALIGN_OWNERSHIP_NOT_ESTABLISHED');
+    }
+    const manifestDigest = sha256Digest({
+      schemaVersion: 1,
+      scope: LISTING_DRAFT_SCOPE,
+      kind: 'relist_after_restock',
+      sku,
+      endedListingId: input.endedListingId,
+      quantity,
+      price,
+    });
+    const sourceIdentityKey = ensureIdentity(store, {
+      platform: 'shopify',
+      kind: 'variant',
+      bindingKey: `shopify-variant:${shopify.variantId}`,
+      storeDomain: MIGRATION_SCOPE.shopifyStoreDomain,
+      externalGid: shopify.variantId,
+    }, clock());
+    const targetIdentityKey = ensureIdentity(store, {
+      platform: 'ebay',
+      environment: MIGRATION_SCOPE.ebayEnvironment,
+      sellerId: MIGRATION_SCOPE.ebaySellerId,
+      marketplaceId: MIGRATION_SCOPE.ebayMarketplaceId,
+      kind: 'inventory_sku',
+      bindingKey: `ebay-inventory-sku:${sku}`,
+      externalId: sku,
+    }, clock());
+    const scopeKeyForIntent = deriveScopeKey(MIGRATION_SCOPE);
+    const nowEpochMs = Date.parse(clock());
+    let occasion = 0;
+    let intentKey = deriveIdempotencyKey({
+      scopeKey: scopeKeyForIntent,
+      action: 'update_ebay_inventory',
+      sourceIdentityKey,
+      targetIdentityKey,
+      desiredStateDigest: manifestDigest,
+    });
+    while (store.getIntent(intentKey) !== null) {
+      const expiresAt = store.getIntentApprovalState(intentKey).latestExpiresEpochMs;
+      const approvalActionable = expiresAt !== null && expiresAt > nowEpochMs;
+      if (approvalActionable && store.hasUnsettledJobForIntent(intentKey)) {
+        deny('REALIGN_INTENT_IN_FLIGHT');
+      }
+      occasion += 1;
+      if (occasion > MAX_ALIGNMENT_OCCASIONS) deny('REALIGN_INTENT_OCCASIONS_EXHAUSTED');
+      intentKey = deriveIdempotencyKey({
+        scopeKey: scopeKeyForIntent,
+        action: 'update_ebay_inventory',
+        sourceIdentityKey,
+        targetIdentityKey,
+        desiredStateDigest: manifestDigest,
+        occasion,
+      });
+    }
+    const createdAtUtc = clock();
+    store.createIdempotencyIntent({
+      action: 'update_ebay_inventory',
+      sourceIdentityKey,
+      targetIdentityKey,
+      desiredStateDigest: manifestDigest,
+      occasion,
+      createdAtUtc,
+      audit: { eventId: `intent:${intentKey.slice(7, 27)}`, occurredAtUtc: createdAtUtc },
+    });
+    const approvalToken = `price-inventory-approval:${uuid()}`;
+    const issuedAtUtc = clock();
+    store.issueActionApproval({
+      approvalToken,
+      intentKey,
+      responsibility: 'inventory',
+      targetIdentityKey,
+      ownershipVersion: (ownership as NonNullable<typeof ownership>).version,
+      issuedAtUtc,
+      expiresAtUtc: new Date(Date.parse(issuedAtUtc) + APPROVAL_TTL_MS).toISOString(),
+      evidenceDigest: manifestDigest,
+      audit: { eventId: `approval:${uuid()}`, occurredAtUtc: issuedAtUtc },
+    });
+    const jobId = `price-inventory-job:${uuid()}`;
+    const attemptId = `price-inventory-attempt:${uuid()}`;
+    const reservedAtUtc = clock();
+    store.reserveExecutionJob({
+      jobId,
+      approvalToken,
+      intentKey,
+      responsibility: 'inventory',
+      targetIdentityKey,
+      ownershipVersion: (ownership as NonNullable<typeof ownership>).version,
+      approvalEvidenceDigest: manifestDigest,
+      reservedAtUtc,
+      evidenceDigest: manifestDigest,
+      audit: { eventId: `job:${jobId}:reserved`, occurredAtUtc: reservedAtUtc },
+    });
+    const dispatchAtUtc = clock();
+    store.markDispatchingOutcomeUnknown({
+      jobId,
+      attemptId,
+      approvalToken,
+      approvalEvidenceDigest: manifestDigest,
+      occurredAtUtc: dispatchAtUtc,
+      evidenceDigest: manifestDigest,
+      audit: { eventId: `job:${jobId}:dispatching`, occurredAtUtc: dispatchAtUtc },
+    });
+    let dispatchFailed = false;
+    let dispatchFailureCode: string | null = null;
+    let newListingId: string | null = null;
+    try {
+      newListingId = await createTradingAdapter().relistFixedPriceItem({
+        listingId: input.endedListingId,
+        quantity,
+        price,
+      });
+    } catch (error) {
+      dispatchFailed = true;
+      dispatchFailureCode = safeErrorCode(error);
+    }
+    const requiredAtUtc = clock();
+    store.requirePostDispatchReconciliation({
+      jobId,
+      attemptId,
+      occurredAtUtc: requiredAtUtc,
+      evidenceDigest: manifestDigest,
+      audit: {
+        eventId: `job:${jobId}:reconciliation-required`,
+        occurredAtUtc: requiredAtUtc,
+      },
+    });
+    // Post-dispatch verification: a fresh workspace read must show an active
+    // eBay listing for this catalog row. The census can lag a relist by up to
+    // a snapshot interval, in which case the job honestly stays unresolved
+    // and the listing itself is already correct -- the relist call set the
+    // exact quantity and price, and the next sweep re-observes it.
+    const startedAtUtc = clock();
+    let observedActive = false;
+    let freshDigest: MigrationDigest = sha256Digest({
+      schemaVersion: 1, kind: 'relist_observation_unavailable', sku,
+    });
+    try {
+      const freshDto = await readWorkspace(input.row.id);
+      observedActive = freshDto.catalog.ebay.listingId !== null;
+      freshDigest = sha256Digest({
+        schemaVersion: 1,
+        kind: 'relist_observation',
+        sku,
+        observedListingId: freshDto.catalog.ebay.listingId,
+      });
+    } catch {
+      observedActive = false;
+    }
+    const completedAtUtc = clock();
+    const runId = `price-inventory-run:${uuid()}`;
+    const effect = observedActive ? 'effect_observed' : 'effect_absent';
+    const resultDigest = sha256Digest({
+      schemaVersion: 1,
+      manifestDigest,
+      kind: 'relist_after_restock',
+      effect,
+      newListingId,
+    });
+    const resolvable = observedActive || dispatchFailed;
+    store.recordReconciliationRun({
+      runId,
+      responsibility: 'inventory',
+      targetIdentityKey,
+      mode: 'production_canary',
+      status: 'passed',
+      sourceSnapshotDigest: manifestDigest,
+      targetSnapshotDigest: freshDigest,
+      resultDigest,
+      authoritative: resolvable,
+      authorityEvidenceDigest: manifestDigest,
+      externalWritesObserved: 0,
+      startedAtUtc,
+      completedAtUtc,
+      exceptions: resolvable ? [] : [{
+        exceptionId: `price-inventory-exception:${uuid()}`,
+        code: 'ALIGNED_STATE_NOT_YET_OBSERVED',
+        severity: 'critical' as const,
+        subjectIdentityKey: targetIdentityKey,
+        detailsDigest: resultDigest,
+      }],
+      targetEffectObservation: {
+        observationId: `price-inventory-observation:${uuid()}`,
+        intentKey,
+        responsibility: 'inventory',
+        effect,
+        observedDigest: freshDigest,
+      },
+      audit: { eventId: `reconciliation:${runId}`, occurredAtUtc: completedAtUtc },
+    });
+    let resolution: string | null = null;
+    if (resolvable) {
+      resolution = observedActive ? 'resolved_existing' : 'confirmed_missing';
+      const reconciledAtUtc = clock();
+      store.resolveUnknownAttempt({
+        jobId,
+        attemptId,
+        resolution: resolution as 'resolved_existing' | 'confirmed_missing',
+        reconciliationRunId: runId,
+        reconciliationResultDigest: resultDigest,
+        reconciledAtUtc,
+        audit: { eventId: `resolution:${runId}`, occurredAtUtc: reconciledAtUtc },
+      });
+    }
+    return {
+      status: dispatchFailed ? 'provider-rejected' : 'relisted',
+      dispatchMode: 'relisted_after_restock',
+      jobId,
+      attemptId,
+      intentKey,
+      manifestDigest,
+      providerDispatchReported: !dispatchFailed,
+      providerFailureCode: dispatchFailureCode,
+      newListingId,
+      resolution,
+      externalCommerceWritesAttempted: 1,
+    };
+  }
+
   const program = new Command();
   program
     .name('price-inventory-admin')
@@ -932,6 +1186,12 @@ export function buildPriceInventoryAdminProgram(
       + 'observed, and with --suspected-only they also select which listings are read.',
     )
     .option(
+      '--relist-on-restock',
+      'Restock policy: automatically RELIST a listing this sweep previously ended, when '
+      + 'its Shopify quantity is positive again. Quantity and price are overridden to the '
+      + 'live Shopify values. Requires --field quantity and --belief-store.',
+    )
+    .option(
       '--end-at-zero',
       'Sell-out policy: END a Trading listing when the aligned quantity is exactly 0, '
       + 'instead of a quantity revision eBay refuses while the account\'s out-of-stock '
@@ -951,6 +1211,7 @@ export function buildPriceInventoryAdminProgram(
       beliefStore?: string;
       suspectedOnly?: boolean;
       endAtZero?: boolean;
+      relistOnRestock?: boolean;
     }) => {
       const started = new Date().toISOString();
       try {
@@ -970,6 +1231,10 @@ export function buildPriceInventoryAdminProgram(
           if (!options.beliefStore) deny('SWEEP_BELIEF_STORE_REQUIRED');
         }
         if (options.endAtZero && field !== 'quantity') deny('SWEEP_END_REQUIRES_QUANTITY');
+        if (options.relistOnRestock) {
+          if (field !== 'quantity') deny('SWEEP_RELIST_REQUIRES_QUANTITY');
+          if (!options.beliefStore) deny('SWEEP_RELIST_REQUIRES_BELIEF_STORE');
+        }
         const beliefs = options.beliefStore
           ? openBeliefs(options.beliefStore)
           : null;
@@ -1059,6 +1324,18 @@ export function buildPriceInventoryAdminProgram(
                 store, target, catalogId: row.id, clock,
                 endAtZero: options.endAtZero === true,
               });
+              // A provider-accepted END is remembered so a restock can
+              // relist this exact listing automatically. A hint, not
+              // authority: eBay refuses a relist of anything that is not this
+              // seller's ended listing.
+              if (beliefs && result.dispatchMode === 'ended_at_zero'
+                && result.providerDispatchReported === true) {
+                beliefs.recordEnded({
+                  sku: targetOptions.sku,
+                  listingId: targetOptions.listingId,
+                  endedAtUtc: new Date().toISOString(),
+                });
+              }
               // Aligned means the PROVIDER accepted the write -- never merely
               // that a dispatch was attempted. Counting rejected dispatches
               // as aligned reported failed=0 while eBay kept selling stock
@@ -1103,6 +1380,62 @@ export function buildPriceInventoryAdminProgram(
             }
           }
 
+          // Restock phase: rows with stock but no live listing, whose
+          // listing THIS sweep previously ended, are relisted automatically.
+          // Selection is marker-driven (zero extra eBay reads); correctness
+          // is enforced by eBay and the post-dispatch check, never by the
+          // marker.
+          let relisted = 0;
+          if (options.relistOnRestock && beliefs) {
+            const restockRows = (snapshot.rows ?? []).filter((row) =>
+              row.ebay.listingId === null
+              && typeof row.ebay.sku === 'string' && row.ebay.sku !== ''
+              && row.shopify !== null
+              && typeof row.shopify.available === 'number' && row.shopify.available > 0
+              && /^[0-9]+(?:[.][0-9]+)?$/u.test(row.shopify.price?.amount ?? '')
+              && beliefs.endedFor(row.ebay.sku) !== null);
+            for (const row of restockRows) {
+              if (relisted >= RELIST_HARD_CAP) break;
+              const sku = row.ebay.sku as string;
+              const marker = beliefs.endedFor(sku);
+              if (!marker) continue;
+              scanned += 1;
+              try {
+                const result = await dispatchOneRelist({
+                  store,
+                  row: row as Parameters<typeof dispatchOneRelist>[0]['row'],
+                  endedListingId: marker.listingId,
+                  clock,
+                });
+                if (result.providerDispatchReported === false) {
+                  failed += 1;
+                  results.push({
+                    sku,
+                    status: 'provider-rejected',
+                    code: (result.providerFailureCode as string | null)
+                      ?? 'PROVIDER_DISPATCH_REJECTED',
+                  });
+                  // eBay refused this relist (window expired, listing not
+                  // endable, ...): the marker cannot succeed later either,
+                  // so drop it rather than failing every future sweep. The
+                  // listing stays in the not-listed bucket for a manual
+                  // decision.
+                  beliefs.forgetEnded(sku);
+                  continue;
+                }
+                relisted += 1;
+                results.push({ sku, ...result });
+                // The marker is consumed; the new listing is re-observed by
+                // the next sweep, so no belief is asserted for it here.
+                beliefs.forgetEnded(sku);
+                beliefs.forget(sku);
+              } catch (error) {
+                failed += 1;
+                results.push({ sku, status: 'denied', code: safeErrorCode(error) });
+              }
+            }
+          }
+
           io.stdout(JSON.stringify({
             command: 'align-sweep',
             status: failed === 0 ? 'swept' : 'swept-with-failures',
@@ -1119,7 +1452,8 @@ export function buildPriceInventoryAdminProgram(
             skippedNoDrift,
             failed,
             cap,
-            externalCommerceWritesAttempted: aligned,
+            relisted,
+            externalCommerceWritesAttempted: aligned + relisted,
             results,
           }));
           if (failed > 0) io.setExitCode(1);
