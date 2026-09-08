@@ -489,7 +489,13 @@ export const priceSweepTrigger = createInventorySweepTrigger({
         const argv = configuredPriceSweepArgv();
         return argv === null ? null : createConfiguredRunner(argv);
     })(),
-    debounceMs: 60_000,
+    // Five minutes, not one: a product edit also fires the INVENTORY burst
+    // (webhook sweep + 45s confirmation), and every sweep runs its own full
+    // Shopify capture. Concurrent captures are what actually throttle --
+    // observed 2026-09-08: the first two live price sweeps each exhausted all
+    // four attempts on capture failures while the inventory burst ran. Price
+    // is not urgent; it waits out the burst.
+    debounceMs: 300_000,
     followUpMs: null,
     minFastIntervalMs: 2 * 3_600_000,
     fullSweepIntervalMs: configuredPriceBackstopIntervalMs(),
