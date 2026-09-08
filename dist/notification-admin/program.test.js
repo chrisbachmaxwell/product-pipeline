@@ -18,11 +18,13 @@ function world(responseAck = 'Success') {
         fetchImpl: (async (_url, init) => {
             requests.push({
                 callName: (init?.headers)['X-EBAY-API-CALL-NAME'],
+                headers: { ...init?.headers },
                 body: String(init?.body ?? ''),
             });
             return new Response(`<?xml version="1.0"?><SetNotificationPreferencesResponse><Ack>${responseAck}</Ack></SetNotificationPreferencesResponse>`, { status: 200 });
         }),
         getAccessToken: async () => 'test-token',
+        getAppCredentials: async () => ({ devId: 'dev-1', appId: 'app-1', certId: 'cert-1' }),
         io: {
             stdout: (message) => stdout.push(message),
             stderr: (message) => stderr.push(message),
@@ -43,6 +45,10 @@ describe('notification-admin ceremony', () => {
         expect(w.exitCodes).toHaveLength(0);
         expect(w.requests).toHaveLength(1);
         expect(w.requests[0].callName).toBe('SetNotificationPreferences');
+        // Application-level calls need the three credential headers or eBay
+        // rejects them -- proven the hard way on the first live show.
+        expect(w.requests[0].headers['X-EBAY-API-DEV-NAME']).toBe('dev-1');
+        expect(w.requests[0].headers['X-EBAY-API-CERT-NAME']).toBe('cert-1');
         expect(w.requests[0].body).toContain(`<ApplicationURL>${RECEIVER_URL}</ApplicationURL>`);
         for (const event of SUBSCRIBED_EVENTS) {
             expect(w.requests[0].body).toContain(`<EventType>${event}</EventType>`);

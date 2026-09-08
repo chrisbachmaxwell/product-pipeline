@@ -13,5 +13,10 @@ export type NotificationAdminIo = Readonly<{
 export declare function buildNotificationAdminProgram(dependencies?: Readonly<{
     fetchImpl?: typeof fetch;
     getAccessToken?: () => Promise<string>;
+    getAppCredentials?: () => Promise<Readonly<{
+        devId: string;
+        appId: string;
+        certId: string;
+    }>>;
     io?: NotificationAdminIo;
 }>): Command;

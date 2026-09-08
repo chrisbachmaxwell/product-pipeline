@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
+import { loadEbayCredentials } from '../config/credentials.js';
 import { deriveScopeKey } from '../migration-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 /** The exact one-store scope every ceremony in this migration confirms. */
@@ -76,8 +77,19 @@ export function buildNotificationAdminProgram(dependencies = {}) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
     const getAccessToken = dependencies.getAccessToken
         ?? createProductionDispatchTokenProvider();
+    const getAppCredentials = dependencies.getAppCredentials
+        ?? (async () => {
+            const loaded = await loadEbayCredentials();
+            return Object.freeze({
+                devId: loaded.devId, appId: loaded.appId, certId: loaded.certId,
+            });
+        });
     async function boundedTradingCall(callName, body) {
         const token = await getAccessToken();
+        // Notification preferences are APPLICATION-level calls: unlike the
+        // listing calls, eBay requires the three application credential headers
+        // alongside the user token, and rejects the call without them.
+        const credentials = await getAppCredentials();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
         try {
@@ -89,6 +101,9 @@ export function buildNotificationAdminProgram(dependencies = {}) {
                     'X-EBAY-API-CALL-NAME': callName,
                     'X-EBAY-API-SITEID': '0',
                     'X-EBAY-API-IAF-TOKEN': token,
+                    'X-EBAY-API-DEV-NAME': credentials.devId,
+                    'X-EBAY-API-APP-NAME': credentials.appId,
+                    'X-EBAY-API-CERT-NAME': credentials.certId,
                 },
                 body,
                 redirect: 'error',
@@ -100,7 +115,12 @@ export function buildNotificationAdminProgram(dependencies = {}) {
                 deny('NOTIFICATION_CALL_FAILED');
             }
             if (!/(<Ack>Success<\/Ack>|<Ack>Warning<\/Ack>)/u.test(text)) {
-                deny('NOTIFICATION_CALL_REJECTED');
+                // Carry eBay's NUMERIC error code only -- never message text, which
+                // can contain caller- or account-identifying detail.
+                const errorCode = /<ErrorCode>([0-9]{1,8})<\/ErrorCode>/u.exec(text)?.[1];
+                deny(errorCode
+                    ? `NOTIFICATION_CALL_REJECTED_EBAY_${errorCode}`
+                    : 'NOTIFICATION_CALL_REJECTED');
             }
             return text;
         }

@@ -12,7 +12,7 @@ const SCOPE_KEY = deriveScopeKey({
 const RECEIVER_URL = 'https://ebay-sync-app-production.up.railway.app/webhooks/ebay/notifications';
 
 function world(responseAck = 'Success') {
-  const requests: Array<{ callName: string; body: string }> = [];
+  const requests: Array<{ callName: string; headers: Record<string, string>; body: string }> = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
   const exitCodes: number[] = [];
@@ -20,6 +20,7 @@ function world(responseAck = 'Success') {
     fetchImpl: (async (_url: unknown, init?: RequestInit) => {
       requests.push({
         callName: (init?.headers as Record<string, string>)['X-EBAY-API-CALL-NAME']!,
+        headers: { ...(init?.headers as Record<string, string>) },
         body: String(init?.body ?? ''),
       });
       return new Response(
@@ -28,6 +29,7 @@ function world(responseAck = 'Success') {
       );
     }) as typeof fetch,
     getAccessToken: async () => 'test-token',
+    getAppCredentials: async () => ({ devId: 'dev-1', appId: 'app-1', certId: 'cert-1' }),
     io: {
       stdout: (message) => stdout.push(message),
       stderr: (message) => stderr.push(message),
@@ -49,6 +51,10 @@ describe('notification-admin ceremony', () => {
     expect(w.exitCodes).toHaveLength(0);
     expect(w.requests).toHaveLength(1);
     expect(w.requests[0]!.callName).toBe('SetNotificationPreferences');
+    // Application-level calls need the three credential headers or eBay
+    // rejects them -- proven the hard way on the first live show.
+    expect(w.requests[0]!.headers['X-EBAY-API-DEV-NAME']).toBe('dev-1');
+    expect(w.requests[0]!.headers['X-EBAY-API-CERT-NAME']).toBe('cert-1');
     expect(w.requests[0]!.body).toContain(`<ApplicationURL>${RECEIVER_URL}</ApplicationURL>`);
     for (const event of SUBSCRIBED_EVENTS) {
       expect(w.requests[0]!.body).toContain(`<EventType>${event}</EventType>`);
