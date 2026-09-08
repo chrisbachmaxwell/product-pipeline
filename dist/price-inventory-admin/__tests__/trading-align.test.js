@@ -137,6 +137,21 @@ function createTradingWorld() {
             headers: { ...init?.headers },
             body: String(init?.body ?? ''),
         });
+        const callName = init?.headers?.['X-EBAY-API-CALL-NAME'] ?? 'ReviseInventoryStatus';
+        if (callName === 'EndFixedPriceItem') {
+            if (responseAck === 'Success' && flipOnSuccess) {
+                // Ending flips the live lifecycle, exactly what reconciliation
+                // observes on the fresh detail read.
+                const ended = JSON.parse(JSON.stringify(current));
+                ended.ebayDetail.actual.lifecycle.status = 'COMPLETED';
+                ended.ebayDetail.actual.lifecycle.active = false;
+                current = ended;
+            }
+            return new Response('<?xml version="1.0" encoding="UTF-8"?>'
+                + '<EndFixedPriceItemResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
+                + `<Ack>${responseAck}</Ack>`
+                + '</EndFixedPriceItemResponse>', { status: 200, headers: { 'Content-Type': 'text/xml' } });
+        }
         if (responseAck === 'Success' && flipOnSuccess) {
             const shopify = current.catalog.shopify;
             const commerce = current.ebayDetail.actual.commerce;
@@ -482,6 +497,53 @@ describe('trading-model price/inventory alignment dispatch', () => {
         expect(world.stderr).toHaveLength(0);
         // Exactly one further provider call -- a retry, never an amplification.
         expect(world.requests).toHaveLength(2);
+    });
+    it('ends a Trading listing at quantity zero under --end-at-zero and resolves it', async () => {
+        // Sell-out policy for this account: eBay refuses a 0-quantity revision
+        // (out-of-stock option off), so the sweep ENDS the listing -- what the
+        // Marketplace Connect incumbent must have done. Same intent, approval,
+        // job, and reconciliation spine as a revise; only the provider call
+        // differs, and the aligned effect is observed as the listing no longer
+        // being live.
+        const world = createTradingWorld();
+        await world.run(establishArguments('inventory', world.migrationDatabasePath));
+        world.setWorkspace(tradingWorkspace({ shopifyAvailable: 0, ebayQuantity: 1 }));
+        await world.run(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'quantity',
+            '--confirm-sweep',
+            '--end-at-zero',
+        ]);
+        const summary = lastJson(world.stdout);
+        expect(summary).toMatchObject({ status: 'swept', aligned: 1, failed: 0 });
+        const result = summary.results[0];
+        expect(result).toMatchObject({
+            sku: SKU,
+            dispatchMode: 'ended_at_zero',
+            resolution: 'resolved_existing',
+            providerDispatchReported: true,
+        });
+        // Exactly one provider call: an EndFixedPriceItem with the fixed
+        // NotAvailable reason, and no revise elements that could mutate price
+        // or quantity instead of ending.
+        expect(world.requests).toHaveLength(1);
+        expect(world.requests[0].headers['X-EBAY-API-CALL-NAME']).toBe('EndFixedPriceItem');
+        expect(world.requests[0].body).toContain('<EndingReason>NotAvailable</EndingReason>');
+        expect(world.requests[0].body).not.toContain('<Quantity>');
+        expect(world.requests[0].body).not.toContain('<StartPrice');
+        expect(world.exitCodes).not.toContain(1);
+    });
+    it('refuses --end-at-zero for a price sweep', async () => {
+        const world = createTradingWorld();
+        await world.run(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'price',
+            '--confirm-sweep',
+            '--end-at-zero',
+        ]);
+        expect(lastJson(world.stderr)).toMatchObject({ code: 'SWEEP_END_REQUIRES_QUANTITY' });
     });
     it('reports a provider-rejected sweep dispatch as FAILED with its code, never as aligned', async () => {
         // Production 2026-09-08: eight consecutive eBay rejections (Trading
