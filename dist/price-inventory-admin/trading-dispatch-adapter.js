@@ -22,6 +22,7 @@ const EBAY_TRADING_COMPATIBILITY_LEVEL = '1349';
 const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
+const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -108,6 +109,36 @@ export function buildEndFixedPriceItemXml(input) {
     }
     return xml;
 }
+/**
+ * Serialize the one bounded RelistFixedPriceItem request: the exact ended
+ * ItemID plus the two Shopify source values the revived listing must carry.
+ * Same strict grammars as the revise serializer; anything else is refused.
+ */
+export function buildRelistFixedPriceItemXml(input) {
+    if (!EXACT_ITEM_ID.test(input.listingId))
+        deny('TRADING_ALIGN_TARGET_INVALID');
+    if (!Number.isSafeInteger(input.quantity) || input.quantity < 1) {
+        deny('TRADING_ALIGN_PAYLOAD_INVALID');
+    }
+    if (!PRICE_AMOUNT.test(input.price.value) || Number(input.price.value) <= 0
+        || !CURRENCY.test(input.price.currency)) {
+        deny('TRADING_ALIGN_PAYLOAD_INVALID');
+    }
+    const xml = '<?xml version="1.0" encoding="utf-8"?>'
+        + '<RelistFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+        + '<Item>'
+        + `<ItemID>${input.listingId}</ItemID>`
+        + `<Quantity>${String(input.quantity)}</Quantity>`
+        + `<StartPrice currencyID="${input.price.currency}">${input.price.value}</StartPrice>`
+        + '</Item>'
+        + '</RelistFixedPriceItemRequest>';
+    if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+        || (xml.match(/<Quantity>/g) ?? []).length !== 1
+        || (xml.match(/<StartPrice /g) ?? []).length !== 1) {
+        deny('TRADING_ALIGN_PAYLOAD_INVALID');
+    }
+    return xml;
+}
 function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -166,6 +197,9 @@ export function createTradingAlignDispatchAdapter(dependencies) {
         }
     }
     async function dispatchBoundedCall(body, callName) {
+        await dispatchBoundedCallReturningBody(body, callName);
+    }
+    async function dispatchBoundedCallReturningBody(body, callName) {
         if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
             deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
         }
@@ -190,6 +224,7 @@ export function createTradingAlignDispatchAdapter(dependencies) {
         const ack = isRecord(response) ? response.Ack : null;
         if (ack !== 'Success' && ack !== 'Warning')
             deny('TRADING_ALIGN_REJECTED');
+        return text;
     }
     async function reviseInventoryStatus(input) {
         await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
@@ -197,5 +232,13 @@ export function createTradingAlignDispatchAdapter(dependencies) {
     async function endFixedPriceItem(input) {
         await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
     }
-    return Object.freeze({ reviseInventoryStatus, endFixedPriceItem });
+    async function relistFixedPriceItem(input) {
+        const text = await dispatchBoundedCallReturningBody(buildRelistFixedPriceItemXml(input), EBAY_TRADING_RELIST_CALL_NAME);
+        // The response's ItemID is the NEW listing eBay created.
+        const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
+        if (!newListingId)
+            deny('TRADING_ALIGN_REJECTED');
+        return newListingId;
+    }
+    return Object.freeze({ reviseInventoryStatus, endFixedPriceItem, relistFixedPriceItem });
 }

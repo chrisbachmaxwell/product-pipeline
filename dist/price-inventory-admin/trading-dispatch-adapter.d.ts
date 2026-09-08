@@ -22,11 +22,28 @@ export type TradingAlignDispatchAdapter = Readonly<{
      * This is the sell-out path for this seller account: eBay refuses an
      * available-quantity-0 revision when the account's out-of-stock option is
      * off, which is also why the Marketplace Connect incumbent must have ended
-     * listings rather than zeroing them. A restock relists deliberately.
+     * listings rather than zeroing them.
      */
     endFixedPriceItem: (input: Readonly<{
         listingId: string;
     }>) => Promise<void>;
+    /**
+     * Relist one previously ended fixed-price listing because stock returned,
+     * overriding quantity and price to the current Shopify source values so the
+     * revived listing matches the store the moment it reappears. eBay restores
+     * everything else (title, photos, description, policies) from the ended
+     * listing, refuses a relist of anything that is not this seller's ended
+     * listing, and ages the option out ~90 days after ending. Returns the NEW
+     * listing id.
+     */
+    relistFixedPriceItem: (input: Readonly<{
+        listingId: string;
+        quantity: number;
+        price: Readonly<{
+            value: string;
+            currency: string;
+        }>;
+    }>) => Promise<string>;
 }>;
 /**
  * Serialize the one bounded ReviseInventoryStatus request: exactly one
@@ -45,6 +62,19 @@ export declare function buildReviseInventoryStatusXml(input: TradingAlignInput):
  */
 export declare function buildEndFixedPriceItemXml(input: Readonly<{
     listingId: string;
+}>): string;
+/**
+ * Serialize the one bounded RelistFixedPriceItem request: the exact ended
+ * ItemID plus the two Shopify source values the revived listing must carry.
+ * Same strict grammars as the revise serializer; anything else is refused.
+ */
+export declare function buildRelistFixedPriceItemXml(input: Readonly<{
+    listingId: string;
+    quantity: number;
+    price: Readonly<{
+        value: string;
+        currency: string;
+    }>;
 }>): string;
 export declare function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     fetchImpl?: FetchLike;
