@@ -574,6 +574,7 @@ export function buildPriceInventoryAdminProgram(
     // Exactly ONE bounded provider call per dispatch, chosen by the
     // target's management model.
     let dispatchFailed = false;
+    let dispatchFailureCode: string | null = null;
     const identity = target.basis.identity;
     const after = target.derived.manifest.after;
     try {
@@ -606,8 +607,13 @@ export function buildPriceInventoryAdminProgram(
             quantity: tradingQuantityToWrite(target, parseAlignmentQuantity(after)),
           });
       }
-    } catch {
+    } catch (error) {
+      // The code must survive: swallowing it here is how eight consecutive
+      // eBay rejections were reported to the operator as aligned=8 failed=0
+      // (production 2026-09-08 -- Trading refuses an available-quantity-0
+      // revision unless the account's out-of-stock option is enabled).
       dispatchFailed = true;
+      dispatchFailureCode = safeErrorCode(error);
     }
 
     const requiredAtUtc = clock();
@@ -647,6 +653,7 @@ export function buildPriceInventoryAdminProgram(
       responsibility,
       manifestDigest: target.derived.manifestDigest,
       providerDispatchReported: !dispatchFailed,
+      providerFailureCode: dispatchFailureCode,
       effect: reconciliation.effect,
       resolution: reconciliation.resolution,
       reconciliationRunId: reconciliation.runId,
@@ -995,6 +1002,20 @@ export function buildPriceInventoryAdminProgram(
               const result = await dispatchOneAlignment({
                 store, target, catalogId: row.id, clock,
               });
+              // Aligned means the PROVIDER accepted the write -- never merely
+              // that a dispatch was attempted. Counting rejected dispatches
+              // as aligned reported failed=0 while eBay kept selling stock
+              // that was gone.
+              if (result.providerDispatchReported === false) {
+                failed += 1;
+                results.push({
+                  sku: targetOptions.sku,
+                  status: 'provider-rejected',
+                  code: (result.providerFailureCode as string | null) ?? 'PROVIDER_DISPATCH_REJECTED',
+                });
+                if (beliefs && field === 'quantity') beliefs.forget(targetOptions.sku);
+                continue;
+              }
               aligned += 1;
               results.push({ sku: targetOptions.sku, ...result });
               // Only remember a value reconciliation confirmed landed. An
