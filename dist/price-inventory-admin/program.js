@@ -237,11 +237,30 @@ async function runReconciliation(input) {
     const responsibility = FIELD_RESPONSIBILITY[input.field];
     const startedAtUtc = input.clock();
     const freshDto = await input.readWorkspace(input.catalogId);
-    const freshBasis = deriveListingDraftBasis(freshDto);
-    const comparison = compareAlignedState({
-        manifest: input.derived.manifest,
-        freshBasis,
-    });
+    let comparison;
+    let freshEbayDigest;
+    if (input.expectEnded === true) {
+        const lifecycle = freshDto.ebayDetail?.actual.lifecycle;
+        const ended = lifecycle !== undefined && lifecycle.active === false;
+        comparison = Object.freeze({
+            effect: ended ? 'effect_observed' : 'effect_absent',
+            observedValue: ended ? 'ended' : 'still_active',
+        });
+        freshEbayDigest = sha256Digest({
+            schemaVersion: 1,
+            listingId: input.derived.manifest.identity.ebayListingId,
+            lifecycleStatus: lifecycle?.status ?? null,
+            lifecycleActive: lifecycle?.active ?? null,
+        });
+    }
+    else {
+        const freshBasis = deriveListingDraftBasis(freshDto);
+        comparison = compareAlignedState({
+            manifest: input.derived.manifest,
+            freshBasis,
+        });
+        freshEbayDigest = freshBasis.ebayDigest;
+    }
     const completedAtUtc = input.clock();
     const runId = `price-inventory-run:${input.uuid()}`;
     const resultDigest = sha256Digest({
@@ -250,7 +269,7 @@ async function runReconciliation(input) {
         field: input.field,
         effect: comparison.effect,
         observedValue: comparison.observedValue,
-        freshEbayDigest: freshBasis.ebayDigest,
+        freshEbayDigest,
     });
     const resolvable = comparison.effect === 'effect_observed'
         || (comparison.effect === 'effect_absent' && input.resolveAbsent);
@@ -271,7 +290,7 @@ async function runReconciliation(input) {
         mode: 'production_canary',
         status: 'passed',
         sourceSnapshotDigest: input.derived.manifestDigest,
-        targetSnapshotDigest: freshBasis.ebayDigest,
+        targetSnapshotDigest: freshEbayDigest,
         resultDigest,
         authoritative: resolvable,
         authorityEvidenceDigest: input.derived.manifestDigest,
@@ -284,7 +303,7 @@ async function runReconciliation(input) {
             intentKey: input.intentKey,
             responsibility,
             effect: comparison.effect,
-            observedDigest: freshBasis.ebayDigest,
+            observedDigest: freshEbayDigest,
         },
         audit: { eventId: `reconciliation:${runId}`, occurredAtUtc: completedAtUtc },
     });
@@ -334,6 +353,19 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
      */
     async function dispatchOneAlignment(input) {
         const { store, target, clock } = input;
+        // The end path replaces ONLY the provider call. The ownership precheck,
+        // intent, single-use approval, job reservation, and reconciliation are
+        // the identical spine -- ending must never become a second, weaker
+        // writer. It applies exclusively to a Trading listing at exactly zero:
+        // eBay refuses an available-quantity-0 revision while this account's
+        // out-of-stock option is off (every zero-write on 2026-09-08 bounced
+        // TRADING_ALIGN_REJECTED), which also identifies ending as what the
+        // Marketplace Connect incumbent did on a sell-out. Inventory-API offers
+        // keep the revise path: availableQuantity 0 is an ordinary value there.
+        const endListing = input.endAtZero === true
+            && target.field === 'quantity'
+            && target.basis.identity.managementModel !== 'inventory_api'
+            && parseAlignmentQuantity(target.derived.manifest.after) === 0;
         const responsibility = FIELD_RESPONSIBILITY[target.field];
         const action = FIELD_ACTION[target.field];
         const ownership = store.getCurrentOwnership(responsibility);
@@ -470,6 +502,11 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
                     });
                 }
             }
+            else if (endListing) {
+                await createTradingAdapter().endFixedPriceItem({
+                    listingId: identity.ebayListingId,
+                });
+            }
             else {
                 const tradingAdapter = createTradingAdapter();
                 await tradingAdapter.reviseInventoryStatus(target.field === 'price'
@@ -517,6 +554,7 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
             clock,
             uuid,
             resolveAbsent: dispatchFailed,
+            expectEnded: endListing && !dispatchFailed,
         });
         return {
             status: reconciliation.resolution === 'resolved_existing'
@@ -530,6 +568,7 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
             manifestDigest: target.derived.manifestDigest,
             providerDispatchReported: !dispatchFailed,
             providerFailureCode: dispatchFailureCode,
+            dispatchMode: endListing ? 'ended_at_zero' : 'revised',
             effect: reconciliation.effect,
             resolution: reconciliation.resolution,
             reconciliationRunId: reconciliation.runId,
@@ -719,6 +758,9 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
         .option('--max-actions <n>', `Provider writes to attempt, max ${SWEEP_HARD_CAP}`)
         .option('--belief-store <path>', 'Quantity-belief cache path. Beliefs are recorded whenever eBay state is '
         + 'observed, and with --suspected-only they also select which listings are read.')
+        .option('--end-at-zero', 'Sell-out policy: END a Trading listing when the aligned quantity is exactly 0, '
+        + 'instead of a quantity revision eBay refuses while the account\'s out-of-stock '
+        + 'option is off. A restock relists deliberately. Requires --field quantity.')
         .option('--suspected-only', 'Read eBay only for listings whose live Shopify quantity disagrees with the '
         + 'remembered eBay quantity (or that have no belief yet). Requires --belief-store '
         + 'and --field quantity.')
@@ -743,6 +785,8 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
                 if (!options.beliefStore)
                     deny('SWEEP_BELIEF_STORE_REQUIRED');
             }
+            if (options.endAtZero && field !== 'quantity')
+                deny('SWEEP_END_REQUIRES_QUANTITY');
             const beliefs = options.beliefStore
                 ? openBeliefs(options.beliefStore)
                 : null;
@@ -829,6 +873,7 @@ export function buildPriceInventoryAdminProgram(dependencies = {}) {
                     try {
                         const result = await dispatchOneAlignment({
                             store, target, catalogId: row.id, clock,
+                            endAtZero: options.endAtZero === true,
                         });
                         // Aligned means the PROVIDER accepted the write -- never merely
                         // that a dispatch was attempted. Counting rejected dispatches

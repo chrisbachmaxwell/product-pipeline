@@ -17,6 +17,16 @@ export type TradingAlignInput = Readonly<{
 }>;
 export type TradingAlignDispatchAdapter = Readonly<{
     reviseInventoryStatus: (input: TradingAlignInput) => Promise<void>;
+    /**
+     * End one fixed-price listing because the item is no longer available.
+     * This is the sell-out path for this seller account: eBay refuses an
+     * available-quantity-0 revision when the account's out-of-stock option is
+     * off, which is also why the Marketplace Connect incumbent must have ended
+     * listings rather than zeroing them. A restock relists deliberately.
+     */
+    endFixedPriceItem: (input: Readonly<{
+        listingId: string;
+    }>) => Promise<void>;
 }>;
 /**
  * Serialize the one bounded ReviseInventoryStatus request: exactly one
@@ -27,6 +37,15 @@ export type TradingAlignDispatchAdapter = Readonly<{
  * assertion runs on the final serialized document.
  */
 export declare function buildReviseInventoryStatusXml(input: TradingAlignInput): string;
+/**
+ * Serialize the one bounded EndFixedPriceItem request: exactly one exact
+ * ItemID and the fixed NotAvailable reason -- the only reason that truthfully
+ * describes a sell-out. Nothing else may appear: no price, no quantity, so a
+ * defect can never turn an end into a revise or vice versa.
+ */
+export declare function buildEndFixedPriceItemXml(input: Readonly<{
+    listingId: string;
+}>): string;
 export declare function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     fetchImpl?: FetchLike;
     getAccessToken: () => Promise<string>;

@@ -22,6 +22,7 @@ const EBAY_TRADING_URL = 'https://api.ebay.com/ws/api.dll';
 const EBAY_TRADING_COMPATIBILITY_LEVEL = '1349';
 const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
+const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -62,6 +63,14 @@ export type TradingAlignInput =
 
 export type TradingAlignDispatchAdapter = Readonly<{
   reviseInventoryStatus: (input: TradingAlignInput) => Promise<void>;
+  /**
+   * End one fixed-price listing because the item is no longer available.
+   * This is the sell-out path for this seller account: eBay refuses an
+   * available-quantity-0 revision when the account's out-of-stock option is
+   * off, which is also why the Marketplace Connect incumbent must have ended
+   * listings rather than zeroing them. A restock relists deliberately.
+   */
+  endFixedPriceItem: (input: Readonly<{ listingId: string }>) => Promise<void>;
 }>;
 
 /**
@@ -112,6 +121,27 @@ export function buildReviseInventoryStatusXml(input: TradingAlignInput): string 
   return xml;
 }
 
+/**
+ * Serialize the one bounded EndFixedPriceItem request: exactly one exact
+ * ItemID and the fixed NotAvailable reason -- the only reason that truthfully
+ * describes a sell-out. Nothing else may appear: no price, no quantity, so a
+ * defect can never turn an end into a revise or vice versa.
+ */
+export function buildEndFixedPriceItemXml(input: Readonly<{ listingId: string }>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + '<EndingReason>NotAvailable</EndingReason>'
+    + '</EndFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || /<\/?StartPrice\b/iu.test(xml)
+    || /<\/?Quantity\b/iu.test(xml)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -135,7 +165,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     return token;
   }
 
-  async function boundedPost(body: string): Promise<string> {
+  async function boundedPost(body: string, callName: string): Promise<string> {
     const token = await accessToken();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -145,7 +175,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         headers: {
           'Content-Type': 'text/xml',
           'X-EBAY-API-COMPATIBILITY-LEVEL': EBAY_TRADING_COMPATIBILITY_LEVEL,
-          'X-EBAY-API-CALL-NAME': EBAY_TRADING_CALL_NAME,
+          'X-EBAY-API-CALL-NAME': callName,
           'X-EBAY-API-SITEID': EBAY_TRADING_SITE_ID,
           'X-EBAY-API-IAF-TOKEN': token,
         },
@@ -171,12 +201,11 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    const body = buildReviseInventoryStatusXml(input);
+  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
-    const text = await boundedPost(body);
+    const text = await boundedPost(body, callName);
     if (/<!DOCTYPE|<!ENTITY/iu.test(text)) deny('TRADING_ALIGN_REJECTED');
     let parsed: unknown;
     try {
@@ -190,11 +219,19 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       return deny('TRADING_ALIGN_REJECTED');
     }
     const response = isRecord(parsed)
-      ? parsed[`${EBAY_TRADING_CALL_NAME}Response`]
+      ? parsed[`${callName}Response`]
       : null;
     const ack = isRecord(response) ? response.Ack : null;
     if (ack !== 'Success' && ack !== 'Warning') deny('TRADING_ALIGN_REJECTED');
   }
 
-  return Object.freeze({ reviseInventoryStatus });
+  async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
+    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+  }
+
+  async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
+    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+  }
+
+  return Object.freeze({ reviseInventoryStatus, endFixedPriceItem });
 }
