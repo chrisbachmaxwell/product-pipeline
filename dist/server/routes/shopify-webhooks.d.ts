@@ -12,6 +12,8 @@ export declare function createShopifyWebhookRouter(dependencies?: Readonly<{
      * INVENTORY_SWEEP_ARGV, so this changes nothing on deploy.
      */
     notifyInventoryChanged?: () => boolean;
+    /** Price alignment; off unless PRICE_SWEEP_ARGV. */
+    notifyPriceChanged?: () => boolean;
 }>): Router;
 declare const _default: Router;
 export default _default;

@@ -4,6 +4,7 @@ import {
   createInventorySweepTrigger,
   deniedCode,
   isInventoryTopic,
+  isPriceTopic,
   summarizeSweepStdout,
 } from './inventory-sweep-trigger.js';
 
@@ -458,5 +459,66 @@ describe('deniedCode', () => {
     const leaked = 'Error: connect ETIMEDOUT 10.0.0.1:443 token=abc123';
     expect(deniedCode(leaked)).toBe('no-code');
     expect(deniedCode(leaked)).not.toContain('abc123');
+  });
+});
+
+describe('price trigger behaviors', () => {
+  it('recognizes product topics and ignores everything else', () => {
+    expect(isPriceTopic('products/update')).toBe(true);
+    expect(isPriceTopic('products-update')).toBe(true);
+    expect(isPriceTopic('products/create')).toBe(true);
+    expect(isPriceTopic('inventory_levels/update')).toBe(false);
+    expect(isPriceTopic(undefined)).toBe(false);
+  });
+
+  it('spaces webhook-triggered runs by the minimum interval, coalescing bursts', async () => {
+    // A price sweep reads every active listing, so a burst of product edits
+    // must become ONE run per interval -- the change still lands, at the
+    // boundary, instead of each edit costing ~117 eBay reads.
+    const delays: number[] = [];
+    const runs: number[] = [];
+    let clock = 0;
+    const timers: Array<() => void> = [];
+    const trigger = createInventorySweepTrigger({
+      runSweep: async () => { runs.push(clock); return { ok: true, summary: 'ok' }; },
+      runFullSweep: null,
+      debounceMs: 60_000,
+      minFastIntervalMs: 7_200_000,
+      followUpMs: null,
+      now: () => clock,
+      setTimer: (callback, ms) => { delays.push(ms); timers.push(callback as () => void); },
+    });
+    trigger.notifyInventoryChanged();
+    expect(delays[0]).toBe(60_000); // first run: plain debounce
+    clock = 60_000;
+    timers.shift()!();
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => { setTimeout(r, 0); });
+    expect(runs).toHaveLength(1);
+    // A burst right after: deferred to the two-hour boundary, once.
+    clock = 120_000;
+    trigger.notifyInventoryChanged();
+    trigger.notifyInventoryChanged();
+    trigger.notifyInventoryChanged();
+    expect(delays).toHaveLength(2);
+    expect(delays[1]).toBe(7_200_000 - 60_000);
+    timers.shift()!();
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => { setTimeout(r, 0); });
+    expect(runs).toHaveLength(2);
+  });
+
+  it('never schedules a confirmation sweep when followUpMs is null', async () => {
+    const followUps: number[] = [];
+    const trigger = createInventorySweepTrigger({
+      runSweep: async () => ({ ok: true, summary: 'ok' }),
+      runFullSweep: null,
+      followUpMs: null,
+      setTimer: (callback, ms) => {
+        if (ms >= 45_000) { followUps.push(ms); return; }
+        (callback as () => void)();
+      },
+    });
+    trigger.notifyInventoryChanged();
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => { setTimeout(r, 0); });
+    expect(followUps).toHaveLength(0);
   });
 });

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { verifyShopifyWebhookHmac } from '../../shopify/request-verification.js';
 import { info, warn } from '../../utils/logger.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
-import { inventorySweepTrigger, isInventoryTopic, } from '../inventory-sweep-trigger.js';
+import { inventorySweepTrigger, isInventoryTopic, isPriceTopic, priceSweepTrigger, } from '../inventory-sweep-trigger.js';
 async function verifyShopifyWebhook(req) {
     return verifyShopifyWebhookHmac(req.get('X-Shopify-Hmac-Sha256'), req.rawBody);
 }
@@ -15,6 +15,7 @@ export function createShopifyWebhookRouter(dependencies = {
     verify: verifyShopifyWebhook,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
+    notifyPriceChanged: () => priceSweepTrigger.notifyInventoryChanged(),
 }) {
     const router = Router();
     router.post('/webhooks/shopify/:topic', async (req, res) => {
@@ -31,10 +32,15 @@ export function createShopifyWebhookRouter(dependencies = {
         // eBay quantities against the catalog snapshot, and a stale snapshot would
         // make the change that triggered this webhook invisible.
         void dependencies.refreshListings().then(() => {
-            if (!isInventoryTopic(topic) || !dependencies.notifyInventoryChanged)
-                return;
-            if (dependencies.notifyInventoryChanged()) {
+            if (isInventoryTopic(topic) && dependencies.notifyInventoryChanged
+                && dependencies.notifyInventoryChanged()) {
                 info(`[Shopify Webhook] ${topic} queued an inventory alignment sweep`);
+            }
+            // A product edit can carry a price change; the price trigger's long
+            // debounce and two-hour spacing absorb edit bursts.
+            if (isPriceTopic(topic) && dependencies.notifyPriceChanged
+                && dependencies.notifyPriceChanged()) {
+                info(`[Shopify Webhook] ${topic} queued a price alignment sweep`);
             }
         }).catch(() => {
             warn('LISTING_CATALOG_SHOPIFY_WEBHOOK_REFRESH_FAILED');

@@ -54,7 +54,16 @@ export declare function createInventorySweepTrigger(dependencies?: Readonly<{
     runSweep?: SweepRunner | null;
     runFullSweep?: SweepRunner | null;
     debounceMs?: number;
-    followUpMs?: number;
+    /** null disables the confirmation sweep entirely (e.g. the price trigger,
+     * whose sweeps read every listing and whose debounce already outwaits the
+     * consistency window). */
+    followUpMs?: number | null;
+    /** Minimum spacing between webhook-triggered runs. A burst of product
+     * edits coalesces to one run per interval; the change still lands, at the
+     * interval boundary. */
+    minFastIntervalMs?: number;
+    /** Log prefix, e.g. 'Inventory Alignment' (default) or 'Price Alignment'. */
+    logLabel?: string;
     setTimer?: (callback: () => void, ms: number) => unknown;
     setTicker?: (callback: () => void, ms: number) => unknown;
     fullSweepIntervalMs?: number;
@@ -83,6 +92,37 @@ export declare function createInventorySweepTrigger(dependencies?: Readonly<{
  * able to dispatch for the same drift.
  */
 export declare const inventorySweepTrigger: {
+    /** Returns true when the change was accepted for an alignment run. */
+    notifyInventoryChanged(): boolean;
+    /**
+     * Begins the periodic full sweep. Deliberately NOT run at load: nothing
+     * dispatches on deploy. The first tick is a quarter hour out, and only
+     * runs then if genuinely overdue by the persisted due time — which is what
+     * stops frequent redeploys from postponing it forever.
+     */
+    startFullSweepSchedule: () => void;
+    fullSweepDue: () => boolean;
+};
+/** Topics that can change a product's price (or content priced into it). */
+export declare function isPriceTopic(rawTopic: string | undefined): boolean;
+export declare function configuredPriceSweepArgv(env?: NodeJS.ProcessEnv): readonly string[] | null;
+/**
+ * The price alignment trigger. Same machinery, different economics: a price
+ * sweep has no belief cache, so every run reads every active listing (~117
+ * eBay calls). Webhook-driven runs are therefore debounced a full minute
+ * (which also outwaits the Shopify read-consistency window that bit the
+ * quantity path -- no confirmation sweep needed) and spaced at least two
+ * hours apart; a burst of product edits coalesces into one run at the
+ * boundary. The 24h backstop catches eBay-side price edits the same way the
+ * inventory full sweep catches eBay-side stock changes. Worst case ~13 runs
+ * / ~1,500 reads a day; typical days are 1-3 runs.
+ *
+ * Exists because Marketplace Connect's price sync is now recorded OFF
+ * (2026-09-08 correction): from that moment ProductPipeline is the only
+ * price writer, and without this trigger there would be NO live price
+ * writer at all.
+ */
+export declare const priceSweepTrigger: {
     /** Returns true when the change was accepted for an alignment run. */
     notifyInventoryChanged(): boolean;
     /**
