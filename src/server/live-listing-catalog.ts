@@ -393,7 +393,19 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       || offers.length > 0;
     if (!shouldInclude) return [];
     if (activeMatches.length > 0 && (variant.available === null || variant.available <= 0)) {
-      reasons.add('shopify_inventory_not_positive');
+      // UNKNOWN stock is a data problem and demands attention. KNOWN zero is
+      // not: it is the single most important drift state this catalog exists
+      // to surface. Marking sold-out rows 'attention' excluded them from the
+      // alignment sweep's `lifecycleStatus === 'active'` filter AND from
+      // eligibleBasis (which requires zero attention reasons) -- so the exact
+      // listings that most urgently needed eBay written to 0 were the only
+      // ones structurally incapable of being written. Observed in production
+      // 2026-09-08: items sold out on Shopify still showing available on
+      // eBay. Zero flows through alignment like any other quantity; only a
+      // null (uncounted) inventory still flags.
+      if (variant.available === null) {
+        reasons.add('shopify_inventory_not_positive');
+      }
       zeroStockActiveShopifyCount += 1;
     }
     const compatiblePublishedOffer = activeListing !== null

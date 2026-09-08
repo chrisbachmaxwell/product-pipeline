@@ -160,15 +160,35 @@ describe('live listing catalog truth reducer', () => {
     expect(() => snapshot({ offers: [offer(), offer()] })).toThrow();
   });
 
-  it('keeps zero-stock active Shopify rows visible as attention', () => {
+  it('keeps a KNOWN zero-stock active row fully active so alignment can write the 0', () => {
+    // Sold out is the most important drift state there is: this row is
+    // exactly the one the sweep must be able to align to 0 on eBay. Marking
+    // it 'attention' excluded it from the sweep's active-only filter and
+    // from eligibleBasis, so sold-out items stayed available on eBay
+    // (observed in production 2026-09-08).
     const built = snapshot({
       variants: [variant({ available: 0 })],
       active: [active()],
     });
     expect(built.rows).toHaveLength(1);
     expect(built.rows[0]).toMatchObject({
-      lifecycleStatus: 'attention',
+      lifecycleStatus: 'active',
       shopify: { available: 0 },
+      audit: { attentionReasons: [] },
+    });
+    expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
+  });
+
+  it('still flags an active row whose Shopify inventory is UNKNOWN', () => {
+    // null is ignorance, not knowledge of zero: there is no value that could
+    // be safely written to eBay, so this row genuinely needs attention.
+    const built = snapshot({
+      variants: [variant({ available: null })],
+      active: [active()],
+    });
+    expect(built.rows).toHaveLength(1);
+    expect(built.rows[0]).toMatchObject({
+      lifecycleStatus: 'attention',
       audit: { attentionReasons: ['shopify_inventory_not_positive'] },
     });
     expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
