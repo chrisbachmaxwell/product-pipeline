@@ -912,6 +912,11 @@ export function buildOrderImportAdminProgram(dependencies = {}) {
                     lineItems: resolvedLines.map((line) => ({
                         variantId: line.variantGid,
                         quantity: line.quantity,
+                        // NOT inherited from the variant: omitted means false, and the
+                        // order arrives "Shipping not required" -- wrong for physical
+                        // camera gear and it derails the fulfillment flow the tracking
+                        // push depends on. Marketplace Connect set this; so do we.
+                        requiresShipping: true,
                         ...(line.cost === null ? {} : {
                             priceSet: {
                                 shopMoney: { amount: line.cost.value, currencyCode: line.cost.currency },
