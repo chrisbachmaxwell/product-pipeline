@@ -11,6 +11,7 @@ import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
 import { inventorySweepTrigger, priceSweepTrigger } from './inventory-sweep-trigger.js';
 import { orderImportTrigger } from './order-import-trigger.js';
+import { fulfillmentTrackingTrigger } from './fulfillment-tracking-trigger.js';
 import shadowApiRoutes from './routes/shadow-api.js';
 import listingDraftRoutes, {
   listingDraftJsonErrorHandler,
@@ -194,6 +195,9 @@ async function start() {
     // Automated order import (poll -> import -> reconcile ceremonies). Inert
     // unless the operator has set all three ORDER_*_ARGV variables.
     orderImportTrigger.startSchedule();
+    // Automated tracking push for shipped post-cutover orders. Inert unless
+    // the operator has set all three FULFILLMENT_*_ARGV variables.
+    fulfillmentTrackingTrigger.startSchedule();
 
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);

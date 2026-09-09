@@ -117,6 +117,7 @@ function createWorld(input: { partial?: boolean } = {}): World {
     run: async () => {},
   };
   const shopifyReader: ShopifyFulfillmentReader = {
+    searchShippedEbayOrders: async () => [],
     getOrder: async () => world.shopify,
   };
   const ebayAdapter: EbayFulfillmentAdapter = {

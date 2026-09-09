@@ -24,6 +24,22 @@ const deny = (code: ConstructorParameters<typeof ShopifyFulfillmentReadError>[0]
 
 type FetchLike = typeof fetch;
 
+const EBAY_ORDER_ID = /^[0-9]{2}-[0-9]{5}-[0-9]{5,8}$/u;
+
+const SHIPPED_SEARCH_QUERY = `query FulfillmentTrackingShippedSearch($first: Int!, $query: String!) {
+  orders(first: $first, query: $query, sortKey: UPDATED_AT, reverse: true) {
+    nodes {
+      id
+      sourceIdentifier
+      displayFulfillmentStatus
+      fulfillments(first: 5) {
+        id status
+        trackingInfo(first: 5) { number }
+      }
+    }
+  }
+}`;
+
 const ORDER_QUERY = `query FulfillmentTrackingOrder($id: ID!) {
   shop { id myshopifyDomain }
   order(id: $id) {
@@ -62,7 +78,24 @@ function quantity(value: unknown): number {
     : deny('FULFILLMENT_SHOPIFY_READ_FAILED');
 }
 
+export type ShippedEbayOrderCandidate = Readonly<{
+  ebayOrderId: string;
+  shopifyOrderGid: string;
+  shopifyFulfillmentGid: string;
+}>;
+
 export type ShopifyFulfillmentReader = Readonly<{
+  /**
+   * Bounded discovery read: recently-updated eBay-tagged shipped orders that
+   * carry a successful fulfillment with a tracking number. Over-reporting is
+   * safe by design -- the dispatch ceremony denies anything without OUR
+   * order link (FULFILLMENT_ORDER_LINK_REQUIRED, e.g. incumbent-era orders)
+   * or already recorded (FULFILLMENT_INTENT_ALREADY_RECORDED).
+   */
+  searchShippedEbayOrders: (input: Readonly<{
+    lookbackHours: number;
+    maxOrders: number;
+  }>) => Promise<readonly ShippedEbayOrderCandidate[]>;
   getOrder: (orderGid: string) => Promise<ShopifyFulfillmentOrder>;
 }>;
 
@@ -71,7 +104,83 @@ export function createShopifyFulfillmentReader(dependencies: Readonly<{
   getAccessToken: () => Promise<string>;
 }>): ShopifyFulfillmentReader {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+
+  async function boundedGraphql(
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<Record<string, any>> {
+    let token = '';
+    try {
+      token = await dependencies.getAccessToken();
+    } catch {
+      deny('FULFILLMENT_SHOPIFY_AUTHORITY_UNAVAILABLE');
+    }
+    if (!token || token.length > 4_096) deny('FULFILLMENT_SHOPIFY_AUTHORITY_UNAVAILABLE');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(GRAPHQL_URL, {
+        method: 'POST',
+        headers: {
+          'X-Shopify-Access-Token': token,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ operationName, query, variables }),
+        redirect: 'error',
+        signal: controller.signal,
+      });
+      const body = await response.text();
+      if (!response.ok || Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) {
+        deny('FULFILLMENT_SHOPIFY_READ_FAILED');
+      }
+      const parsed = record(JSON.parse(body));
+      if (parsed.errors) deny('FULFILLMENT_SHOPIFY_READ_FAILED');
+      return record(parsed.data);
+    } catch (error) {
+      if (error instanceof ShopifyFulfillmentReadError) throw error;
+      return deny('FULFILLMENT_SHOPIFY_READ_FAILED');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   return Object.freeze({
+    searchShippedEbayOrders: async (input) => {
+      const lookbackHours = Number(input.lookbackHours);
+      const maxOrders = Number(input.maxOrders);
+      if (!Number.isInteger(lookbackHours) || lookbackHours < 1 || lookbackHours > 168
+        || !Number.isInteger(maxOrders) || maxOrders < 1 || maxOrders > 50) {
+        deny('FULFILLMENT_SHOPIFY_TARGET_INVALID');
+      }
+      const since = new Date(Date.now() - lookbackHours * 3_600_000).toISOString();
+      const data = await boundedGraphql(
+        'FulfillmentTrackingShippedSearch',
+        SHIPPED_SEARCH_QUERY,
+        { first: maxOrders, query: `tag:'eBay' fulfillment_status:shipped updated_at:>='${since}'` },
+      );
+      const nodes = array(record(data.orders).nodes);
+      const candidates: ShippedEbayOrderCandidate[] = [];
+      for (const raw of nodes) {
+        const node = record(raw);
+        const ebayOrderId = typeof node.sourceIdentifier === 'string' ? node.sourceIdentifier : '';
+        if (!EBAY_ORDER_ID.test(ebayOrderId)) continue;
+        const fulfillment = array(node.fulfillments)
+          .map((entry) => record(entry))
+          .find((entry) => entry.status === 'SUCCESS'
+            && array(entry.trackingInfo).some((tracking) =>
+              typeof record(tracking).number === 'string' && record(tracking).number.length > 0));
+        if (!fulfillment) continue;
+        if (!ORDER_GID.test(String(node.id))) continue;
+        candidates.push(Object.freeze({
+          ebayOrderId,
+          shopifyOrderGid: String(node.id),
+          shopifyFulfillmentGid: String(fulfillment.id),
+        }));
+      }
+      return Object.freeze(candidates);
+    },
     getOrder: async (orderGid: string): Promise<ShopifyFulfillmentOrder> => {
       if (!ORDER_GID.test(orderGid)) deny('FULFILLMENT_SHOPIFY_TARGET_INVALID');
       let token = '';

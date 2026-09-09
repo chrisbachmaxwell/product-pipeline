@@ -278,6 +278,32 @@ export function buildFulfillmentTrackingAdminProgram(dependencies = {}) {
             io.setExitCode(1);
         }
     });
+    program.command('discover')
+        .description('READ-ONLY discovery for automation: recently shipped eBay-tagged Shopify orders '
+        + 'carrying a successful fulfillment with tracking. Over-reporting is safe: dispatch '
+        + 'denies anything without OUR order link or already recorded.')
+        .requiredOption('--lookback-hours <n>', 'Search orders updated within the last N hours (1-168)')
+        .requiredOption('--max-orders <n>', 'Maximum orders to return (1-50)')
+        .action(async (options) => {
+        try {
+            const candidates = await shopify.searchShippedEbayOrders({
+                lookbackHours: Number(options.lookbackHours),
+                maxOrders: Number(options.maxOrders),
+            });
+            io.stdout(JSON.stringify({
+                command: 'discover',
+                status: 'discovered',
+                candidates,
+                externalWritesPerformed: 0,
+            }));
+        }
+        catch (error) {
+            io.stderr(JSON.stringify({
+                command: 'discover', status: 'denied', code: safeErrorCode(error),
+            }));
+            io.setExitCode(1);
+        }
+    });
     withTarget(program.command('preflight')
         .description('Read both orders and print a redacted deterministic full-order manifest preview'))
         .action(async (options) => {
