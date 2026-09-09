@@ -120,7 +120,12 @@ export function createEbayFulfillmentAdapter(dependencies) {
                         const line = record(rawLine);
                         return Object.freeze({
                             lineItemId: text(line.lineItemId, 128),
-                            quantity: positiveQuantity(line.quantity),
+                            // eBay omits quantity when the full purchased quantity
+                            // shipped -- the common single-quantity case. Verified live
+                            // 2026-09-09; requiring it made every real read deny.
+                            quantity: line.quantity === undefined || line.quantity === null
+                                ? null
+                                : positiveQuantity(line.quantity),
                         });
                     })
                     : [];

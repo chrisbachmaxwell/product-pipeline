@@ -68,7 +68,7 @@ describe('fulfillment tracking trigger', () => {
         // refused by the ceremony and must not spam the log as failures.
         const h = harness({
             discover: { candidates: [CANDIDATE] },
-            preflight: { status: 'denied', code: 'FULFILLMENT_INTENT_ALREADY_RECORDED' },
+            preflight: { status: 'denied', code: 'FULFILLMENT_ALREADY_RECORDED' },
         });
         await h.trigger.runCycle();
         expect(h.calls).toHaveLength(2); // discover + preflight, no dispatch

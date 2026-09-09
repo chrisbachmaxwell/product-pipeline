@@ -30,6 +30,10 @@ const MAX_DISPATCHES_PER_CYCLE = 10;
 const EXPECTED_SKIP_CODES = Object.freeze([
     'FULFILLMENT_ORDER_LINK_REQUIRED',
     'FULFILLMENT_INTENT_ALREADY_RECORDED',
+    // eBay already shows tracking for this order -- hand-entered, or pushed by
+    // the incumbent for its own orders. The job is done; who did it is not a
+    // failure.
+    'FULFILLMENT_ALREADY_RECORDED',
 ]);
 function parseArgvEnv(name, env) {
     const raw = env[name];
