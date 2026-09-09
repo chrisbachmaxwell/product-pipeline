@@ -63,11 +63,18 @@ const VARIANT_BY_SKU_QUERY = `query OrderImportVariantBySku($query: String!) {
   productVariants(first: 1, query: $query) { nodes { id sku } }
 }`;
 const ORDER_CREATE_MUTATION = `mutation OrderImportCreate($order: OrderCreateOrderInput!) {
-  orderCreate(order: $order) {
+  orderCreate(order: $order, options: { inventoryBehaviour: DECREMENT_IGNORING_POLICY }) {
     order { id }
     userErrors { field message }
   }
 }`;
+// inventoryBehaviour is NOT optional in spirit: Shopify's default is BYPASS,
+// which creates the order without touching stock. The sale already happened
+// on eBay -- the item is physically gone -- so the import MUST decrement
+// Shopify (and through it Lightspeed POS), exactly as the Marketplace
+// Connect incumbent's imports did. IGNORING_POLICY, not OBEYING: an
+// oversell-protection policy must never block recording a sale that is
+// already real.
 export function createShopifyOrderAdapter(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
     async function graphql(operationName, query, variables, failure) {
