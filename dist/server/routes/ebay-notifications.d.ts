@@ -21,6 +21,7 @@ export declare function createEbayNotificationRouter(dependencies?: Readonly<{
     credentials: () => Promise<ReceiverCredentials>;
     refreshListings: () => Promise<unknown>;
     notifyInventoryChanged: () => boolean;
+    notifySale?: () => boolean;
     now: () => number;
 }>): Router;
 declare const _default: Router;

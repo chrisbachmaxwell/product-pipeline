@@ -10,6 +10,7 @@ import healthRoutes from './routes/health.js';
 import ebayNotificationRoutes from './routes/ebay-notifications.js';
 import shopifyWebhookRoutes from './routes/shopify-webhooks.js';
 import { inventorySweepTrigger, priceSweepTrigger } from './inventory-sweep-trigger.js';
+import { orderImportTrigger } from './order-import-trigger.js';
 import shadowApiRoutes from './routes/shadow-api.js';
 import listingDraftRoutes, {
   listingDraftJsonErrorHandler,
@@ -190,6 +191,9 @@ async function start() {
     // Price backstop (24h): catches eBay-side price edits. Inert unless the
     // operator has set PRICE_SWEEP_ARGV.
     priceSweepTrigger.startFullSweepSchedule();
+    // Automated order import (poll -> import -> reconcile ceremonies). Inert
+    // unless the operator has set all three ORDER_*_ARGV variables.
+    orderImportTrigger.startSchedule();
 
   } catch (err) {
     logError(`[Server] Failed to start: ${err}`);
