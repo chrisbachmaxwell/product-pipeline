@@ -502,6 +502,10 @@ describe('order-import operator CLI', () => {
     expect(createInput.lineItems).toEqual([{
       variantId: VARIANT_GID,
       quantity: 1,
+      // Not inherited from the variant: omitting it imported every real
+      // order as "Shipping not required" (observed on the first five live
+      // imports, 2026-09-09).
+      requiresShipping: true,
       priceSet: { shopMoney: { amount: '119.95', currencyCode: 'USD' } },
     }]);
     // Shipping details passed through to the ONE provider call only.
