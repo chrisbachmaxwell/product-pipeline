@@ -84,6 +84,7 @@ function createWorld(input = {}) {
         run: async () => { },
     };
     const shopifyReader = {
+        searchShippedEbayOrders: async () => [],
         getOrder: async () => world.shopify,
     };
     const ebayAdapter = {
