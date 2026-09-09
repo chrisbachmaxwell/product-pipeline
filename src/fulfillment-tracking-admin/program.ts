@@ -166,6 +166,8 @@ async function reconcile(input: {
   target: TargetOptions;
   shopifyFulfillmentGid: string;
   expectedManifestDigest: Digest;
+  /** Transient: compared against eBay's read-back, never persisted or printed. */
+  expectedTrackingNumber: string;
   intentKey: Digest;
   targetIdentityKey: Digest;
   jobId: string;
@@ -177,7 +179,7 @@ async function reconcile(input: {
   const startedAtUtc = input.clock();
   const ebayOrder = await input.ebay.getOrder(input.target.ebayOrderId);
   const effect = compareFulfillmentEffect({
-    expectedManifestDigest: input.expectedManifestDigest,
+    expectedTrackingNumber: input.expectedTrackingNumber,
     shopifyOrderGid: input.target.shopifyOrderGid,
     ebayOrderId: input.target.ebayOrderId,
     shopifyFulfillmentGid: input.shopifyFulfillmentGid,
@@ -538,6 +540,7 @@ export function buildFulfillmentTrackingAdminProgram(
             target: options,
             shopifyFulfillmentGid: derived.manifest.shopifyFulfillmentGid,
             expectedManifestDigest: expectedDigest,
+            expectedTrackingNumber: derived.manifest.trackingNumber,
             intentKey,
             targetIdentityKey,
             jobId,
@@ -589,6 +592,14 @@ export function buildFulfillmentTrackingAdminProgram(
           options.manifestDigest,
           'FULFILLMENT_MANIFEST_DIGEST_INVALID',
         );
+        // Re-derive the manifest (allowing the already-recorded state this
+        // reconcile exists to observe) for the transient tracking number the
+        // effect comparison needs, and prove it is byte-identical to the
+        // digest the dispatch bound.
+        const derived = await deriveTarget(shopify, ebay, options, true);
+        if (derived.manifestDigest !== expectedDigest) {
+          deny('FULFILLMENT_MANIFEST_DIGEST_MISMATCH');
+        }
         const identities = identityInputs(options.shopifyOrderGid, options.ebayOrderId);
         const sourceIdentityKey = deriveExternalIdentityKey(identities.source);
         const targetIdentityKey = deriveExternalIdentityKey(identities.target);
@@ -635,6 +646,7 @@ export function buildFulfillmentTrackingAdminProgram(
             target: options,
             shopifyFulfillmentGid: options.shopifyFulfillmentGid,
             expectedManifestDigest: expectedDigest,
+            expectedTrackingNumber: derived.manifest.trackingNumber,
             intentKey,
             targetIdentityKey,
             jobId,

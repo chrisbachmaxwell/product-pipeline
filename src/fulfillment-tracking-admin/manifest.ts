@@ -41,7 +41,8 @@ export type EbayFulfillmentOrder = Readonly<{
     trackingNumber: string | null;
     shippingCarrierCode: string | null;
     shippedDate: string | null;
-    lineItems: readonly Readonly<{ lineItemId: string; quantity: number }>[];
+    /** eBay omits quantity when the full purchased quantity shipped. */
+    lineItems: readonly Readonly<{ lineItemId: string; quantity: number | null }>[];
   }>[];
 }>;
 
@@ -169,7 +170,7 @@ export function deriveFulfillmentManifest(input: {
 }
 
 export function compareFulfillmentEffect(input: {
-  expectedManifestDigest: Digest;
+  expectedTrackingNumber: string;
   shopifyOrderGid: string;
   ebayOrderId: string;
   shopifyFulfillmentGid: string;
@@ -177,26 +178,19 @@ export function compareFulfillmentEffect(input: {
 }): 'effect_observed' | 'effect_absent' {
   if (!ORDER_GID.test(input.shopifyOrderGid) || !SAFE_EBAY_ID.test(input.ebayOrderId)
     || !FULFILLMENT_GID.test(input.shopifyFulfillmentGid)
-    || input.ebay.orderId !== input.ebayOrderId) {
+    || input.ebay.orderId !== input.ebayOrderId
+    || !SAFE_TRACKING.test(input.expectedTrackingNumber)) {
     deny('FULFILLMENT_TARGET_INVALID');
   }
-  const match = input.ebay.shippingFulfillments.some((entry) => {
-    if (entry.trackingNumber === null || entry.shippingCarrierCode === null
-      || entry.shippedDate === null) return false;
-    const candidate: FulfillmentManifest = Object.freeze({
-      schemaVersion: 1,
-      scope: LISTING_DRAFT_SCOPE,
-      shopifyOrderGid: input.shopifyOrderGid,
-      ebayOrderId: input.ebayOrderId,
-      shopifyFulfillmentGid: input.shopifyFulfillmentGid,
-      shippedDate: canonicalUtc(entry.shippedDate),
-      shippingCarrierCode: entry.shippingCarrierCode,
-      trackingNumber: entry.trackingNumber,
-      lineItems: Object.freeze(
-        [...entry.lineItems].sort((left, right) => left.lineItemId.localeCompare(right.lineItemId)),
-      ),
-    });
-    return sha256Digest(candidate) === input.expectedManifestDigest;
-  });
+  // The observable truth of a shipping-fulfillment write is the tracking
+  // number on the order. Reconstructing the manifest from eBay's read-back
+  // and digest-matching it -- the original design -- can NEVER match against
+  // the real API: eBay omits per-line quantities on read (verified live
+  // 2026-09-09), normalizes carrier codes, and rounds dates, so even our own
+  // successful writes reported effect_absent forever. Tracking numbers are
+  // unique per shipment and are exactly what the ceremony wrote; the
+  // manifest digest still binds the DISPATCH byte-for-byte before the write.
+  const match = input.ebay.shippingFulfillments.some((entry) =>
+    entry.trackingNumber === input.expectedTrackingNumber);
   return match ? 'effect_observed' : 'effect_absent';
 }
