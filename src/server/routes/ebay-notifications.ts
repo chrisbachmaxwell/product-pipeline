@@ -7,6 +7,7 @@ import {
 } from '../ebay-notification-receiver.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
 import { inventorySweepTrigger } from '../inventory-sweep-trigger.js';
+import { orderImportTrigger } from '../order-import-trigger.js';
 
 type ReceiverCredentials = Readonly<{ devId: string; appId: string; certId: string }> | null;
 
@@ -44,11 +45,13 @@ export function createEbayNotificationRouter(
     credentials: () => Promise<ReceiverCredentials>;
     refreshListings: () => Promise<unknown>;
     notifyInventoryChanged: () => boolean;
+    notifySale?: () => boolean;
     now: () => number;
   }> = {
     credentials: receiverCredentials,
     refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
+    notifySale: () => orderImportTrigger.notifySale(),
     now: Date.now,
   },
 ): Router {
@@ -86,6 +89,12 @@ export function createEbayNotificationRouter(
     }
     if (dependencies.notifyInventoryChanged()) {
       info(`[eBay Notification] ${verdict.eventName} queued an inventory alignment sweep`);
+    }
+    const saleEvent = verdict.eventName === 'FixedPriceTransaction'
+      || verdict.eventName === 'ItemSold'
+      || verdict.eventName === 'AuctionCheckoutComplete';
+    if (saleEvent && dependencies.notifySale && dependencies.notifySale()) {
+      info(`[eBay Notification] ${verdict.eventName} queued an order import cycle`);
     }
   });
 
