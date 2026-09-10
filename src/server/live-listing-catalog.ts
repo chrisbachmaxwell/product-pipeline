@@ -22,6 +22,12 @@ export type CapturedShopifyVariant = Readonly<{
   title: string;
   variantTitle: string;
   productStatus: string;
+  /**
+   * Sanitized operator tags (lowercased, bounded); `ready` marks the
+   * operator's ready-to-list queue. Optional so pre-existing captures and
+   * fixtures stay byte-identical; absent means no tags were observed.
+   */
+  productTags?: readonly string[];
   primaryImageUrl: string | null;
   imageCount: number;
   available: number | null;
@@ -132,6 +138,8 @@ export type LiveListingCatalogRow = Readonly<{
     title: string;
     variantTitle: string;
     productStatus: string;
+    /** Always set on built rows; optional so pre-existing fixtures compile. */
+    productTags?: readonly string[];
     primaryImageUrl: string | null;
     imageCount: number;
     available: number | null;
@@ -149,6 +157,14 @@ export type LiveListingCatalogRow = Readonly<{
     unpublishedArtifactCount: number;
   }>;
   lifecycleStatus: LiveListingStatus;
+  /**
+   * Operator-tagged `ready` queue: the product carries the `ready` tag, is
+   * ACTIVE with positive known stock, has no active eBay match and no eBay
+   * artifacts, and its SKU is present and unambiguous (zero attention
+   * reasons). Purely computed — never a write trigger. Always set on built
+   * rows; optional so pre-existing fixtures compile (absent means false).
+   */
+  readyToList?: boolean;
   lastVerifiedAtUtc: string;
   audit: Readonly<{
     verified: boolean;
@@ -172,6 +188,7 @@ export type LiveListingCatalogSnapshot = Readonly<{
     unknown: number;
     totalInStock: number;
     totalVisible: number;
+    readyToList: number;
   }>;
   coverage: LiveCatalogCoverage;
 }>;
@@ -444,10 +461,22 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     const matchingOffer = activeListing
       ? offers.find((offer) => offer.listingId === activeListing.listingId) ?? null
       : null;
+    const readyToList = (variant.productTags ?? []).includes('ready')
+      && variant.productStatus.toUpperCase() === 'ACTIVE'
+      && variant.available !== null && variant.available > 0
+      && activeMatches.length === 0
+      && inventoryItems.length === 0
+      && offers.length === 0
+      && variant.sku.trim() !== ''
+      && reasons.size === 0;
 
     return [Object.freeze({
       id: `shopify-variant:${variant.variantId}`,
-      shopify: Object.freeze({ ...variant, price: Object.freeze({ ...variant.price }) }),
+      shopify: Object.freeze({
+        ...variant,
+        productTags: Object.freeze([...(variant.productTags ?? [])]),
+        price: Object.freeze({ ...variant.price }),
+      }),
       ebay: Object.freeze({
         sku: variant.sku,
         state: lifecycleStatus,
@@ -460,6 +489,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
         unpublishedArtifactCount,
       }),
       lifecycleStatus,
+      readyToList,
       lastVerifiedAtUtc: input.observedAtUtc,
       audit: Object.freeze({
         verified: true as const,
@@ -503,6 +533,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
           unpublishedArtifactCount: 0,
         }),
         lifecycleStatus: 'attention' as const,
+        readyToList: false,
         lastVerifiedAtUtc: input.observedAtUtc,
         audit: Object.freeze({
           verified: true,
@@ -530,6 +561,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     totalInStock: rows.filter((row) => typeof row.shopify?.available === 'number'
       && row.shopify.available > 0).length,
     totalVisible: rows.length,
+    readyToList: rows.filter((row) => row.readyToList === true).length,
   });
   const coverage: LiveCatalogCoverage = Object.freeze({
     ...input.coverage,
@@ -569,6 +601,8 @@ export function projectLiveListingCatalogPage(
     offset: number;
     search?: string;
     status?: LiveListingStatus;
+    /** When true, only rows whose readyToList is true are served. */
+    ready?: boolean;
     id?: string;
     nowEpochMs?: number;
     maxAgeMs?: number;
@@ -596,6 +630,7 @@ export function projectLiveListingCatalogPage(
         ...row,
         ebay: Object.freeze({ ...row.ebay, state: 'unknown' as const }),
         lifecycleStatus: 'unknown' as const,
+        readyToList: false,
         audit: Object.freeze({
           ...row.audit,
           verified: false,
@@ -616,11 +651,13 @@ export function projectLiveListingCatalogPage(
         unknown: projectedRows.length,
         totalInStock: snapshot.summary.totalInStock,
         totalVisible: projectedRows.length,
+        readyToList: 0,
       })
     : snapshot.summary;
   const filtered = projectedRows.filter((row) => {
     if (exactId && row.id !== exactId) return false;
     if (input.status && row.lifecycleStatus !== input.status) return false;
+    if (input.ready === true && row.readyToList !== true) return false;
     if (!search) return true;
     return [row.id, row.shopify?.productId, row.shopify?.variantId, row.shopify?.sku,
       row.shopify?.title, row.shopify?.variantTitle, row.ebay.sku,

@@ -72,6 +72,7 @@ function snapshot(rows: readonly LiveListingCatalogRow[] = [row()]): LiveListing
       unknown: rows.filter((entry) => entry.lifecycleStatus === 'unknown').length,
       totalInStock: rows.filter((entry) => (entry.shopify?.available ?? 0) > 0).length,
       totalVisible: rows.length,
+      readyToList: rows.filter((entry) => entry.readyToList === true).length,
     },
     coverage: {
       shopify: {

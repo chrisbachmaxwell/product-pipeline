@@ -27,6 +27,7 @@ function variant(overrides: Partial<CapturedShopifyVariant> = {}): CapturedShopi
     title: 'Camera',
     variantTitle: 'Default Title',
     productStatus: 'ACTIVE',
+    productTags: [],
     primaryImageUrl: null,
     imageCount: 0,
     available: 1,
@@ -222,6 +223,77 @@ describe('live listing catalog truth reducer', () => {
       audit: { attentionReasons: ['shopify_inventory_not_positive'] },
     });
     expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
+  });
+
+  it('marks a ready-tagged, in-stock, unlisted row readyToList and counts it', () => {
+    const built = snapshot({ variants: [
+      variant({ productTags: ['ready', 'lens'] }),
+      variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED' }),
+    ] });
+    const tagged = built.rows.find((row) => row.shopify?.sku === 'SAFE-SKU')!;
+    const untagged = built.rows.find((row) => row.shopify?.sku === 'UNTAGGED')!;
+    expect(tagged).toMatchObject({
+      lifecycleStatus: 'not_listed',
+      readyToList: true,
+      shopify: { productTags: ['ready', 'lens'] },
+    });
+    // Untagged in-stock unlisted row stays out of the queue.
+    expect(untagged).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: false });
+    expect(built.summary.readyToList).toBe(1);
+  });
+
+  it('never marks a ready-tagged row without positive known stock readyToList', () => {
+    const zero = snapshot({ variants: [variant({ productTags: ['ready'], available: 0 })] });
+    expect(zero.rows.some((row) => row.readyToList === true)).toBe(false);
+    expect(zero.summary.readyToList).toBe(0);
+    const unknownStock = snapshot({ variants: [variant({ productTags: ['ready'], available: null })] });
+    expect(unknownStock.rows.some((row) => row.readyToList === true)).toBe(false);
+    expect(unknownStock.summary.readyToList).toBe(0);
+  });
+
+  it('never marks a ready-tagged row that is already live on eBay readyToList', () => {
+    const built = snapshot({
+      variants: [variant({ productTags: ['ready'] })],
+      active: [active()],
+      items: [item()],
+      offers: [offer()],
+    });
+    expect(built.rows[0]).toMatchObject({ lifecycleStatus: 'active', readyToList: false });
+    expect(built.summary.readyToList).toBe(0);
+  });
+
+  it('never marks a ready-tagged row with eBay artifacts, a non-active product, or an ambiguous SKU readyToList', () => {
+    const artifactOnly = snapshot({
+      variants: [variant({ productTags: ['ready'] })],
+      items: [item()],
+    });
+    expect(artifactOnly.rows[0]).toMatchObject({ readyToList: false });
+    const draft = snapshot({ variants: [variant({ productTags: ['ready'], productStatus: 'DRAFT' })] });
+    expect(draft.rows[0]).toMatchObject({ readyToList: false });
+    const duplicate = snapshot({ variants: [
+      variant({ productTags: ['ready'] }),
+      variant({ variantId: 'gid://shopify/ProductVariant/2', productTags: ['ready'] }),
+    ] });
+    expect(duplicate.rows.some((row) => row.readyToList === true)).toBe(false);
+    expect(duplicate.summary.readyToList).toBe(0);
+  });
+
+  it('serves only readyToList rows under the ready filter and zeroes the queue when stale', () => {
+    const built = snapshot({ variants: [
+      variant({ productTags: ['ready'] }),
+      variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED' }),
+    ] });
+    const page = projectLiveListingCatalogPage(built, {
+      limit: 50, offset: 0, ready: true, nowEpochMs: Date.parse(observedAtUtc),
+    });
+    expect(page.total).toBe(1);
+    expect(page.data[0]).toMatchObject({ readyToList: true, shopify: { sku: 'SAFE-SKU' } });
+    expect(page.summary.readyToList).toBe(1);
+    const stale = projectLiveListingCatalogPage(built, {
+      limit: 50, offset: 0, ready: true, nowEpochMs: Date.parse(observedAtUtc) + 10 * 60_000,
+    });
+    expect(stale.total).toBe(0);
+    expect(stale.summary.readyToList).toBe(0);
   });
 
   it('adds unmatched and SKU-less active eBay listings to the union as attention', () => {
@@ -555,6 +627,52 @@ describe('strict live source parsers', () => {
         excludedZeroInventory: 1,
         excludedUnknownInventory: 0,
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('captures lowercased bounded product tags and drops junk without denying the capture', async () => {
+    globalThis.fetch = (async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { operationName: string };
+      if (request.operationName === 'RuntimeListingCatalogPreflight') {
+        return jsonResponse(shopifyPreflight);
+      }
+      const node = shopifyNode(1, 'TAGGED');
+      return jsonResponse({ data: { productVariants: {
+        nodes: [{ ...node, product: { ...node.product, tags: [
+          '  Ready  ', 'LENS', 'ok_tag-1',
+          'bad<script>', 'x'.repeat(41), '', 42, null, 'émoji-tag',
+          ...Array.from({ length: 30 }, (_ignored, index) => `bulk-${index}`),
+        ] } }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } });
+    }) as typeof fetch;
+    try {
+      const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority');
+      const tags = result.variants[0]!.productTags ?? [];
+      expect(tags.slice(0, 3)).toEqual(['ready', 'lens', 'ok_tag-1']);
+      expect(tags).toHaveLength(20);
+      expect(tags.join(' ')).not.toMatch(/[<>é]|x{41}/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('captures an empty tag list when the product carries no tags', async () => {
+    globalThis.fetch = (async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { operationName: string };
+      if (request.operationName === 'RuntimeListingCatalogPreflight') {
+        return jsonResponse(shopifyPreflight);
+      }
+      return jsonResponse({ data: { productVariants: {
+        nodes: [shopifyNode(1, 'PLAIN')],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } });
+    }) as typeof fetch;
+    try {
+      const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority');
+      expect(result.variants[0]!.productTags).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }
