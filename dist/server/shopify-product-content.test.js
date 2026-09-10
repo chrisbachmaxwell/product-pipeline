@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brandFromVendor, createShopifyProductContentReader, mpnFromSku, normalizedGtin, ShopifyProductContentError, SHOPIFY_PRODUCT_CONTENT_TESTING, } from './shopify-product-content.js';
+import { brandFromTitle, brandFromVendor, createShopifyProductContentReader, mpnFromSku, normalizedGtin, ShopifyProductContentError, SHOPIFY_PRODUCT_CONTENT_TESTING, } from './shopify-product-content.js';
 const PRODUCT_GID = 'gid://shopify/Product/10333721723171';
 const VARIANT_GID = 'gid://shopify/ProductVariant/55484011151651';
 const CDN = 'https://cdn.shopify.com/s/files/1/0862/5451/8563/files';
@@ -232,5 +232,19 @@ describe('shopify field mappings', () => {
         expect(brandFromVendor('Used Camera Gear', 'usedcameragear')).toBeNull();
         expect(brandFromVendor('  ', 'usedcameragear')).toBeNull();
         expect(brandFromVendor(null, 'usedcameragear')).toBeNull();
+    });
+});
+describe('brand refusal and title fallback (live "picturelin" incident)', () => {
+    it('refuses store-name typos and prefixes as brands', () => {
+        expect(brandFromVendor('picturelin', 'usedcameragear')).toBeNull();
+        expect(brandFromVendor('Pictureline', 'usedcameragear')).toBeNull();
+        expect(brandFromVendor('usedcamera', 'usedcameragear')).toBeNull();
+        expect(brandFromVendor('Canon', 'usedcameragear')).toBe('Canon');
+    });
+    it('falls back to a clean leading title word', () => {
+        expect(brandFromTitle('Canon EF 300mm f/2.8L IS USM II Lens (#596) *USED*')).toBe('Canon');
+        expect(brandFromTitle('Hasselblad X2D 100c')).toBe('Hasselblad');
+        expect(brandFromTitle('2-Bay V-Mount Charger')).toBeNull();
+        expect(brandFromTitle(null)).toBeNull();
     });
 });

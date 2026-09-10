@@ -38,6 +38,12 @@ export declare function normalizedGtin(barcode: string | null | undefined): stri
  * operator: this returns null so the field stays visibly empty.
  */
 export declare function brandFromVendor(vendor: string | null | undefined, storeName: string): string | null;
+/**
+ * When the vendor is unusable, the first word of the title is a strong brand
+ * signal for camera gear ("Canon EF 300mm…"). Conservative: single clean
+ * word, capitalized, no digits-only tokens.
+ */
+export declare function brandFromTitle(title: string | null | undefined): string | null;
 export declare class ShopifyProductContentError extends Error {
     constructor();
 }
