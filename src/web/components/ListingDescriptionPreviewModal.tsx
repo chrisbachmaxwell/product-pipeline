@@ -15,6 +15,8 @@ interface Props {
   catalogId: string;
   open: boolean;
   hasUnsavedChanges: boolean;
+  /** The editor's current (possibly unsaved) sanitized description HTML. */
+  draftDescriptionHtml?: string | null;
   onClose: () => void;
 }
 
@@ -26,11 +28,20 @@ const ListingDescriptionPreviewModal: React.FC<Props> = ({
   catalogId,
   open,
   hasUnsavedChanges,
+  draftDescriptionHtml,
   onClose,
 }) => {
   const [narrow, setNarrow] = useState(false);
   const preview = useListingDescriptionPreview(catalogId, { enabled: open });
-  const html = preview.data?.html ?? null;
+  const serverHtml = preview.data?.html ?? null;
+  // When the operator has unsaved edits, previewing the stale saved draft is
+  // actively misleading — show what they are LOOKING AT instead. The branded
+  // frame (header, shipping/returns cards) is applied by the template at
+  // publish; the body is theirs.
+  const liveHtml = hasUnsavedChanges && draftDescriptionHtml
+    ? `<body style="margin:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a1a1a;line-height:1.5;background:#ffffff">${draftDescriptionHtml}</body>`
+    : null;
+  const html = liveHtml ?? serverHtml;
   const templateVersion = preview.data?.templateVersion ?? null;
 
   return (
@@ -43,16 +54,19 @@ const ListingDescriptionPreviewModal: React.FC<Props> = ({
     >
       <Modal.Section>
         <BlockStack gap="400">
-          <Banner tone="info">
-            <Text as="p">
-              This preview reflects the last saved draft (or the current listing
-              when no draft has been saved). Nothing is sent to eBay.
-            </Text>
-          </Banner>
-          {hasUnsavedChanges && (
-            <Banner tone="warning">
+          {liveHtml ? (
+            <Banner tone="info">
               <Text as="p">
-                You have unsaved changes — save the draft to see them in the preview.
+                Showing your current edits. The branded frame — store header,
+                shipping and returns cards — is added automatically when you
+                publish. Nothing is sent to eBay from here.
+              </Text>
+            </Banner>
+          ) : (
+            <Banner tone="info">
+              <Text as="p">
+                This is how the description will look on eBay, using the last
+                saved draft. Nothing is sent to eBay from here.
               </Text>
             </Banner>
           )}
@@ -88,7 +102,7 @@ const ListingDescriptionPreviewModal: React.FC<Props> = ({
                   justifyContent: 'center',
                   border: '1px solid var(--p-color-border, #e3e3e3)',
                   borderRadius: '8px',
-                  background: 'var(--p-color-bg-surface-secondary, #f7f7f7)',
+                  background: '#ffffff',
                   overflow: 'auto',
                 }}
               >

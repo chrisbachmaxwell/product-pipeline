@@ -219,8 +219,14 @@ export function buildLiveListingCatalogSnapshot(input) {
         const matchingOffer = activeListing
             ? offers.find((offer) => offer.listingId === activeListing.listingId) ?? null
             : null;
-        const readyToList = (variant.productTags ?? []).includes('ready')
-            && variant.productStatus.toUpperCase() === 'ACTIVE'
+        // Ready to list = anything that SHOULD be on eBay but is not: the
+        // product is live on the store (ACTIVE) with stock, has a clean
+        // unambiguous SKU, and no eBay presence or leftover artifacts. The
+        // operator's rule, 2026-09-10: "if an item goes active in Shopify it
+        // should be on eBay" — no tagging step. (An earlier iteration required
+        // a `ready` tag; that gate is gone, tags remain captured for future
+        // use.)
+        const readyToList = variant.productStatus.toUpperCase() === 'ACTIVE'
             && variant.available !== null && variant.available > 0
             && activeMatches.length === 0
             && inventoryItems.length === 0

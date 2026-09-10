@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Banner,
@@ -55,6 +55,8 @@ interface Props {
   onSave: (input: ListingDraftSaveInput) => Promise<unknown>;
   /** Rendered above the editor (e.g. the Publish card). */
   statusCard?: React.ReactNode;
+  /** Reports the live edit state so the page can keep previews truthful. */
+  onDraftStateChange?: (state: { dirty: boolean; descriptionHtml: string | null }) => void;
 }
 
 interface Change {
@@ -310,7 +312,9 @@ const SpecificsRows: React.FC<{
   );
 };
 
-const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave, statusCard }) => {
+const ListingDraftEditor: React.FC<Props> = ({
+  draft, saving, onCancel, onSave, statusCard, onDraftStateChange,
+}) => {
   const [newImageUrl, setNewImageUrl] = useState('');
   const [editBase] = useState(draft);
   const initial = useMemo(() => initialValues(editBase), [editBase]);
@@ -404,6 +408,10 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave, 
     });
   }
   const hasChanges = changes.length > 0;
+  useEffect(() => {
+    onDraftStateChange?.({ dirty: hasChanges, descriptionHtml });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasChanges, descriptionHtml]);
   const normalizedValues = fields.reduce<EditableValues>((result, [key, , field]) => ({
     ...result,
     [key]: isSemanticScalarChange(field, initial[key], values[key]) ? values[key] : initial[key],

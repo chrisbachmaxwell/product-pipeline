@@ -3,6 +3,8 @@ interface Props {
     catalogId: string;
     open: boolean;
     hasUnsavedChanges: boolean;
+    /** The editor's current (possibly unsaved) sanitized description HTML. */
+    draftDescriptionHtml?: string | null;
     onClose: () => void;
 }
 /**
