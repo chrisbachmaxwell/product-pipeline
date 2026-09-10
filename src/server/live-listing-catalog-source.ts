@@ -565,17 +565,80 @@ function activeSkuRecords(item: Record<string, any>, listingId: string): Capture
   return records;
 }
 
+/**
+ * GetUser has a far smaller daily quota than the census calls; verifying the
+ * seller on EVERY 60-second refresh exhausted it mid-day on 2026-09-10
+ * (eBay error 518, "Call usage limit has been reached"), which took the
+ * whole catalog down while GetMyeBaySelling itself was healthy. The
+ * identity check is belt-and-suspenders on top of the ceremonially bound
+ * refresh token, so it now runs at most once per re-verify interval, and a
+ * 518 on the check itself — proof of nothing except quota — logs loudly and
+ * lets the capture proceed. A reachable GetUser answering with the WRONG
+ * seller, or failing any other way, still fails the capture closed.
+ */
+const SELLER_REVERIFY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let sellerVerifiedAtMs = 0;
+
+function resetSellerVerificationForTests(): void {
+  sellerVerifiedAtMs = 0;
+}
+
+function tradingErrorCodes(result: Record<string, any>): string[] {
+  const raw = result.Errors === undefined ? [] : asArray(result.Errors);
+  return raw.map((entry) => String(asRecord(entry).ErrorCode ?? ''));
+}
+
+async function verifySellerIdentity(
+  accessToken: string,
+): Promise<'verified' | 'rate_limited' | 'failed'> {
+  let parsed: unknown;
+  try {
+    const response = await boundedFetchText(fetch, 'https://api.ebay.com/ws/api.dll', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '1349',
+        'X-EBAY-API-CALL-NAME': 'GetUser',
+        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-IAF-TOKEN': accessToken,
+      },
+      body: '<?xml version="1.0" encoding="utf-8"?><GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents"/>',
+    });
+    if (!response.ok) return 'failed';
+    parsed = await parseStringPromise(response.text, {
+      explicitArray: false,
+      explicitRoot: true,
+      trim: true,
+      normalizeTags: false,
+    });
+  } catch {
+    return 'failed';
+  }
+  const result = asRecord(asRecord(parsed).GetUserResponse);
+  if (result.Ack === 'Success' && result.Errors === undefined) {
+    return String(asRecord(result.User ?? {}).UserID ?? '')
+      .toLocaleLowerCase('en-US') === EBAY_EXPECTED_SELLER
+      ? 'verified'
+      : 'failed';
+  }
+  return tradingErrorCodes(result).includes('518') ? 'rate_limited' : 'failed';
+}
+
 async function captureTrading(accessToken: string): Promise<{
   listings: CapturedEbayActiveListing[];
   pageCount: number;
   activeListingCount: number;
 }> {
-  const user = await tradingCall(
-    accessToken,
-    'GetUser',
-    '<?xml version="1.0" encoding="utf-8"?><GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents"/>',
-  );
-  if (String(user.User?.UserID ?? '').toLocaleLowerCase('en-US') !== EBAY_EXPECTED_SELLER) deny();
+  if (Date.now() - sellerVerifiedAtMs >= SELLER_REVERIFY_INTERVAL_MS) {
+    const verification = await verifySellerIdentity(accessToken);
+    if (verification === 'verified') {
+      sellerVerifiedAtMs = Date.now();
+    } else if (verification === 'rate_limited') {
+      warn('LISTING_CATALOG_SELLER_VERIFY_RATE_LIMITED');
+    } else {
+      deny();
+    }
+  }
 
   const listings: CapturedEbayActiveListing[] = [];
   const seenListingIds = new Set<string>();
@@ -875,6 +938,8 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
   tradingCall,
   captureTrading,
   captureInventory,
+  verifySellerIdentity,
+  resetSellerVerificationForTests,
   tradingListingFacets,
   offerListingFacets,
   LIVE_CATALOG_REFRESH_INTERVAL_MS,

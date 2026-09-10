@@ -62,6 +62,8 @@ declare function tradingListingFacets(item: Record<string, any>): TradingListing
 type OfferListingFacets = Partial<Pick<CapturedEbayOffer, 'categoryId' | 'fulfillmentPolicyId' | 'paymentPolicyId' | 'returnPolicyId' | 'merchantLocationKey'>>;
 /** Facets the bulk getOffers body already carries natively; keys only when valid. */
 declare function offerListingFacets(offer: Record<string, any>): OfferListingFacets;
+declare function resetSellerVerificationForTests(): void;
+declare function verifySellerIdentity(accessToken: string): Promise<'verified' | 'rate_limited' | 'failed'>;
 declare function captureTrading(accessToken: string): Promise<{
     listings: CapturedEbayActiveListing[];
     pageCount: number;
@@ -119,6 +121,8 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     tradingCall: typeof tradingCall;
     captureTrading: typeof captureTrading;
     captureInventory: typeof captureInventory;
+    verifySellerIdentity: typeof verifySellerIdentity;
+    resetSellerVerificationForTests: typeof resetSellerVerificationForTests;
     tradingListingFacets: typeof tradingListingFacets;
     offerListingFacets: typeof offerListingFacets;
     LIVE_CATALOG_REFRESH_INTERVAL_MS: 60000;
