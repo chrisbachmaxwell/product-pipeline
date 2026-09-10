@@ -6,7 +6,7 @@ describe('live listing catalog background refresher', () => {
         let scheduled = null;
         const unref = vi.fn();
         const setIntervalImpl = vi.fn((callback, intervalMs) => {
-            expect(intervalMs).toBe(300_000);
+            expect(intervalMs).toBe(1_800_000);
             scheduled = callback;
             return { unref };
         });

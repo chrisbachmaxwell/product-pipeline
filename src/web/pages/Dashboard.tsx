@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
   Button,
   Card,
@@ -12,7 +13,7 @@ import {
 } from '@shopify/polaris';
 import { useNavigate } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
-import { useActivity, useOperationalMonitoring } from '../hooks/useApi';
+import { useActivity, useEbayQuota, useOperationalMonitoring } from '../hooks/useApi';
 import { formatVerifiedAt, isLiveCatalogResponse } from '../operator-ui';
 
 const EVENT_EMOJI: Record<string, string> = {
@@ -60,6 +61,7 @@ const Dashboard: React.FC = () => {
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
   const monitoring = useOperationalMonitoring();
   const activity = useActivity();
+  const quota = useEbayQuota();
   const valid = isLiveCatalogResponse(listings.data);
   const summary = valid ? listings.data?.summary : undefined;
   const loading = listings.isLoading;
@@ -86,9 +88,31 @@ const Dashboard: React.FC = () => {
     heroBody = 'The latest check has not finished. Syncing continues in the background.';
   }
 
+  const quotaData = quota.data;
+  const quotaPercent = quotaData?.usedFraction != null
+    ? Math.round(quotaData.usedFraction * 100)
+    : null;
+  const quotaResetLabel = quotaData?.resetAtUtc
+    ? new Date(quotaData.resetAtUtc).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null;
+
   return (
     <Page title="Home" fullWidth>
       <BlockStack gap="400">
+        {quotaData?.warning && quotaPercent !== null && (
+          <Banner
+            tone={quotaData.usedFraction != null && quotaData.usedFraction >= 0.85
+              ? 'critical'
+              : 'warning'}
+            title={`eBay API usage is at ${quotaPercent}% of the daily limit`}
+          >
+            <Text as="p">
+              If it reaches 100%, the listing screens pause until the daily
+              reset{quotaResetLabel ? ` at ${quotaResetLabel}` : ''} — orders,
+              inventory, and tracking are unaffected.
+            </Text>
+          </Banner>
+        )}
         <Card>
           {loading ? (
             <SkeletonBodyText lines={2} />

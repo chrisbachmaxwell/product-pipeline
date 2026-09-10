@@ -438,6 +438,25 @@ describe('live catalog caching boundaries', () => {
     expect(captures).toBe(2);
   });
 
+  it('refreshIfStale coalesces event bursts and refreshes once past the window', async () => {
+    let now = 0;
+    let captures = 0;
+    const cache = createLiveListingCatalogCache(async () => {
+      captures += 1;
+      await Promise.resolve();
+      return snapshot();
+    }, { now: () => now, ttlMs: 300_000 });
+    // A burst of webhook events within the freshness window costs ONE capture.
+    await cache.refreshIfStale(30_000);
+    await cache.refreshIfStale(30_000);
+    await cache.refreshIfStale(30_000);
+    expect(captures).toBe(1);
+    // Past the window, the next event refreshes even though the TTL has not expired.
+    now = 30_001;
+    await cache.refreshIfStale(30_000);
+    expect(captures).toBe(2);
+  });
+
   it('never caches failed captures', async () => {
     let attempts = 0;
     const cache = createLiveListingCatalogCache(async () => {

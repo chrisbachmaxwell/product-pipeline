@@ -19,6 +19,7 @@ import listingDraftRoutes, {
 } from './routes/listing-drafts.js';
 import listingPublishRoutes from './routes/listing-publish.js';
 import activityRoutes from './routes/activity.js';
+import ebayQuotaRoutes from './routes/ebay-quota.js';
 import { createPriceCheckRouter } from './routes/price-check.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
@@ -124,6 +125,7 @@ app.use(healthRoutes);
 app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
 app.use(activityRoutes);
+app.use(ebayQuotaRoutes);
 app.use(createPriceCheckRouter());
 app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);

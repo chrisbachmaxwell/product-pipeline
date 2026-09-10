@@ -14,7 +14,10 @@ const EBAY_TOKEN_SCOPES = [
 ];
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
-const SNAPSHOT_TTL_MS = 60_000;
+// 5 minutes: UI reads reuse the snapshot; freshness when something actually
+// CHANGES comes from the event layer (Shopify webhooks + eBay push call
+// refreshIfStale), so a longer TTL is only visible when nothing changed.
+const SNAPSHOT_TTL_MS = 300_000;
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60_000;
 export const LISTING_CATALOG_FAILURE_CODES = Object.freeze([
     'AUTH_READ_FAILED',
@@ -799,8 +802,20 @@ export function createLiveListingCatalogCache(capture, options = {}) {
             throw error;
         }
     };
+    /**
+     * Event-driven refresh with burst coalescing: a snapshot younger than
+     * maxAgeMs is reused instead of spending another census. A bulk Shopify
+     * edit fires one webhook per product; without this, each one was a
+     * GetMyeBaySelling call (part of the 2026-09-10 quota exhaustion).
+     */
+    const refreshIfStale = async (maxAgeMs) => {
+        if (cached && now() - cached.refreshedAt < maxAgeMs)
+            return cached.value;
+        return refresh();
+    };
     return Object.assign(get, {
         refresh,
+        refreshIfStale,
         status: () => Object.freeze({
             hasSuccessfulSnapshot: cached !== null,
             observedAtUtc: cached?.value.observedAtUtc ?? null,
@@ -817,14 +832,15 @@ export function hasUnresolvedLiveListingRefreshFailure(status) {
         && status?.lastFailureAtEpochMs !== undefined;
 }
 export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
-// 60s refresh was a third of the 2026-09-10 Trading-quota exhaustion
-// (GetMyeBaySelling every minute = 1,440/day against a 5,000/day aggregate
-// cap shared with every other Trading call). 5 minutes keeps the catalog
-// fresh enough for an operator UI at ~288 calls/day.
-const LIVE_CATALOG_REFRESH_INTERVAL_MS = 300_000;
+// The scheduled census is a BACKSTOP for missed events, not the freshness
+// mechanism: Shopify webhooks and eBay push notifications refresh the
+// snapshot the moment something changes, and UI reads refresh on the TTL.
+// 30 minutes here is ~48 GetMyeBaySelling/day (the 60-second version of
+// this line was a third of the 2026-09-10 quota exhaustion).
+const LIVE_CATALOG_REFRESH_INTERVAL_MS = 1_800_000;
 export function startLiveListingCatalogRefresher(cache = getLiveListingCatalogSnapshot, options = {}) {
     const intervalMs = options.intervalMs ?? LIVE_CATALOG_REFRESH_INTERVAL_MS;
-    if (!Number.isSafeInteger(intervalMs) || intervalMs < 15_000 || intervalMs > 300_000)
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 15_000 || intervalMs > 3_600_000)
         deny();
     const schedule = options.setIntervalImpl ?? setInterval;
     const timer = schedule(() => {

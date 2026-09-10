@@ -81,6 +81,7 @@ export declare function createLiveListingCatalogCache(capture: () => Promise<Liv
     ttlMs?: number;
 }>): (() => Promise<LiveListingCatalogSnapshot>) & {
     refresh: () => Promise<LiveListingCatalogSnapshot>;
+    refreshIfStale: (maxAgeMs: number) => Promise<LiveListingCatalogSnapshot>;
     status: () => Readonly<{
         hasSuccessfulSnapshot: boolean;
         observedAtUtc: string | null;
@@ -95,6 +96,7 @@ export type LiveListingCatalogCacheStatus = ReturnType<ReturnType<typeof createL
 export declare function hasUnresolvedLiveListingRefreshFailure(status: LiveListingCatalogCacheStatus | null | undefined): boolean;
 export declare const getLiveListingCatalogSnapshot: (() => Promise<LiveListingCatalogSnapshot>) & {
     refresh: () => Promise<LiveListingCatalogSnapshot>;
+    refreshIfStale: (maxAgeMs: number) => Promise<LiveListingCatalogSnapshot>;
     status: () => Readonly<{
         hasSuccessfulSnapshot: boolean;
         observedAtUtc: string | null;
@@ -125,6 +127,6 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     resetSellerVerificationForTests: typeof resetSellerVerificationForTests;
     tradingListingFacets: typeof tradingListingFacets;
     offerListingFacets: typeof offerListingFacets;
-    LIVE_CATALOG_REFRESH_INTERVAL_MS: 300000;
+    LIVE_CATALOG_REFRESH_INTERVAL_MS: 1800000;
 }>;
 export {};

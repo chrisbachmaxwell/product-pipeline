@@ -7,7 +7,7 @@ describe('live listing catalog background refresher', () => {
     let scheduled: (() => void) | null = null;
     const unref = vi.fn();
     const setIntervalImpl = vi.fn((callback: () => void, intervalMs: number) => {
-      expect(intervalMs).toBe(300_000);
+      expect(intervalMs).toBe(1_800_000);
       scheduled = callback;
       return { unref } as unknown as NodeJS.Timeout;
     }) as unknown as typeof setInterval;

@@ -13,7 +13,7 @@ async function verifyShopifyWebhook(req) {
  */
 export function createShopifyWebhookRouter(dependencies = {
     verify: verifyShopifyWebhook,
-    refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
+    refreshListings: () => getLiveListingCatalogSnapshot.refreshIfStale(30_000),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
     notifyPriceChanged: () => priceSweepTrigger.notifyInventoryChanged(),
 }) {

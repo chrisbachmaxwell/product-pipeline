@@ -49,7 +49,7 @@ export function createEbayNotificationRouter(
     now: () => number;
   }> = {
     credentials: receiverCredentials,
-    refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
+    refreshListings: () => getLiveListingCatalogSnapshot.refreshIfStale(30_000),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
     notifySale: () => orderImportTrigger.notifySale(),
     now: Date.now,

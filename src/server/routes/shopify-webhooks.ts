@@ -34,7 +34,7 @@ export function createShopifyWebhookRouter(
     notifyPriceChanged?: () => boolean;
   }> = {
     verify: verifyShopifyWebhook,
-    refreshListings: () => getLiveListingCatalogSnapshot.refresh(),
+    refreshListings: () => getLiveListingCatalogSnapshot.refreshIfStale(30_000),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
     notifyPriceChanged: () => priceSweepTrigger.notifyInventoryChanged(),
   },
