@@ -12,6 +12,7 @@ import {
   Modal,
   Text,
   TextField,
+  Thumbnail,
 } from '@shopify/polaris';
 import {
   canonicalDraftImages,
@@ -52,6 +53,8 @@ interface Props {
   saving: boolean;
   onCancel: () => void;
   onSave: (input: ListingDraftSaveInput) => Promise<unknown>;
+  /** Rendered above the editor (e.g. the Publish card). */
+  statusCard?: React.ReactNode;
 }
 
 interface Change {
@@ -189,7 +192,126 @@ const ReadOnlyCompare: React.FC<{ label: string; field: ListingDraftField }> = (
   </BlockStack>
 );
 
-const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }) => {
+/**
+ * Item specifics as plain Name / Value rows — operators should never
+ * hand-author canonical JSON. Aspects with multiple values (rare) fall back
+ * to a raw JSON textarea so nothing becomes uneditable.
+ */
+const SpecificsRows: React.FC<{
+  label: string;
+  changed: boolean;
+  raw: string | null;
+  editable: boolean;
+  error?: string;
+  onChange: (canonicalJson: string) => void;
+}> = ({ label, changed, raw, editable, error, onChange }) => {
+  const parsed = useMemo(() => {
+    if (raw === null || raw.trim() === '') return { rows: [] as Array<{ name: string; value: string }>, multi: false };
+    try {
+      const object = JSON.parse(raw) as Record<string, unknown>;
+      const rows: Array<{ name: string; value: string }> = [];
+      let multi = false;
+      for (const [name, value] of Object.entries(object)) {
+        if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
+          if (value.length > 1) multi = true;
+          rows.push({ name, value: value.join(', ') });
+        } else {
+          multi = true;
+        }
+      }
+      return { rows, multi };
+    } catch {
+      return { rows: [], multi: true };
+    }
+  }, [raw]);
+  const [rows, setRows] = useState(parsed.rows);
+  const emit = (next: Array<{ name: string; value: string }>) => {
+    setRows(next);
+    const object: Record<string, string[]> = {};
+    for (const row of next) {
+      if (row.name.trim()) object[row.name.trim()] = [row.value.trim()];
+    }
+    onChange(JSON.stringify(object));
+  };
+  if (parsed.multi) {
+    // Preserve full fidelity for multi-value aspects.
+    return (
+      <TextField
+        label={label}
+        value={raw ?? ''}
+        onChange={onChange}
+        multiline={3}
+        disabled={!editable}
+        error={error}
+        autoComplete="off"
+        helpText="This listing uses multi-value specifics; edit the JSON directly."
+      />
+    );
+  }
+  return (
+    <BlockStack gap="200">
+      <InlineStack align="space-between" blockAlign="center">
+        <InlineStack gap="200" blockAlign="center">
+          <Text as="span" fontWeight="medium">{label}</Text>
+          {changed && <Badge tone="attention">Changed</Badge>}
+        </InlineStack>
+        <Button
+          variant="plain"
+          disabled={!editable || rows.length >= 50}
+          onClick={() => emit([...rows, { name: '', value: '' }])}
+        >
+          Add row
+        </Button>
+      </InlineStack>
+      {error && <Text as="p" variant="bodySm" tone="critical">{error}</Text>}
+      {rows.length === 0 && (
+        <Text as="p" tone="subdued">
+          Add details buyers filter by — Brand, Model, Type, Mount…
+        </Text>
+      )}
+      {rows.map((row, index) => (
+        <InlineStack key={String(index)} gap="200" blockAlign="center" wrap={false}>
+          <div style={{ flex: 1 }}>
+            <TextField
+              label="Name"
+              labelHidden
+              placeholder="Name (e.g. Brand)"
+              value={row.name}
+              disabled={!editable}
+              onChange={(value) => emit(rows.map((entry, entryIndex) =>
+                entryIndex === index ? { ...entry, name: value } : entry))}
+              autoComplete="off"
+            />
+          </div>
+          <div style={{ flex: 2 }}>
+            <TextField
+              label="Value"
+              labelHidden
+              placeholder="Value (e.g. Canon)"
+              value={row.value}
+              disabled={!editable}
+              onChange={(value) => emit(rows.map((entry, entryIndex) =>
+                entryIndex === index ? { ...entry, value } : entry))}
+              autoComplete="off"
+            />
+          </div>
+          <Button
+            variant="plain"
+            tone="critical"
+            disabled={!editable}
+            onClick={() => emit(rows.filter((_, entryIndex) => entryIndex !== index))}
+            accessibilityLabel={`Remove specific ${index + 1}`}
+          >
+            Remove
+          </Button>
+        </InlineStack>
+      ))}
+    </BlockStack>
+  );
+};
+
+const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave, statusCard }) => {
+  const [newImageUrl, setNewImageUrl] = useState('');
   const [editBase] = useState(draft);
   const initial = useMemo(() => initialValues(editBase), [editBase]);
   const [values, setValues] = useState<EditableValues>(initial);
@@ -362,15 +484,9 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
   };
 
   return (
-    <Card>
-      <BlockStack gap="500">
-        <InlineStack align="space-between" blockAlign="center" gap="300">
-          <BlockStack gap="050">
-            <Text as="h2" variant="headingMd">Local draft</Text>
-            <Text as="p" variant="bodySm" tone="subdued">Nothing is sent to Shopify or eBay.</Text>
-          </BlockStack>
-          <Button onClick={onCancel} disabled={saving}>Close</Button>
-        </InlineStack>
+    <BlockStack gap="400">
+      {statusCard}
+      <BlockStack gap="400">
 
         {saveError && (
           <Banner tone="critical">
@@ -390,8 +506,9 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
           </Banner>
         )}
 
+        <Card>
         <BlockStack gap="400">
-          <Text as="h3" variant="headingSm">Listing</Text>
+          <Text as="h3" variant="headingMd">Listing</Text>
           <DraftTextField
             label={<FieldLabel text="Title" changed={changedFor('title', titleField)} />}
             field={titleField}
@@ -481,11 +598,11 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
             <ReadOnlyCompare label="Quantity" field={editBase.sections.listing.quantity} />
           </InlineGrid>
         </BlockStack>
+        </Card>
 
-        <Divider />
-
+        <Card>
         <BlockStack gap="400">
-          <Text as="h3" variant="headingSm">Content</Text>
+          <Text as="h3" variant="headingMd">Description &amp; photos</Text>
           <RichTextEditor
             label={(
               <InlineStack align="space-between" blockAlign="center" gap="200" wrap>
@@ -512,70 +629,92 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
               <InlineStack gap="200" blockAlign="center">
-                <Text as="h4" variant="headingSm">Images</Text>
+                <Text as="h4" variant="headingSm">Photos</Text>
                 {imagesChanged && <Badge tone="attention">Changed</Badge>}
               </InlineStack>
-              <Button
-                variant="plain"
-                onClick={() => { setImagesDirty(true); setImages((current) => [...current, '']); }}
-                disabled={!editBase.sections.content.images.editable || images.length >= 24}
-              >
-                Add image
-              </Button>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {images.filter((image) => image.trim() !== '').length} of 24
+              </Text>
             </InlineStack>
             {images.length === 0 ? (
-              <Text as="p" tone="subdued">Using current images.</Text>
-            ) : images.map((image, index) => (
-              <InlineStack key={String(index)} gap="200" blockAlign="end" wrap={false}>
+              <Text as="p" tone="subdued">Using the current photos.</Text>
+            ) : (
+              <InlineStack gap="300" wrap>
+                {images.map((image, index) => {
+                  const verified = verifiedDraftImageUrl(image);
+                  return (
+                    <BlockStack key={String(index)} gap="100" inlineAlign="center">
+                      <Thumbnail
+                        size="large"
+                        source={verified ?? ''}
+                        alt={verified ? `Photo ${index + 1}` : 'Invalid image URL'}
+                      />
+                      {image.trim() !== '' && !verified && (
+                        <Text as="span" variant="bodySm" tone="critical">Invalid URL</Text>
+                      )}
+                      <Button
+                        variant="plain"
+                        tone="critical"
+                        disabled={!editBase.sections.content.images.editable}
+                        onClick={() => {
+                          setImagesDirty(true);
+                          setImages((current) =>
+                            current.filter((_, itemIndex) => itemIndex !== index));
+                        }}
+                        accessibilityLabel={`Remove photo ${index + 1}`}
+                      >
+                        Remove
+                      </Button>
+                    </BlockStack>
+                  );
+                })}
+              </InlineStack>
+            )}
+            {editBase.sections.content.images.editable && images.length < 24 && (
+              <InlineStack gap="200" blockAlign="end" wrap={false}>
                 <div style={{ flex: 1 }}>
                   <TextField
-                    label={`Image ${index + 1}`}
-                    value={image}
-                    onChange={(value) => {
-                      setImagesDirty(true);
-                      setImages((current) => current.map((item, itemIndex) =>
-                        itemIndex === index ? value : item));
-                    }}
+                    label="Add photo by URL"
+                    labelHidden
+                    placeholder="Paste a Shopify or eBay image URL"
+                    value={newImageUrl}
+                    onChange={setNewImageUrl}
                     autoComplete="off"
-                    error={image.trim() && !verifiedDraftImageUrl(image)
-                      ? 'Use an approved Shopify or eBay image URL' : undefined}
+                    error={newImageUrl.trim() !== '' && !verifiedDraftImageUrl(newImageUrl.trim())
+                      ? 'Use a Shopify or eBay image URL' : undefined}
                   />
                 </div>
                 <Button
                   onClick={() => {
+                    if (!newImageUrl.trim()) return;
                     setImagesDirty(true);
-                    setImages((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                    setImages((current) => [...current, newImageUrl.trim()]);
+                    setNewImageUrl('');
                   }}
-                  accessibilityLabel={`Remove image ${index + 1}`}
+                  disabled={!newImageUrl.trim() || !verifiedDraftImageUrl(newImageUrl.trim())}
                 >
-                  Remove
+                  Add
                 </Button>
               </InlineStack>
-            ))}
-          </BlockStack>
-          <DraftTextField
-            label={(
-              <FieldLabel
-                text="Item specifics"
-                changed={changedFor('itemSpecifics', itemSpecificsField)}
-              />
             )}
-            field={itemSpecificsField}
-            value={draftFieldValue({ ...itemSpecificsField, draft: values.itemSpecifics })}
+          </BlockStack>
+          <SpecificsRows
+            label="Item specifics"
+            changed={changedFor('itemSpecifics', itemSpecificsField)}
+            raw={values.itemSpecifics ?? itemSpecificsField.ebay ?? itemSpecificsField.shopify}
+            editable={itemSpecificsField.editable}
             error={values.itemSpecifics !== null
               && canonicalDraftItemSpecifics(values.itemSpecifics) !== values.itemSpecifics
-              ? 'Use canonical JSON with 1–50 aspect names and string-array values'
+              ? 'Item specifics could not be read — fix the highlighted rows'
               : undefined}
-            multiline={3}
-            extraHelp={'Required for a new eBay listing. Example: {"Brand":["Canon"],"Type":["Lens"]}'}
-            onChange={(value) => set('itemSpecifics', value)}
+            onChange={(next) => setValue('itemSpecifics', next)}
           />
         </BlockStack>
+        </Card>
 
-        <Divider />
-
+        <Card>
         <BlockStack gap="400">
-          <Text as="h3" variant="headingSm">Delivery</Text>
+          <Text as="h3" variant="headingMd">Delivery</Text>
           <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
             {idField(
               'fulfillmentPolicyId',
@@ -615,8 +754,10 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
             )}
           </InlineGrid>
         </BlockStack>
+        </Card>
 
         <InlineStack align="end" gap="300">
+          <Button onClick={onCancel} disabled={saving}>Close</Button>
           <Button onClick={() => setPreviewOpen(true)}
             disabled={!hasChanges || invalidImage || !draftInputValid || saving}>
             Preview changes
@@ -667,7 +808,7 @@ const ListingDraftEditor: React.FC<Props> = ({ draft, saving, onCancel, onSave }
           </Modal.Section>
         </Modal>
       </BlockStack>
-    </Card>
+    </BlockStack>
   );
 };
 
