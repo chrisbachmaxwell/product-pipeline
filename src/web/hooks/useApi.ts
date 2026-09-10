@@ -354,6 +354,26 @@ export const useActivity = () =>
     retry: false,
   });
 
+export interface EbayQuotaResponse {
+  available: boolean;
+  checkedAtUtc: string | null;
+  aggregateCount: number | null;
+  aggregateLimit: number | null;
+  usedFraction: number | null;
+  resetAtUtc: string | null;
+  topCalls: Array<{ name: string; count: number }>;
+  warning: boolean;
+}
+
+export const useEbayQuota = () =>
+  useQuery({
+    queryKey: ['ebay-quota'],
+    queryFn: () => apiClient.get<EbayQuotaResponse>('/ebay-quota'),
+    refetchInterval: 30 * 60_000,
+    staleTime: 25 * 60_000,
+    retry: false,
+  });
+
 export interface PriceCheckResponse {
   schemaVersion: 1;
   query: string;

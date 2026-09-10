@@ -335,11 +335,11 @@ const runtimeEbayDetailReader = createEnrichedListingDetailReader();
  * Short server-side TTL over the Trading GetItem detail read. The listing
  * page polls, and every uncached poll spent Trading API quota — one open
  * tab helped exhaust eBay's 5,000/day aggregate Trading cap on 2026-09-10.
- * Successful reads are reused for 2 minutes per target; failures are never
+ * Successful reads are reused for 5 minutes per target; failures are never
  * cached. The access token is deliberately not part of the key (it rotates
  * without changing what the read observes).
  */
-const DETAIL_CACHE_TTL_MS = 120_000;
+const DETAIL_CACHE_TTL_MS = 300_000;
 const DETAIL_CACHE_MAX_ENTRIES = 500;
 const detailCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof runtimeEbayDetailReader>> }>();
 const cachedEbayDetailReader: typeof runtimeEbayDetailReader = async (request) => {
