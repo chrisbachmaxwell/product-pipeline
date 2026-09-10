@@ -817,7 +817,11 @@ export function hasUnresolvedLiveListingRefreshFailure(status) {
         && status?.lastFailureAtEpochMs !== undefined;
 }
 export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
-const LIVE_CATALOG_REFRESH_INTERVAL_MS = 60_000;
+// 60s refresh was a third of the 2026-09-10 Trading-quota exhaustion
+// (GetMyeBaySelling every minute = 1,440/day against a 5,000/day aggregate
+// cap shared with every other Trading call). 5 minutes keeps the catalog
+// fresh enough for an operator UI at ~288 calls/day.
+const LIVE_CATALOG_REFRESH_INTERVAL_MS = 300_000;
 export function startLiveListingCatalogRefresher(cache = getLiveListingCatalogSnapshot, options = {}) {
     const intervalMs = options.intervalMs ?? LIVE_CATALOG_REFRESH_INTERVAL_MS;
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 15_000 || intervalMs > 300_000)

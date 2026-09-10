@@ -125,6 +125,6 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     resetSellerVerificationForTests: typeof resetSellerVerificationForTests;
     tradingListingFacets: typeof tradingListingFacets;
     offerListingFacets: typeof offerListingFacets;
-    LIVE_CATALOG_REFRESH_INTERVAL_MS: 60000;
+    LIVE_CATALOG_REFRESH_INTERVAL_MS: 300000;
 }>;
 export {};
