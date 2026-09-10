@@ -6,6 +6,53 @@
     <title>ProductPipeline</title>
     <meta name="shopify-api-key" content="2db0555e4848a8264383dc0edfcfb8fe" />
     <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+    <script>
+      // Boot watchdog: the app intermittently rendered a pure white page with
+      // no visible cause (the iframe's console is unreachable from the admin
+      // shell). Capture the earliest errors and, if React has not painted
+      // within 10 seconds, put them ON the page so a blank load becomes a
+      // readable, screenshot-able report instead of a mystery.
+      (function () {
+        var bootErrors = [];
+        function remember(kind, message) {
+          if (bootErrors.length < 10) bootErrors.push(kind + ': ' + message);
+        }
+        window.addEventListener('error', function (event) {
+          remember('error', (event && event.message) || 'unknown script error');
+        });
+        window.addEventListener('unhandledrejection', function (event) {
+          var reason = event && event.reason;
+          remember('rejection', (reason && (reason.message || String(reason))) || 'unknown');
+        });
+        setTimeout(function () {
+          var root = document.getElementById('root');
+          if (root && root.childElementCount > 0) return;
+          var panel = document.createElement('div');
+          panel.style.cssText =
+            'font-family:-apple-system,sans-serif;padding:24px;max-width:640px;margin:40px auto;'
+            + 'border:1px solid #e1e3e5;border-radius:12px;color:#202223;';
+          var heading = document.createElement('h2');
+          heading.textContent = 'ProductPipeline did not finish loading';
+          var body = document.createElement('p');
+          body.textContent = bootErrors.length > 0
+            ? 'Startup errors were captured below. A reload usually fixes this; if it keeps happening, screenshot this page.'
+            : 'No startup error was captured, which points at a stalled network request or the Shopify session handshake. A reload usually fixes this.';
+          var list = document.createElement('pre');
+          list.style.cssText = 'white-space:pre-wrap;background:#f6f6f7;padding:12px;border-radius:8px;';
+          list.textContent = bootErrors.join('\n') || '(no errors captured)';
+          var button = document.createElement('button');
+          button.textContent = 'Reload';
+          button.style.cssText =
+            'padding:8px 16px;border-radius:8px;border:1px solid #babfc3;background:#fff;cursor:pointer;';
+          button.addEventListener('click', function () { window.location.reload(); });
+          panel.appendChild(heading);
+          panel.appendChild(body);
+          panel.appendChild(list);
+          panel.appendChild(button);
+          root && root.appendChild(panel);
+        }, 10000);
+      })();
+    </script>
     <script type="module" crossorigin src="/assets/index-CAFYcLcc.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/vendor-react-DBLehydg.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-polaris-CMGdi9OB.js">
