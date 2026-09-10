@@ -740,14 +740,24 @@ function getItemRequest(listingId) {
 function sellerFromGetUser(result) {
     return presentString(record(result.User).UserID, 128).toLocaleLowerCase('en-US');
 }
+const SELLER_REVERIFY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export function createEnrichedListingDetailReader(dependencies = {}) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
     const now = dependencies.now ?? (() => new Date());
+    // GetUser on EVERY detail read was one of the three burners that blew
+    // eBay's 5,000/day aggregate Trading quota on 2026-09-10 (one open
+    // listing tab polling = thousands of calls). Identity is belt-and-
+    // suspenders on top of the ceremonially bound token, so verify at most
+    // once per interval per reader instance.
+    let sellerVerifiedAtMs = 0;
     return async (input) => {
         const request = validateRequest(input);
-        const user = await tradingRead(fetchImpl, request.accessToken, 'GetUser', getUserRequest());
-        if (sellerFromGetUser(user) !== EBAY_LISTING_DETAIL_SELLER_ID) {
-            return fail('SELLER_MISMATCH');
+        if (now().getTime() - sellerVerifiedAtMs >= SELLER_REVERIFY_INTERVAL_MS) {
+            const user = await tradingRead(fetchImpl, request.accessToken, 'GetUser', getUserRequest());
+            if (sellerFromGetUser(user) !== EBAY_LISTING_DETAIL_SELLER_ID) {
+                return fail('SELLER_MISMATCH');
+            }
+            sellerVerifiedAtMs = now().getTime();
         }
         const itemPromise = tradingRead(fetchImpl, request.accessToken, 'GetItem', getItemRequest(request.listingId));
         let inventoryItem = null;

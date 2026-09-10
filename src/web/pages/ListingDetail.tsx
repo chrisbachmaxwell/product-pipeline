@@ -322,7 +322,7 @@ const ListingDetail: React.FC = () => {
       <BlockStack gap="400">
         <InlineStack align="end">
           <Text as="span" variant="bodySm" tone="subdued">
-            {formatVerifiedAt(observedAt)} · refreshes every minute
+            {formatVerifiedAt(observedAt)} · refreshes every few minutes
           </Text>
         </InlineStack>
 

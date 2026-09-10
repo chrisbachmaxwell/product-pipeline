@@ -330,6 +330,28 @@ export function createListingWorkspaceReader(
 }
 
 const runtimeEbayDetailReader = createEnrichedListingDetailReader();
+
+/**
+ * Short server-side TTL over the Trading GetItem detail read. The listing
+ * page polls, and every uncached poll spent Trading API quota — one open
+ * tab helped exhaust eBay's 5,000/day aggregate Trading cap on 2026-09-10.
+ * Successful reads are reused for 2 minutes per target; failures are never
+ * cached. The access token is deliberately not part of the key (it rotates
+ * without changing what the read observes).
+ */
+const DETAIL_CACHE_TTL_MS = 120_000;
+const DETAIL_CACHE_MAX_ENTRIES = 500;
+const detailCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof runtimeEbayDetailReader>> }>();
+const cachedEbayDetailReader: typeof runtimeEbayDetailReader = async (request) => {
+  const { accessToken: _redacted, ...target } = request;
+  const key = JSON.stringify(target);
+  const hit = detailCache.get(key);
+  if (hit && Date.now() - hit.at < DETAIL_CACHE_TTL_MS) return hit.value;
+  const value = await runtimeEbayDetailReader(request);
+  if (detailCache.size >= DETAIL_CACHE_MAX_ENTRIES) detailCache.clear();
+  detailCache.set(key, { at: Date.now(), value });
+  return value;
+};
 const runtimeShopifyContentReader = createShopifyProductContentReader({
   getAccessToken: getRuntimeShopifyReadToken,
 });
@@ -338,7 +360,7 @@ export const readListingWorkspace = createListingWorkspaceReader({
   getSnapshot: getLiveListingCatalogSnapshot,
   getSnapshotStatus: getLiveListingCatalogSnapshot.status,
   getEbayAccessToken: getRuntimeEbayReadToken,
-  readEbayDetail: runtimeEbayDetailReader,
+  readEbayDetail: cachedEbayDetailReader,
   readShopifyContent: runtimeShopifyContentReader,
   readListingDefaults: createListingDefaultsReader(),
 });
