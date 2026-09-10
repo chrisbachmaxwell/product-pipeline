@@ -130,7 +130,9 @@ export const apiKeyAuth = createApiKeyAuth();
  * separate infrastructure concern.
  */
 const rateLimitStore = new Map<string, { tokens: number; lastRefill: number }>();
-const RATE_LIMIT_REQUESTS = 100;
+// Per real client IP (trust proxy is set), API requests only. 300/min
+// accommodates the dashboard's polling plus several open admin tabs.
+const RATE_LIMIT_REQUESTS = 300;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const MAX_RATE_LIMIT_BUCKETS = 10_000;
 

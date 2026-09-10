@@ -26,6 +26,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+// Behind Railway's edge proxy: without this, req.ip is the PROXY address,
+// so every client on the internet shared ONE rate-limit bucket -- admin
+// tabs, Shopify webhooks, and eBay push notifications drained the same
+// 100/min and starved each other into 429s (blank embedded app, "crashed"
+// interactions, and possibly eBay backing off push delivery entirely).
+app.set('trust proxy', 1);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // --- Middleware ---
@@ -90,7 +96,11 @@ if (isTestMode()) {
 }
 
 // --- Security Middleware ---
-app.use(rateLimit);
+// Rate-limit the API only. It was global, which made every page load spend
+// ~8 tokens on HTML+assets and let webhook bursts 429 the app shell white.
+// Webhooks authenticate by signature (HMAC / NotificationSignature) and
+// static assets are plain files; neither needs this limiter.
+app.use('/api', rateLimit);
 app.use('/api', apiKeyAuth);
 
 // Shadow-mode invariant: every state-changing API request is denied before a
