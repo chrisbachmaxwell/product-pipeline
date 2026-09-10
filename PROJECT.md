@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-08. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-10. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,12 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-10: Publish From the UI, MC-Parity Template v2, and the Trading-Quota Outage (L55-L58)
+
+The operator asked to publish directly from the app and to make the UI "look like Shopify." Shipped: `POST /api/listing-publish` spawning the armed create ceremonies from an authenticated store-session click (L55); a tagless ready-to-list queue; automatic draft defaults (condition from `condition-…` tags + grading-chart text, category suggestion, most-used policies); a plain-language five-page UI with an editor-first listing page; and description template `ucg-branded-v2` at full Marketplace Connect visual parity — CSS-only lightbox gallery, thumbnail strip, clickable tabs, store logo — with the preview's empty-shell fallback bug and the plain-text description flattening both fixed underneath it (L57). Overlay surfaces were removed from the embedded iframe entirely (in-flow cards + App Bridge SaveBar) after both modals washed out unusably, and a commit whose message claimed the sticky save bar was found to have only deleted the old Save button (L56).
+
+Mid-afternoon eBay cut the app off: the 5,000/day AGGREGATE Trading quota was spent (GetUser 2,810 + GetItem 1,670 + GetMyeBaySelling 830 — identity re-checks and uncached detail polls, not the census, were the burners). Listings UI down until the 07:00Z reset; order and inventory automation unaffected on their own quotas. Cadence fixes landed the same day: identity once per 6h with 518-tolerance, census every 5min, 2-minute detail TTL cache, 2-minute client poll — under ~1,000/day worst case (L58). First UI publish (Canon EF 300mm f/2.8L IS II, #596) is armed and waiting on the quota reset.
 
 ### 2026-09-08: The Sell-Out Lifecycle, Truthful Counters, and eBay Push (L49-L54)
 
