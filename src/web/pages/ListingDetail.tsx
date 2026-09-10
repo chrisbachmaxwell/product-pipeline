@@ -100,6 +100,15 @@ const ListingDetail: React.FC = () => {
     if (!currentEditEligible) setEditing(false);
   }, [currentEditEligible]);
 
+  // A not-yet-listed item opens straight into the editor, Shopify-style —
+  // no Edit click. Listed items keep the read view (they sync automatically).
+  useEffect(() => {
+    if (currentEditEligible && currentCatalog?.lifecycleStatus === 'not_listed' && !editing) {
+      setEditing(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentEditEligible, currentCatalog?.lifecycleStatus]);
+
   // HOOKS MUST PRECEDE the early loading/error returns below — placing any
   // hook after them is React error #310 the moment loading flips to loaded
   // (shipped and hit live on 2026-09-10; this ordering is the fix).
@@ -384,10 +393,34 @@ const ListingDetail: React.FC = () => {
           <ListingDraftEditor
             draft={validDraft}
             saving={saveDraft.isPending}
+            statusCard={(
+              <Card>
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <BlockStack gap="050">
+                    <Text as="h2" variant="headingMd">
+                      {publishReady ? 'Ready to publish' : 'Not on eBay yet'}
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {publishReady
+                        ? 'Save any edits, then publish — buyers can purchase immediately.'
+                        : 'Fill in the required fields and save, then Publish appears here.'}
+                    </Text>
+                  </BlockStack>
+                  {publishReady && (
+                    <Button
+                      variant="primary"
+                      loading={publishing}
+                      onClick={() => setPublishConfirmOpen(true)}
+                    >
+                      Publish to eBay
+                    </Button>
+                  )}
+                </InlineStack>
+              </Card>
+            )}
             onCancel={() => setEditing(false)}
             onSave={async (input) => {
               await saveDraft.mutateAsync(input);
-              setEditing(false);
             }}
           />
         ) : (
@@ -419,6 +452,8 @@ const ListingDetail: React.FC = () => {
           </Card>
         )}
 
+        {!editing && (
+          <>
         <Card>
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center" gap="300">
@@ -556,6 +591,8 @@ const ListingDetail: React.FC = () => {
             </InlineGrid>
           </BlockStack>
         </Card>
+          </>
+        )}
       </BlockStack>
     </Page>
   );
