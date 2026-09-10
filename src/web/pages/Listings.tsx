@@ -76,7 +76,6 @@ const Listings: React.FC = () => {
   return (
     <Page
       title="Listings"
-      fullWidth
       primaryAction={nextReview ? {
         content: 'Review next',
         onAction: () => navigate(`/listings/${encodeURIComponent(nextReview.id)}`),
@@ -165,7 +164,7 @@ const Listings: React.FC = () => {
                       headings={[
                         { title: 'Product' },
                         { title: 'eBay' },
-                        { title: 'Available' },
+                        { title: 'In stock' },
                         { title: 'Price' },
                         { title: '' },
                       ]}
@@ -175,9 +174,14 @@ const Listings: React.FC = () => {
                         const sku = listingDisplaySku(row);
                         const imageUrl = verifiedListingImageUrl(row.shopify?.primaryImageUrl ?? null);
                         const attention = listingAttentionText(row);
-                        const action = listingActionLabel(row.lifecycleStatus);
+                        const action = listingActionLabel(row.lifecycleStatus, row.readyToList);
                         return (
-                          <IndexTable.Row id={row.id} key={row.id} position={index}>
+                          <IndexTable.Row
+                            id={row.id}
+                            key={row.id}
+                            position={index}
+                            onClick={() => navigate(`/listings/${encodeURIComponent(row.id)}`)}
+                          >
                             <IndexTable.Cell>
                               <InlineStack gap="300" blockAlign="center" wrap={false}>
                                 <Thumbnail
@@ -196,9 +200,9 @@ const Listings: React.FC = () => {
                               </InlineStack>
                             </IndexTable.Cell>
                             <IndexTable.Cell>
-                              <BlockStack gap="100">
-                                <Badge tone={listingStatusTone(row.lifecycleStatus)}>
-                                  {listingStatusLabel(row.lifecycleStatus)}
+                              <BlockStack gap="100" inlineAlign="start">
+                                <Badge tone={listingStatusTone(row.lifecycleStatus, row.readyToList)}>
+                                  {listingStatusLabel(row.lifecycleStatus, row.readyToList)}
                                 </Badge>
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>
@@ -226,7 +230,7 @@ const Listings: React.FC = () => {
                         const sku = listingDisplaySku(row);
                         const imageUrl = verifiedListingImageUrl(row.shopify?.primaryImageUrl ?? null);
                         const attention = listingAttentionText(row);
-                        const action = listingActionLabel(row.lifecycleStatus);
+                        const action = listingActionLabel(row.lifecycleStatus, row.readyToList);
                         return (
                           <Card key={row.id}>
                             <BlockStack gap="300">
@@ -244,8 +248,8 @@ const Listings: React.FC = () => {
                                 </BlockStack>
                               </InlineStack>
                               <InlineStack align="space-between" blockAlign="center">
-                                <Badge tone={listingStatusTone(row.lifecycleStatus)}>
-                                  {listingStatusLabel(row.lifecycleStatus)}
+                                <Badge tone={listingStatusTone(row.lifecycleStatus, row.readyToList)}>
+                                  {listingStatusLabel(row.lifecycleStatus, row.readyToList)}
                                 </Badge>
                                 <Text as="span" fontWeight="semibold">
                                   {formatListingPrice(row.shopify?.price ?? null)}
