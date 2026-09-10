@@ -8,10 +8,10 @@ export type ListingFilter = 'all' | AuthoritativeListingStatus;
 
 export const LISTING_FILTERS: Array<{ label: string; value: ListingFilter }> = [
   { label: 'All', value: 'all' },
-  { label: 'Needs attention', value: 'attention' },
-  { label: 'Not listed', value: 'not_listed' },
-  { label: 'Active', value: 'active' },
-  { label: 'Unknown', value: 'unknown' },
+  { label: 'Fix needed', value: 'attention' },
+  { label: 'Not on eBay', value: 'not_listed' },
+  { label: 'On eBay', value: 'active' },
+  { label: 'Checking', value: 'unknown' },
 ];
 
 export const listingFilterOptions = (
@@ -31,27 +31,36 @@ export const listingFilterOptions = (
   }));
 };
 
-export const listingStatusLabel = (status: AuthoritativeListingStatus): string => {
-  if (status === 'active') return 'Active';
-  if (status === 'not_listed') return 'Not listed';
-  if (status === 'unknown') return 'Unknown';
-  return 'Needs attention';
+// The column is literally titled "eBay", so every label answers exactly
+// "what is this item's eBay situation?" — the operator asked "most say
+// Active, is that active on eBay?" and the answer must be in the label.
+export const listingStatusLabel = (
+  status: AuthoritativeListingStatus,
+  readyToList?: boolean,
+): string => {
+  if (status === 'active') return 'On eBay';
+  if (status === 'not_listed') return readyToList ? 'Ready to list' : 'Not on eBay';
+  if (status === 'unknown') return 'Checking…';
+  return 'Fix needed';
 };
 
 export const listingStatusTone = (
   status: AuthoritativeListingStatus,
-): 'critical' | 'success' | 'attention' | 'info' => {
+  readyToList?: boolean,
+): 'critical' | 'success' | 'attention' | 'info' | undefined => {
   if (status === 'attention') return 'critical';
   if (status === 'active') return 'success';
-  if (status === 'unknown') return 'info';
-  return 'attention';
+  if (status === 'unknown') return 'attention';
+  // Plain gray for merely-not-listed; blue for the ready queue.
+  return readyToList ? 'info' : undefined;
 };
 
 export const listingActionLabel = (
   status: AuthoritativeListingStatus,
-): 'View' | 'Review' | 'Details' => {
+  readyToList?: boolean,
+): 'View' | 'Review' | 'Details' | 'Publish' => {
   if (status === 'active') return 'View';
-  if (status === 'not_listed') return 'Review';
+  if (status === 'not_listed') return readyToList ? 'Publish' : 'Review';
   return 'Details';
 };
 

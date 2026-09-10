@@ -46,6 +46,49 @@ const ListingDetail = () => {
         if (!currentEditEligible)
             setEditing(false);
     }, [currentEditEligible]);
+    // HOOKS MUST PRECEDE the early loading/error returns below — placing any
+    // hook after them is React error #310 the moment loading flips to loaded
+    // (shipped and hit live on 2026-09-10; this ordering is the fix).
+    const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+    const priceCheck = usePriceCheck(id, priceCheckOpen);
+    const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
+    const [publishing, setPublishing] = useState(false);
+    const [publishResult, setPublishResult] = useState(null);
+    const draftRevision = currentDraft?.revision ?? null;
+    const publishReady = Boolean(currentCatalog?.lifecycleStatus === 'not_listed'
+        && currentEditEligible
+        && draftRevision
+        && currentCatalog?.shopify);
+    const runPublish = async () => {
+        if (!currentCatalog?.shopify || !draftRevision || !id)
+            return;
+        setPublishing(true);
+        setPublishResult(null);
+        try {
+            const result = await apiClient.post('/listing-publish', {
+                catalogId: id,
+                sku: currentCatalog.shopify.sku,
+                revisionDigest: draftRevision.revisionDigest,
+            });
+            setPublishResult({ ok: true, listingId: result.listingId ?? null });
+            void workspace.refetch();
+        }
+        catch (error) {
+            const raw = error instanceof Error ? error.message : 'Publish failed';
+            const friendly = /REQUIRED_FIELD|PREREQUISITE/i.test(raw)
+                ? 'The draft is missing something eBay requires — category, condition, description, or photos. Add it, save, and publish again.'
+                : /NOT_ARMED/i.test(raw)
+                    ? 'Publishing is not switched on for the server yet.'
+                    : /BUSY/i.test(raw)
+                        ? 'Another publish is still running — give it a moment.'
+                        : raw;
+            setPublishResult({ ok: false, message: friendly });
+        }
+        finally {
+            setPublishing(false);
+            setPublishConfirmOpen(false);
+        }
+    };
     if (workspace.isLoading) {
         return (_jsx(Page, { title: "Listing", backAction: { content: 'Listings', url: '/listings' }, children: _jsx(Card, { children: _jsx(SkeletonBodyText, { lines: 8 }) }) }));
     }
@@ -128,46 +171,6 @@ const ListingDetail = () => {
         }
         finally {
             setOpeningEditor(false);
-        }
-    };
-    const [priceCheckOpen, setPriceCheckOpen] = useState(false);
-    const priceCheck = usePriceCheck(id, priceCheckOpen);
-    const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
-    const [publishing, setPublishing] = useState(false);
-    const [publishResult, setPublishResult] = useState(null);
-    const draftRevision = currentDraft?.revision ?? null;
-    const publishReady = Boolean(currentCatalog?.lifecycleStatus === 'not_listed'
-        && currentEditEligible
-        && draftRevision
-        && currentCatalog?.shopify);
-    const runPublish = async () => {
-        if (!currentCatalog?.shopify || !draftRevision || !id)
-            return;
-        setPublishing(true);
-        setPublishResult(null);
-        try {
-            const result = await apiClient.post('/listing-publish', {
-                catalogId: id,
-                sku: currentCatalog.shopify.sku,
-                revisionDigest: draftRevision.revisionDigest,
-            });
-            setPublishResult({ ok: true, listingId: result.listingId ?? null });
-            void workspace.refetch();
-        }
-        catch (error) {
-            const raw = error instanceof Error ? error.message : 'Publish failed';
-            const friendly = /REQUIRED_FIELD|PREREQUISITE/i.test(raw)
-                ? 'The draft is missing something eBay requires — category, condition, description, or photos. Add it, save, and publish again.'
-                : /NOT_ARMED/i.test(raw)
-                    ? 'Publishing is not switched on for the server yet.'
-                    : /BUSY/i.test(raw)
-                        ? 'Another publish is still running — give it a moment.'
-                        : raw;
-            setPublishResult({ ok: false, message: friendly });
-        }
-        finally {
-            setPublishing(false);
-            setPublishConfirmOpen(false);
         }
     };
     return (_jsx(Page, { title: title || 'Listing', subtitle: listingSkuLabel(sku), backAction: { content: 'Listings', url: '/listings' }, titleMetadata: (_jsx(InlineStack, { gap: "200", blockAlign: "center", children: _jsx(Badge, { tone: listingStatusTone(catalog.lifecycleStatus), children: listingStatusLabel(catalog.lifecycleStatus) }) })), primaryAction: publishReady ? {

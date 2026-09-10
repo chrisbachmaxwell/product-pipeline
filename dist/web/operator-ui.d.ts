@@ -8,9 +8,9 @@ export declare const listingFilterOptions: (summary: AuthoritativeListingsRespon
     label: string;
     value: ListingFilter;
 }>;
-export declare const listingStatusLabel: (status: AuthoritativeListingStatus) => string;
-export declare const listingStatusTone: (status: AuthoritativeListingStatus) => "critical" | "success" | "attention" | "info";
-export declare const listingActionLabel: (status: AuthoritativeListingStatus) => "View" | "Review" | "Details";
+export declare const listingStatusLabel: (status: AuthoritativeListingStatus, readyToList?: boolean) => string;
+export declare const listingStatusTone: (status: AuthoritativeListingStatus, readyToList?: boolean) => "critical" | "success" | "attention" | "info" | undefined;
+export declare const listingActionLabel: (status: AuthoritativeListingStatus, readyToList?: boolean) => "View" | "Review" | "Details" | "Publish";
 export declare const listingSkuLabel: (sku: string) => string;
 export declare const formatListingPrice: (price: NonNullable<AuthoritativeListingItem["shopify"]>["price"] | null) => string;
 export declare const formatWorkspaceMoney: (money: {

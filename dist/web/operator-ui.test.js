@@ -103,24 +103,24 @@ describe('stocked listings operator UI', () => {
     it('uses one compact filter for all four operator states', () => {
         expect(LISTING_FILTERS).toEqual([
             { label: 'All', value: 'all' },
-            { label: 'Needs attention', value: 'attention' },
-            { label: 'Not listed', value: 'not_listed' },
-            { label: 'Active', value: 'active' },
-            { label: 'Unknown', value: 'unknown' },
+            { label: 'Fix needed', value: 'attention' },
+            { label: 'Not on eBay', value: 'not_listed' },
+            { label: 'On eBay', value: 'active' },
+            { label: 'Checking', value: 'unknown' },
         ]);
         expect(listingFilterOptions(response().summary)).toEqual([
             { label: 'All (1)', value: 'all' },
-            { label: 'Needs attention (0)', value: 'attention' },
-            { label: 'Not listed (0)', value: 'not_listed' },
-            { label: 'Active (1)', value: 'active' },
-            { label: 'Unknown (0)', value: 'unknown' },
+            { label: 'Fix needed (0)', value: 'attention' },
+            { label: 'Not on eBay (0)', value: 'not_listed' },
+            { label: 'On eBay (1)', value: 'active' },
+            { label: 'Checking (0)', value: 'unknown' },
         ]);
     });
     it('keeps truthful temporal labels and review-only actions', () => {
-        expect(listingStatusLabel('active')).toBe('Active');
-        expect(listingStatusLabel('not_listed')).toBe('Not listed');
-        expect(listingStatusLabel('unknown')).toBe('Unknown');
-        expect(listingStatusLabel('attention')).toBe('Needs attention');
+        expect(listingStatusLabel('active')).toBe('On eBay');
+        expect(listingStatusLabel('not_listed')).toBe('Not on eBay');
+        expect(listingStatusLabel('unknown')).toBe('Checking…');
+        expect(listingStatusLabel('attention')).toBe('Fix needed');
         expect(listingActionLabel('active')).toBe('View');
         expect(listingActionLabel('not_listed')).toBe('Review');
         expect(listingActionLabel('attention')).toBe('Details');
