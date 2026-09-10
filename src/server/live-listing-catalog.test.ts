@@ -764,6 +764,7 @@ describe('strict live source parsers', () => {
   it.each(['usedcam-0', 'other-seller'])(
     'rejects wrong or stale Trading seller identity %s',
     async (sellerId) => {
+      LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
       globalThis.fetch = (async () => new Response(
         `<?xml version="1.0"?><GetUserResponse><Ack>Success</Ack><User><UserID>${sellerId}</UserID></User></GetUserResponse>`,
         { status: 200 },
@@ -777,7 +778,63 @@ describe('strict live source parsers', () => {
     },
   );
 
+  it('proceeds with a loud warning when GetUser is rate-limited (eBay 518) but denies every other GetUser failure', async () => {
+    // 518 exhausted-quota on the identity pre-check must not take the whole
+    // catalog down (it did, live, on 2026-09-10) — the census itself runs.
+    LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
+    let getUserCalls = 0;
+    globalThis.fetch = (async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      if (headers['X-EBAY-API-CALL-NAME'] === 'GetUser') {
+        getUserCalls += 1;
+        return xmlResponse('<?xml version="1.0"?><GetUserResponse><Ack>Failure</Ack><Errors><ShortMessage>Call usage limit has been reached.</ShortMessage><ErrorCode>518</ErrorCode><SeverityCode>Error</SeverityCode></Errors></GetUserResponse>');
+      }
+      return xmlResponse('<?xml version="1.0"?><GetMyeBaySellingResponse><Ack>Success</Ack><ActiveList><ItemArray><Item><ItemID>100</ItemID><SKU>FIRST</SKU></Item></ItemArray><PaginationResult><TotalNumberOfPages>1</TotalNumberOfPages><TotalNumberOfEntries>1</TotalNumberOfEntries></PaginationResult></ActiveList></GetMyeBaySellingResponse>');
+    }) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureTrading('authority'))
+        .resolves.toMatchObject({ activeListingCount: 1 });
+      expect(getUserCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    // Any non-518 GetUser failure still fails the capture closed.
+    LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
+    globalThis.fetch = (async () => xmlResponse(
+      '<?xml version="1.0"?><GetUserResponse><Ack>Failure</Ack><Errors><ErrorCode>931</ErrorCode></Errors></GetUserResponse>',
+    )) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureTrading('authority'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('verifies the seller identity once per interval, not on every capture', async () => {
+    LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
+    let getUserCalls = 0;
+    globalThis.fetch = (async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      if (headers['X-EBAY-API-CALL-NAME'] === 'GetUser') {
+        getUserCalls += 1;
+        return xmlResponse('<?xml version="1.0"?><GetUserResponse><Ack>Success</Ack><User><UserID>usedcameragear</UserID></User></GetUserResponse>');
+      }
+      return xmlResponse('<?xml version="1.0"?><GetMyeBaySellingResponse><Ack>Success</Ack><ActiveList><ItemArray><Item><ItemID>100</ItemID><SKU>FIRST</SKU></Item></ItemArray><PaginationResult><TotalNumberOfPages>1</TotalNumberOfPages><TotalNumberOfEntries>1</TotalNumberOfEntries></PaginationResult></ActiveList></GetMyeBaySellingResponse>');
+    }) as typeof fetch;
+    try {
+      await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureTrading('authority');
+      await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureTrading('authority');
+      expect(getUserCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
+    }
+  });
+
   it('captures a complete multi-page Trading active-listing census', async () => {
+    LIVE_LISTING_CATALOG_SOURCE_TESTING.resetSellerVerificationForTests();
     globalThis.fetch = (async (_url, init) => {
       const headers = init?.headers as Record<string, string>;
       if (headers['X-EBAY-API-CALL-NAME'] === 'GetUser') {
