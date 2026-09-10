@@ -1,4 +1,5 @@
 import { warn } from '../utils/logger.js';
+import { createListingDefaultsReader } from './listing-defaults.js';
 import {
   MAX_LIVE_LISTING_SNAPSHOT_AGE_MS,
   type LiveListingCatalogRow,
@@ -68,6 +69,8 @@ export type ListingWorkspaceDto = Readonly<{
    * can never block opening a draft.
    */
   shopifyContent?: ShopifyProductContent | null;
+  /** Automatic draft defaults (condition/category/policies); best-effort. */
+  listingDefaults?: import('./listing-defaults.js').ListingDefaults | null;
 }>;
 
 export class ListingWorkspaceReaderError extends Error {
@@ -98,6 +101,11 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
     productGid: string,
     variantGid: string,
   ) => Promise<ShopifyProductContent>;
+  /** Automatic draft defaults for unlisted rows; best-effort. */
+  readListingDefaults?: (input: Readonly<{
+    title: string;
+    productTags: readonly string[] | undefined;
+  }>) => Promise<import('./listing-defaults.js').ListingDefaults>;
   now?: () => number;
   maximumSnapshotAgeMs?: number;
 }>;
@@ -285,6 +293,23 @@ export function createListingWorkspaceReader(
       }
     }
 
+    // Automatic draft defaults for items not yet on eBay — condition from the
+    // store's own condition-… tag, the most-used delivery policies, and
+    // eBay's top category suggestion. Best-effort like shopifyContent: a
+    // failure means manual entry, never an unavailable workspace.
+    let listingDefaults: import('./listing-defaults.js').ListingDefaults | null = null;
+    if (dependencies.readListingDefaults && row.ebay.listingId === null && row.shopify) {
+      try {
+        listingDefaults = await dependencies.readListingDefaults({
+          title: row.shopify.title,
+          productTags: row.shopify.productTags,
+        });
+      } catch {
+        warn('LISTING_DEFAULTS_READ_FAILED');
+        listingDefaults = null;
+      }
+    }
+
     return Object.freeze({
       schemaVersion: 1 as const,
       evidence: Object.freeze({
@@ -299,6 +324,7 @@ export function createListingWorkspaceReader(
       mapping,
       ebayDetail,
       shopifyContent,
+      listingDefaults,
     });
   };
 }
@@ -314,6 +340,7 @@ export const readListingWorkspace = createListingWorkspaceReader({
   getEbayAccessToken: getRuntimeEbayReadToken,
   readEbayDetail: runtimeEbayDetailReader,
   readShopifyContent: runtimeShopifyContentReader,
+  readListingDefaults: createListingDefaultsReader(),
 });
 
 export const LISTING_WORKSPACE_READER_TESTING = Object.freeze({

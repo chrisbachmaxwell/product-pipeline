@@ -39,6 +39,8 @@ export type ListingWorkspaceDto = Readonly<{
      * can never block opening a draft.
      */
     shopifyContent?: ShopifyProductContent | null;
+    /** Automatic draft defaults (condition/category/policies); best-effort. */
+    listingDefaults?: import('./listing-defaults.js').ListingDefaults | null;
 }>;
 export declare class ListingWorkspaceReaderError extends Error {
     readonly kind: 'not_found' | 'unavailable';
@@ -56,6 +58,11 @@ export type ListingWorkspaceReaderDependencies = Readonly<{
      * so it can never make a workspace unavailable.
      */
     readShopifyContent?: (productGid: string, variantGid: string) => Promise<ShopifyProductContent>;
+    /** Automatic draft defaults for unlisted rows; best-effort. */
+    readListingDefaults?: (input: Readonly<{
+        title: string;
+        productTags: readonly string[] | undefined;
+    }>) => Promise<import('./listing-defaults.js').ListingDefaults>;
     now?: () => number;
     maximumSnapshotAgeMs?: number;
 }>;

@@ -1,4 +1,5 @@
 import { warn } from '../utils/logger.js';
+import { createListingDefaultsReader } from './listing-defaults.js';
 import { MAX_LIVE_LISTING_SNAPSHOT_AGE_MS, } from './live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, getRuntimeEbayReadToken, hasUnresolvedLiveListingRefreshFailure, } from './live-listing-catalog-source.js';
 import { createEnrichedListingDetailReader, EBAY_LISTING_DETAIL_MARKETPLACE_ID, EBAY_LISTING_DETAIL_SELLER_ID, } from './enriched-listing-detail.js';
@@ -186,6 +187,23 @@ export function createListingWorkspaceReader(dependencies) {
                 shopifyContent = null;
             }
         }
+        // Automatic draft defaults for items not yet on eBay — condition from the
+        // store's own condition-… tag, the most-used delivery policies, and
+        // eBay's top category suggestion. Best-effort like shopifyContent: a
+        // failure means manual entry, never an unavailable workspace.
+        let listingDefaults = null;
+        if (dependencies.readListingDefaults && row.ebay.listingId === null && row.shopify) {
+            try {
+                listingDefaults = await dependencies.readListingDefaults({
+                    title: row.shopify.title,
+                    productTags: row.shopify.productTags,
+                });
+            }
+            catch {
+                warn('LISTING_DEFAULTS_READ_FAILED');
+                listingDefaults = null;
+            }
+        }
         return Object.freeze({
             schemaVersion: 1,
             evidence: Object.freeze({
@@ -200,6 +218,7 @@ export function createListingWorkspaceReader(dependencies) {
             mapping,
             ebayDetail,
             shopifyContent,
+            listingDefaults,
         });
     };
 }
@@ -213,6 +232,7 @@ export const readListingWorkspace = createListingWorkspaceReader({
     getEbayAccessToken: getRuntimeEbayReadToken,
     readEbayDetail: runtimeEbayDetailReader,
     readShopifyContent: runtimeShopifyContentReader,
+    readListingDefaults: createListingDefaultsReader(),
 });
 export const LISTING_WORKSPACE_READER_TESTING = Object.freeze({
     BACKGROUND_REFRESH_SECONDS,
