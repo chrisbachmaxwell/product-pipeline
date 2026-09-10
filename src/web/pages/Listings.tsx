@@ -16,7 +16,7 @@ import {
   Thumbnail,
 } from '@shopify/polaris';
 import { ProductIcon, SearchIcon } from '@shopify/polaris-icons';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import {
   formatListingPrice,
@@ -39,7 +39,10 @@ const PAGE_SIZE = 25;
 
 const Listings: React.FC = () => {
   const navigate = useNavigate();
-  const [filter, setFilter] = useState<ListingFilter>('all');
+  const [searchParams] = useSearchParams();
+  const [filter, setFilter] = useState<ListingFilter | 'ready'>(
+    searchParams.get('filter') === 'ready' ? 'ready' : 'all',
+  );
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
@@ -54,7 +57,8 @@ const Listings: React.FC = () => {
   const listings = useAuthoritativeListings({
     limit: PAGE_SIZE,
     offset,
-    status: filter === 'all' ? undefined : filter,
+    status: filter === 'all' || filter === 'ready' ? undefined : filter,
+    ready: filter === 'ready' || undefined,
     search: search || undefined,
   });
   const valid = isLiveCatalogResponse(listings.data);
@@ -105,10 +109,20 @@ const Listings: React.FC = () => {
                     <Select
                       label="eBay state"
                       labelHidden
-                      options={listingFilterOptions(valid ? listings.data?.summary : undefined)}
+                      options={[
+                        ...listingFilterOptions(valid ? listings.data?.summary : undefined),
+                        {
+                          label: `Ready to list${
+                            typeof listings.data?.summary?.readyToList === 'number'
+                              ? ` (${listings.data.summary.readyToList})`
+                              : ''
+                          }`,
+                          value: 'ready',
+                        },
+                      ]}
                       value={filter}
                       onChange={(value) => {
-                        setFilter(value as ListingFilter);
+                        setFilter(value as ListingFilter | 'ready');
                         setOffset(0);
                       }}
                     />

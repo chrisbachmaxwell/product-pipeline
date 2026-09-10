@@ -246,4 +246,39 @@ export interface OperationalMonitoringResponse {
     };
 }
 export declare const useOperationalMonitoring: () => import("@tanstack/react-query").UseQueryResult<OperationalMonitoringResponse, Error>;
+/** One plain-English line per recent sync event (read-only). */
+export interface ActivityEvent {
+    atUtc: string;
+    kind: 'order_imported' | 'listing_ended' | 'listing_relisted' | 'quantity_updated' | 'price_updated' | 'tracking_sent' | 'listing_created';
+    label: string;
+    sku?: string;
+    ebayOrderId?: string;
+    listingId?: string;
+}
+export interface ActivityResponse {
+    schemaVersion: 1;
+    available?: boolean;
+    events: ActivityEvent[];
+    windowHours: number;
+    generatedAtUtc: string;
+    externalWritesPerformed: 0;
+}
+export declare const useActivity: () => import("@tanstack/react-query").UseQueryResult<ActivityResponse, Error>;
+export interface PriceCheckResponse {
+    schemaVersion: 1;
+    query: string;
+    median: string | null;
+    currency: string | null;
+    sampleSize: number;
+    comps: Array<{
+        title: string;
+        price: {
+            value: string;
+            currency: string;
+        };
+        condition: string;
+    }>;
+    externalWritesPerformed: 0;
+}
+export declare const usePriceCheck: (id: string | undefined, enabled: boolean) => import("@tanstack/react-query").UseQueryResult<PriceCheckResponse, Error>;
 export {};

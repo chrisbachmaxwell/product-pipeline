@@ -318,6 +318,67 @@ describe('shadow API allowlist', () => {
         const invalid = await requestShadowJson('/api/authoritative-listings?status=published', liveRouter);
         expect(invalid).toEqual({ status: 400, body: { error: 'Invalid listing status filter' } });
     });
+    it('filters schema-v3 live rows to the operator ready queue and rejects invalid ready values', async () => {
+        const readyObservedAtUtc = new Date().toISOString();
+        const readyVariant = (suffix, sku, productTags) => ({
+            productId: `gid://shopify/Product/${suffix}`,
+            variantId: `gid://shopify/ProductVariant/${suffix}`,
+            sku,
+            title: `Camera ${suffix}`,
+            variantTitle: 'Default Title',
+            productStatus: 'ACTIVE',
+            productTags,
+            primaryImageUrl: null,
+            imageCount: 1,
+            available: 1,
+            price: { amount: '10.00', currency: 'USD' },
+        });
+        const readySnapshot = buildLiveListingCatalogSnapshot({
+            observedAtUtc: readyObservedAtUtc,
+            shopifyVariants: [
+                readyVariant('1', 'READY-1', ['ready']),
+                readyVariant('2', 'PLAIN-1', []),
+            ],
+            ebayActiveListings: [],
+            ebayInventoryItems: [],
+            ebayOffers: [],
+            coverage: {
+                shopify: {
+                    source: 'shopify-admin-graphql', storeDomain: 'usedcameragear.myshopify.com',
+                    shopId: 'gid://shopify/Shop/86254518563', observedAtUtc: readyObservedAtUtc,
+                    paginationComplete: true, variantPageCount: 1, totalVariantsCaptured: 2,
+                    positiveStockVariants: 2, excludedZeroInventory: 0, excludedUnknownInventory: 0,
+                    productStatusCounts: { ACTIVE: 2 },
+                },
+                ebay: {
+                    source: 'ebay-trading-api+ebay-inventory-api', marketplaceId: 'EBAY_US',
+                    sellerAccountVerified: true, observedAtUtc: readyObservedAtUtc,
+                    trading: { paginationComplete: true, pageCount: 0, activeListingCount: 0 },
+                    inventory: {
+                        inventoryItemsComplete: true, inventoryItemPageCount: 0, inventoryItemCount: 0,
+                        offersComplete: true, offerPageCount: 0, offerCount: 0,
+                        unpublishedArtifactsChecked: true,
+                    },
+                },
+            },
+        });
+        const readyRouter = createShadowApiRouter({ getSnapshot: async () => readySnapshot });
+        const unfiltered = await requestShadowJson('/api/authoritative-listings', readyRouter);
+        expect(unfiltered).toMatchObject({
+            status: 200,
+            body: { total: 2, summary: { notListed: 2, readyToList: 1 } },
+        });
+        const ready = await requestShadowJson('/api/authoritative-listings?ready=1', readyRouter);
+        expect(ready.status).toBe(200);
+        expect(ready.body.total).toBe(1);
+        expect(ready.body.data).toEqual([expect.objectContaining({
+                readyToList: true,
+                shopify: expect.objectContaining({ sku: 'READY-1', productTags: ['ready'] }),
+            })]);
+        expect(ready.body.summary.readyToList).toBe(1);
+        const invalidReady = await requestShadowJson('/api/authoritative-listings?ready=yes', readyRouter);
+        expect(invalidReady).toEqual({ status: 400, body: { error: 'Invalid ready filter' } });
+    });
     const workspaceDto = {
         schemaVersion: 1,
         evidence: {

@@ -12,8 +12,25 @@ import {
 } from '@shopify/polaris';
 import { useNavigate } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
-import { useOperationalMonitoring } from '../hooks/useApi';
+import { useActivity, useOperationalMonitoring } from '../hooks/useApi';
 import { formatVerifiedAt, isLiveCatalogResponse } from '../operator-ui';
+
+const EVENT_EMOJI: Record<string, string> = {
+  order_imported: '🛒',
+  listing_ended: '🔚',
+  listing_relisted: '🔁',
+  quantity_updated: '📦',
+  price_updated: '💲',
+  tracking_sent: '🚚',
+  listing_created: '✨',
+};
+
+const timeOfDay = (iso: string): string => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
 
 const CountCard: React.FC<{
   label: string;
@@ -42,6 +59,7 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
   const monitoring = useOperationalMonitoring();
+  const activity = useActivity();
   const valid = isLiveCatalogResponse(listings.data);
   const summary = valid ? listings.data?.summary : undefined;
   const loading = listings.isLoading;
@@ -96,8 +114,14 @@ const Dashboard: React.FC = () => {
           )}
         </Card>
 
-        <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
+        <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
           <CountCard label="Live on eBay" value={summary?.active ?? null} />
+          <CountCard
+            label="Ready to list"
+            value={summary?.readyToList ?? null}
+            tone={(summary?.readyToList ?? 0) > 0 ? 'success' : undefined}
+            onClick={() => navigate('/listings?filter=ready')}
+          />
           <CountCard
             label="Not on eBay"
             value={summary?.notListed ?? null}
@@ -110,6 +134,25 @@ const Dashboard: React.FC = () => {
             onClick={() => navigate('/issues')}
           />
         </InlineGrid>
+
+        {(activity.data?.events?.length ?? 0) > 0 && (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h3" variant="headingMd">Today</Text>
+              <BlockStack gap="200">
+                {activity.data!.events.slice(0, 8).map((event, index) => (
+                  <InlineStack key={`${event.atUtc}-${index}`} align="space-between" blockAlign="center">
+                    <Text as="span">
+                      {(EVENT_EMOJI[event.kind] ?? '•') + ' ' + event.label}
+                      {event.sku ? ` — ${event.sku}` : ''}
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">{timeOfDay(event.atUtc)}</Text>
+                  </InlineStack>
+                ))}
+              </BlockStack>
+            </BlockStack>
+          </Card>
+        )}
 
         <Card>
           <BlockStack gap="200">

@@ -16,6 +16,8 @@ export interface AuthoritativeListingItem {
             amount: string;
             currency: string;
         };
+        /** Sanitized Shopify product tags (lowercased); optional until the server ships them. */
+        productTags?: readonly string[];
     } | null;
     ebay: {
         sku: string;
@@ -29,6 +31,8 @@ export interface AuthoritativeListingItem {
         unpublishedArtifactCount: number;
     };
     lifecycleStatus: AuthoritativeListingStatus;
+    /** Tagged 'ready' in Shopify, in stock, and not yet on eBay. */
+    readyToList?: boolean;
     lastVerifiedAtUtc: string;
     audit: {
         verified: boolean;
@@ -56,6 +60,7 @@ export interface AuthoritativeListingsResponse {
         notListed: number;
         attention: number;
         unknown: number;
+        readyToList?: number;
         totalInStock: number;
         totalVisible: number;
     };
@@ -117,6 +122,7 @@ export declare const useAuthoritativeListings: (params?: {
     offset?: number;
     search?: string;
     status?: AuthoritativeListingStatus;
+    ready?: boolean;
     id?: string;
 }) => import("@tanstack/react-query").UseQueryResult<AuthoritativeListingsResponse, Error>;
 export declare const useAuthoritativeListing: (id: string | undefined) => {

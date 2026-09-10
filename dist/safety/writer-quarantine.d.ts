@@ -97,6 +97,18 @@ export declare function responsibilityForApiPath(pathname: string): QuarantinedR
 export declare function isReadOnlyHttpMethod(method: string): boolean;
 /** One local-only append exception. It grants no provider or publish authority. */
 export declare function isExactLocalDraftAppend(method: string, originalUrl: string): boolean;
+/**
+ * The one publish exception. The handler behind it performs no provider
+ * write in this process: it spawns the standalone listing-lifecycle-admin
+ * ceremonies (preflight-create → dispatch-create), which enforce the exact
+ * approved draft revision, idempotent intent, single-use approval, and
+ * post-dispatch reconciliation. The operator's authenticated Shopify-session
+ * click is the one-action approval; the route additionally requires the
+ * exact store session (see routes/listing-publish.ts) and refuses unless the
+ * operator has armed PUBLISH_*_ARGV on the server. Added 2026-09-10 when the
+ * operator required publishing from the UI.
+ */
+export declare function isExactListingPublish(method: string, originalUrl: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {

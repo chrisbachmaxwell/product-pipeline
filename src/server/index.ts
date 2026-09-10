@@ -17,6 +17,9 @@ import listingDraftRoutes, {
   listingDraftJsonErrorHandler,
   listingDraftJsonParser,
 } from './routes/listing-drafts.js';
+import listingPublishRoutes from './routes/listing-publish.js';
+import activityRoutes from './routes/activity.js';
+import { createPriceCheckRouter } from './routes/price-check.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
 import { writerQuarantineMiddleware } from '../safety/writer-quarantine.js';
@@ -110,11 +113,18 @@ app.use('/api', writerQuarantineMiddleware);
 // Parse the sole local mutation only after authentication and the exact
 // quarantine exception. No unauthenticated or quarantined API body is parsed.
 app.post('/api/listing-draft', listingDraftJsonParser);
+// The publish request body is three bounded identifier strings; reuse the
+// same strict parser. The route itself re-verifies the exact Shopify
+// session and refuses unless the operator has armed the publish argv.
+app.post('/api/listing-publish', listingDraftJsonParser);
 app.use(listingDraftJsonErrorHandler);
 
 // --- Routes ---
 app.use(healthRoutes);
 app.use(listingDraftRoutes);
+app.use(listingPublishRoutes);
+app.use(activityRoutes);
+app.use(createPriceCheckRouter());
 app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);
 app.use(shopifyWebhookRoutes);

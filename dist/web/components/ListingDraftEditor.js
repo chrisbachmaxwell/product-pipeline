@@ -64,7 +64,20 @@ export const isSemanticImageChange = (field, imagesDirty, nextSerialized) => {
 };
 const FieldLabel = ({ text, changed }) => (_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Text, { as: "span", children: text }), changed && _jsx(Badge, { tone: "attention", children: "Changed" })] }));
 const DraftTextField = ({ label, field, value, multiline, error, showCharacterCount, extraHelp, onChange }) => (_jsx(TextField, { label: label, value: value, onChange: onChange, disabled: !field.editable, placeholder: descriptionSummary(inheritedFieldValue(field), 120) || 'Use current value', helpText: extraHelp ? (_jsxs(BlockStack, { gap: "050", children: [_jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: currentLabel(field) }), _jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: extraHelp })] })) : currentLabel(field), autoComplete: "off", multiline: multiline, error: error, showCharacterCount: showCharacterCount }));
-const ReadOnlyCompare = ({ label, field }) => (_jsxs(BlockStack, { gap: "100", children: [_jsx(Text, { as: "p", variant: "bodySm", tone: "subdued", children: label }), _jsx(Text, { as: "p", fontWeight: "medium", children: field.ebay ?? field.shopify ?? '—' }), field.ebay !== null && field.shopify !== null && field.ebay !== field.shopify && (_jsxs(Text, { as: "p", variant: "bodySm", tone: "subdued", children: ["Shopify: ", field.shopify] })), _jsx(Text, { as: "p", variant: "bodySm", tone: "subdued", children: "Synced by Marketplace Connect \u2014 not editable here" })] }));
+/** Money and quantity may arrive as raw JSON strings; show them like money. */
+const formatCompareValue = (raw) => {
+    if (raw === null)
+        return '—';
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.amount === 'string') {
+            return `$${parsed.amount}${parsed.currency && parsed.currency !== 'USD' ? ` ${parsed.currency}` : ''}`;
+        }
+    }
+    catch { /* plain string */ }
+    return raw;
+};
+const ReadOnlyCompare = ({ label, field }) => (_jsxs(BlockStack, { gap: "100", children: [_jsx(Text, { as: "p", variant: "bodySm", tone: "subdued", children: label }), _jsx(Text, { as: "p", fontWeight: "medium", children: formatCompareValue(field.ebay ?? field.shopify) }), field.ebay !== null && field.shopify !== null && field.ebay !== field.shopify && (_jsxs(Text, { as: "p", variant: "bodySm", tone: "subdued", children: ["Shopify: ", formatCompareValue(field.shopify)] })), _jsx(Text, { as: "p", variant: "bodySm", tone: "subdued", children: "Synced from Shopify automatically" })] }));
 const ListingDraftEditor = ({ draft, saving, onCancel, onSave }) => {
     const [editBase] = useState(draft);
     const initial = useMemo(() => initialValues(editBase), [editBase]);

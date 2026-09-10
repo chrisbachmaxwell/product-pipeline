@@ -33,6 +33,8 @@ export interface AuthoritativeListingItem {
       amount: string;
       currency: string;
     };
+    /** Sanitized Shopify product tags (lowercased); optional until the server ships them. */
+    productTags?: readonly string[];
   } | null;
   ebay: {
     sku: string;
@@ -46,6 +48,8 @@ export interface AuthoritativeListingItem {
     unpublishedArtifactCount: number;
   };
   lifecycleStatus: AuthoritativeListingStatus;
+  /** Tagged 'ready' in Shopify, in stock, and not yet on eBay. */
+  readyToList?: boolean;
   lastVerifiedAtUtc: string;
   audit: {
     verified: boolean;
@@ -74,6 +78,7 @@ export interface AuthoritativeListingsResponse {
     notListed: number;
     attention: number;
     unknown: number;
+    readyToList?: number;
     totalInStock: number;
     totalVisible: number;
   };
@@ -136,6 +141,7 @@ export const useAuthoritativeListings = (params?: {
   offset?: number;
   search?: string;
   status?: AuthoritativeListingStatus;
+  ready?: boolean;
   id?: string;
 }) =>
   useQuery({
@@ -146,6 +152,7 @@ export const useAuthoritativeListings = (params?: {
       if (params?.offset) searchParams.set('offset', String(params.offset));
       if (params?.search) searchParams.set('search', params.search);
       if (params?.status) searchParams.set('status', params.status);
+      if (params?.ready) searchParams.set('ready', '1');
       if (params?.id) searchParams.set('id', params.id);
       const query = searchParams.toString();
       return apiClient.get<AuthoritativeListingsResponse>(

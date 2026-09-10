@@ -304,7 +304,7 @@ describe('local listing draft UI contract', () => {
       fileURLToPath(new URL('../components/ListingDraftEditor.tsx', import.meta.url)),
       'utf8',
     );
-    expect(page).toContain('Remote read only');
+    expect(page).toContain('Synced automatically');
     expect(page).toContain('editing && canEdit && validDraft');
     expect(page).not.toContain('editing && validDraft ?');
     expect(page).toContain('if (!currentEditEligible) setEditing(false)');
