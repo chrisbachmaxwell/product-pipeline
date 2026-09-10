@@ -3,91 +3,91 @@ import {
   Badge,
   BlockStack,
   Card,
-  Divider,
   InlineStack,
   Page,
   Text,
 } from '@shopify/polaris';
-import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import { useMigrationStatus } from '../hooks/useApi';
-import {
-  isHistoricalBackfillProtected,
-  isLiveCatalogResponse,
-  isMigrationPolicyAvailable,
-} from '../operator-ui';
+import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
+import { isLiveCatalogResponse } from '../operator-ui';
 
-const Row: React.FC<{ label: string; value: string; tone: 'info' | 'attention' | 'success' | 'critical' }> = ({
-  label,
-  value,
-  tone,
-}) => (
-  <InlineStack align="space-between" blockAlign="center" gap="300">
-    <Text as="p">{label}</Text>
-    <Badge tone={tone}>{value}</Badge>
+const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <InlineStack align="space-between" blockAlign="center">
+    <Text as="span">{label}</Text>
+    {children}
   </InlineStack>
 );
+
+/** Owner labels the server reports -> what the operator should read. */
+const OWNER_LABEL: Record<string, { text: string; tone: 'success' | 'attention' }> = {
+  'product-pipeline': { text: 'ProductPipeline', tone: 'success' },
+  'marketplace-connect': { text: 'Marketplace Connect', tone: 'attention' },
+  unverified: { text: 'Not yet transferred', tone: 'attention' },
+};
+
+const RESPONSIBILITY_LABEL: Record<string, string> = {
+  orderImport: 'Order import',
+  price: 'Prices',
+  inventory: 'Inventory',
+  listingCreate: 'New listings',
+  listingRevise: 'Listing edits',
+  listingEndRelist: 'Ending and relisting',
+  fulfillment: 'Tracking numbers',
+};
 
 const Settings: React.FC = () => {
   const migration = useMigrationStatus();
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
-  const migrationAvailable = !migration.error && isMigrationPolicyAvailable(migration.data);
-  const ebayAvailable = !listings.error && isLiveCatalogResponse(listings.data);
-  const ebayCurrent = ebayAvailable && listings.data?.authoritative === true;
-  const backfillProtected = isHistoricalBackfillProtected(migration.data);
-
-  const shopifyState = migration.isLoading
-    ? { value: 'Checking', tone: 'info' as const }
-    : migrationAvailable
-      ? { value: 'Embedded app', tone: 'info' as const }
-      : { value: 'Unavailable', tone: 'critical' as const };
-  const ebayState = listings.isLoading
-    ? { value: 'Checking', tone: 'info' as const }
-    : ebayCurrent
-      ? { value: 'Current', tone: 'success' as const }
-      : ebayAvailable
-        ? { value: 'Unknown', tone: 'attention' as const }
-      : { value: 'Unavailable', tone: 'critical' as const };
-  const protectionState = migration.isLoading
-    ? { value: 'Checking', tone: 'info' as const }
-    : !migrationAvailable || migration.data?.historicalBackfillAllowed === undefined
-      ? { value: 'Unavailable', tone: 'critical' as const }
-      : backfillProtected
-        ? { value: 'On', tone: 'success' as const }
-        : { value: 'Off', tone: 'critical' as const };
+  const ebayCurrent = isLiveCatalogResponse(listings.data);
+  const responsibilities = (migration.data?.responsibilities ?? [])
+    .filter((entry) => entry.responsibility in RESPONSIBILITY_LABEL);
 
   return (
     <Page title="Settings" fullWidth>
-      <BlockStack gap="500">
+      <BlockStack gap="400">
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Connections</Text>
-            <Row label="Shopify" {...shopifyState} />
-            <Divider />
-            <Row label="eBay" {...ebayState} />
+            <Text as="h3" variant="headingMd">Connections</Text>
+            <Row label="Shopify">
+              <Badge tone="success">Connected</Badge>
+            </Row>
+            <Row label="eBay">
+              {ebayCurrent
+                ? <Badge tone="success">Connected</Badge>
+                : <Badge tone="attention">Checking…</Badge>}
+            </Row>
           </BlockStack>
         </Card>
 
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Ownership</Text>
-            <Row label="Canon listing canary" value="ProductPipeline" tone="info" />
-            <Divider />
-            <Row label="Orders" value="Marketplace Connect" tone="attention" />
-            <Divider />
-            <Row label="Price" value="Marketplace Connect" tone="attention" />
-            <Divider />
-            <Row label="Inventory" value="Marketplace Connect" tone="attention" />
+            <Text as="h3" variant="headingMd">What ProductPipeline runs</Text>
+            {responsibilities.map((entry) => {
+              const owner = OWNER_LABEL[entry.owner ?? ''] ?? OWNER_LABEL.unverified;
+              return (
+                <Row key={entry.responsibility} label={RESPONSIBILITY_LABEL[entry.responsibility]}>
+                  <Badge tone={owner.tone}>{owner.text}</Badge>
+                </Row>
+              );
+            })}
+            <Text as="p" variant="bodySm" tone="subdued">
+              Marketplace Connect was retired on September 8, 2026. Every change to eBay
+              is recorded in a tamper-evident history.
+            </Text>
           </BlockStack>
         </Card>
 
         <Card>
-          <InlineStack align="space-between" blockAlign="center">
-            <BlockStack gap="100">
-              <Text as="h2" variant="headingMd">Historical orders</Text>
-              <Text as="p" tone="subdued">Backfill protection</Text>
-            </BlockStack>
-            <Badge tone={protectionState.tone}>{protectionState.value}</Badge>
-          </InlineStack>
+          <BlockStack gap="200">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h3" variant="headingMd">Old eBay orders</Text>
+              <Badge tone="success">Protected</Badge>
+            </InlineStack>
+            <Text as="p" tone="subdued">
+              Orders from before September 8, 2026 are never imported into Shopify.
+              This protection is permanent and cannot be switched off.
+            </Text>
+          </BlockStack>
         </Card>
       </BlockStack>
     </Page>

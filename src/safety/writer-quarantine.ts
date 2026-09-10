@@ -14,42 +14,56 @@ export type QuarantinedResponsibility =
 export const WRITER_QUARANTINE_CODE = 'WRITER_QUARANTINED' as const;
 
 export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
-  policyVersion: 1,
-  phase: 'marketplace-connect-incumbent' as const,
+  // DESCRIPTION vs ENFORCEMENT: `owner` and `productPipelineAccess` describe
+  // who runs each responsibility and are updated when ownership ceremonies
+  // transfer it. `writesAllowed`, `externalWritesAllowed`, and the quarantine
+  // remain the ENFORCEMENT truth about THIS SERVER PROCESS: it mounts no
+  // provider writers, ever — every write happens in the standalone ceremony
+  // CLIs. Those fields stay false permanently and must never be edited to
+  // reflect ceremony-side capability.
+  policyVersion: 2,
+  phase: 'product-pipeline-steady-state' as const,
   effectiveMode: 'shadow-read-only' as const,
   externalWritesAllowed: false as const,
   historicalBackfillAllowed: false as const,
-  cutoverWatermarkUtc: null,
+  // The permanent order watermark established 2026-09-08 (G13 cutover).
+  cutoverWatermarkUtc: '2026-09-08T21:50:00.000Z' as const,
   remoteVerification: 'not-performed' as const,
   responsibilities: Object.freeze({
     orderImport: Object.freeze({
-      owner: 'marketplace-connect' as const,
-      productPipelineAccess: 'disabled' as const,
+      // Ownership v3, permanent watermark 2026-09-08T21:50Z (G13 cutover).
+      // Imports run via order-import-admin ceremonies; the server-side
+      // trigger only SPAWNS them — no writer is mounted in this process.
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     price: Object.freeze({
-      owner: 'marketplace-connect' as const,
-      productPipelineAccess: 'read-only' as const,
+      // Ownership 2026-09-01; MC "Sync price" recorded off 2026-09-08
+      // (correction — the toggle was found alive after being recorded off).
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     inventory: Object.freeze({
-      owner: 'marketplace-connect' as const,
-      productPipelineAccess: 'read-only' as const,
+      // Ownership 2026-09-01; MC "Sync inventory" confirmed off 2026-09-03.
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     listingCreate: Object.freeze({
-      owner: 'unverified' as const,
-      productPipelineAccess: 'read-only' as const,
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     listingRevise: Object.freeze({
-      owner: 'unverified' as const,
-      productPipelineAccess: 'read-only' as const,
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     listingEndRelist: Object.freeze({
-      owner: 'unverified' as const,
-      productPipelineAccess: 'read-only' as const,
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     mapping: Object.freeze({
@@ -58,8 +72,10 @@ export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
       writesAllowed: false as const,
     }),
     fulfillment: Object.freeze({
-      owner: 'unverified' as const,
-      productPipelineAccess: 'read-only' as const,
+      // Ownership v3 established 2026-09-09; tracking pushes run via the
+      // fulfillment-tracking-admin ceremonies.
+      owner: 'product-pipeline' as const,
+      productPipelineAccess: 'ceremony' as const,
       writesAllowed: false as const,
     }),
     feedback: Object.freeze({
@@ -73,8 +89,10 @@ export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
       writesAllowed: false as const,
     }),
   }) satisfies Readonly<Record<MigrationResponsibility, {
-    owner: 'marketplace-connect' | 'unverified';
-    productPipelineAccess: 'disabled' | 'read-only';
+    owner: 'product-pipeline' | 'marketplace-connect' | 'unverified';
+    // 'ceremony' = ProductPipeline owns it and every write runs through a
+    // standalone operator ceremony CLI; the server itself still never writes.
+    productPipelineAccess: 'ceremony' | 'disabled' | 'read-only';
     writesAllowed: false;
   }>>,
   quarantineChannels: Object.freeze([
@@ -186,7 +204,7 @@ export function getMigrationPolicyStatus(servedAt = new Date().toISOString()) {
     effectiveMode: MARKETPLACE_CONNECT_BASELINE.effectiveMode,
     externalWritesAllowed: false as const,
     historicalBackfillAllowed: false as const,
-    cutoverWatermarkUtc: null,
+    cutoverWatermarkUtc: MARKETPLACE_CONNECT_BASELINE.cutoverWatermarkUtc,
     remoteVerification: MARKETPLACE_CONNECT_BASELINE.remoteVerification,
     servedAt,
     responsibilities: Object.entries(MARKETPLACE_CONNECT_BASELINE.responsibilities).map(

@@ -8,42 +8,42 @@ import type { WriterResponsibility } from './responsibilities.js';
 export type QuarantinedResponsibility = WriterResponsibility | 'listingLifecycle' | 'externalCommerce';
 export declare const WRITER_QUARANTINE_CODE: "WRITER_QUARANTINED";
 export declare const MARKETPLACE_CONNECT_BASELINE: Readonly<{
-    policyVersion: 1;
-    phase: "marketplace-connect-incumbent";
+    policyVersion: 2;
+    phase: "product-pipeline-steady-state";
     effectiveMode: "shadow-read-only";
     externalWritesAllowed: false;
     historicalBackfillAllowed: false;
-    cutoverWatermarkUtc: null;
+    cutoverWatermarkUtc: "2026-09-08T21:50:00.000Z";
     remoteVerification: "not-performed";
     responsibilities: Readonly<{
         orderImport: Readonly<{
-            owner: "marketplace-connect";
-            productPipelineAccess: "disabled";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         price: Readonly<{
-            owner: "marketplace-connect";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         inventory: Readonly<{
-            owner: "marketplace-connect";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         listingCreate: Readonly<{
-            owner: "unverified";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         listingRevise: Readonly<{
-            owner: "unverified";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         listingEndRelist: Readonly<{
-            owner: "unverified";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         mapping: Readonly<{
@@ -52,8 +52,8 @@ export declare const MARKETPLACE_CONNECT_BASELINE: Readonly<{
             writesAllowed: false;
         }>;
         fulfillment: Readonly<{
-            owner: "unverified";
-            productPipelineAccess: "read-only";
+            owner: "product-pipeline";
+            productPipelineAccess: "ceremony";
             writesAllowed: false;
         }>;
         feedback: Readonly<{
@@ -100,51 +100,51 @@ export declare function isExactLocalDraftAppend(method: string, originalUrl: str
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {
-    phase: "marketplace-connect-incumbent";
+    phase: "product-pipeline-steady-state";
     effectiveMode: "shadow-read-only";
     externalWritesAllowed: false;
     historicalBackfillAllowed: false;
-    cutoverWatermarkUtc: null;
+    cutoverWatermarkUtc: "2026-09-08T21:50:00.000Z";
     remoteVerification: "not-performed";
     servedAt: string;
     responsibilities: ({
-        owner: "marketplace-connect";
-        productPipelineAccess: "disabled";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "marketplace-connect";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "marketplace-connect";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
-        writesAllowed: false;
-        responsibility: string;
-    } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
         owner: "unverified";
         productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {

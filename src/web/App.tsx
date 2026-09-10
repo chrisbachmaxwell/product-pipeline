@@ -55,10 +55,10 @@ const PageLoader: React.FC = () => (
 
 const ShopifyNavMenu: React.FC = () => (
   <NavMenu>
-    <Link to="/" rel="home">Overview</Link>
+    <Link to="/" rel="home">Home</Link>
     <Link to="/listings">Listings</Link>
     <Link to="/orders">Orders</Link>
-    <Link to="/issues">Issues</Link>
+    <Link to="/issues">Review</Link>
     <Link to="/settings">Settings</Link>
   </NavMenu>
 );

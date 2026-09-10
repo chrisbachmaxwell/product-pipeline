@@ -47,7 +47,7 @@ const isEmbedded = () => {
     }
 };
 const PageLoader = () => (_jsx("div", { style: { display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }, children: _jsx(Spinner, { accessibilityLabel: "Loading page", size: "large" }) }));
-const ShopifyNavMenu = () => (_jsxs(NavMenu, { children: [_jsx(Link, { to: "/", rel: "home", children: "Overview" }), _jsx(Link, { to: "/listings", children: "Listings" }), _jsx(Link, { to: "/orders", children: "Orders" }), _jsx(Link, { to: "/issues", children: "Issues" }), _jsx(Link, { to: "/settings", children: "Settings" })] }));
+const ShopifyNavMenu = () => (_jsxs(NavMenu, { children: [_jsx(Link, { to: "/", rel: "home", children: "Home" }), _jsx(Link, { to: "/listings", children: "Listings" }), _jsx(Link, { to: "/orders", children: "Orders" }), _jsx(Link, { to: "/issues", children: "Review" }), _jsx(Link, { to: "/settings", children: "Settings" })] }));
 class ErrorBoundary extends React.Component {
     constructor(props) {
         super(props);

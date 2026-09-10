@@ -18,7 +18,7 @@ describe('migration status projection', () => {
         expect(result.effectiveMode).toBe('shadow-read-only');
         expect(result.externalWritesAllowed).toBe(false);
         expect(result.historicalBackfillAllowed).toBe(false);
-        expect(result.cutoverWatermarkUtc).toBeNull();
+        expect(result.cutoverWatermarkUtc).toBe('2026-09-08T21:50:00.000Z');
         expect(result.servedAt).toBe('2026-08-11T18:00:00.000Z');
         expect(result).not.toHaveProperty('observedAt');
         expect(result.sourceOfTruth.acceptedProductionWriterBaseline).toBe('shopify-marketplace-connect');
@@ -60,7 +60,14 @@ describe('migration status projection', () => {
             'feedback',
             'reconciliation',
         ]);
-        expect(result.responsibilities.find((entry) => entry.responsibility === 'orderImport')).toEqual(expect.objectContaining({ owner: 'marketplace-connect', productPipelineAccess: 'disabled' }));
+        // Post-cutover description: ProductPipeline owns order import via the
+        // standalone ceremonies; the projection still reports writesAllowed
+        // false because this server mounts no writer.
+        expect(result.responsibilities.find((entry) => entry.responsibility === 'orderImport')).toEqual(expect.objectContaining({
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
+            writesAllowed: false,
+        }));
     });
     it('does not expose credentials or customer records', () => {
         const serialized = JSON.stringify(buildMigrationStatus({
@@ -114,7 +121,7 @@ describe('migration status projection', () => {
         });
         expect(result.externalWritesAllowed).toBe(false);
         expect(result.historicalBackfillAllowed).toBe(false);
-        expect(result.cutoverWatermarkUtc).toBeNull();
+        expect(result.cutoverWatermarkUtc).toBe('2026-09-08T21:50:00.000Z');
         expect(result.reconciliation.orderCreationEligible).toBe(false);
         expect(result.migrationState).toMatchObject({
             status: 'not-configured',

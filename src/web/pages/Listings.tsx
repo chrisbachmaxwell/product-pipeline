@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Badge,
   BlockStack,
@@ -40,8 +40,17 @@ const PAGE_SIZE = 25;
 const Listings: React.FC = () => {
   const navigate = useNavigate();
   const [filter, setFilter] = useState<ListingFilter>('all');
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
+  // Debounce: one request when typing pauses, not one per keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setSearch(searchInput);
+      setOffset(0);
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
   const listings = useAuthoritativeListings({
     limit: PAGE_SIZE,
     offset,
@@ -80,12 +89,10 @@ const Listings: React.FC = () => {
                       label="Search listings"
                       labelHidden
                       placeholder="Search product or SKU"
-                      value={search}
-                      onChange={(value) => {
-                        setSearch(value);
-                        setOffset(0);
-                      }}
+                      value={searchInput}
+                      onChange={setSearchInput}
                       onClearButtonClick={() => {
+                        setSearchInput('');
                         setSearch('');
                         setOffset(0);
                       }}
@@ -109,7 +116,9 @@ const Listings: React.FC = () => {
                 </InlineStack>
                 {valid && (
                   <Text as="span" variant="bodySm" tone="subdued">
-                    {formatVerifiedAt(listings.data?.observedAtUtc)}
+                    {listings.isPlaceholderData
+                      ? 'Updating…'
+                      : formatVerifiedAt(listings.data?.observedAtUtc)}
                   </Text>
                 )}
               </InlineStack>
