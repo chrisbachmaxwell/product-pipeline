@@ -543,7 +543,7 @@ describe('listing-revise operator CLI', () => {
 
     // Anything but the exact supported version is a fixed-code denial.
     await world.run(['preflight', ...targetArguments(revision.revisionDigest),
-      '--description-template', 'ucg-branded-v2']);
+      '--description-template', 'ucg-branded-v1']);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_TEMPLATE_UNSUPPORTED' });
     await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
       '--description-template', 'UCG-BRANDED-V1',
@@ -554,19 +554,19 @@ describe('listing-revise operator CLI', () => {
 
     // With the flag: the digest changes and the preflight notes the template.
     await world.run(['preflight', ...targetArguments(revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1']);
+      '--description-template', 'ucg-branded-v2']);
     const templated = lastJson(world.stdout);
     expect(templated).toMatchObject({
       command: 'preflight',
       status: 'preview',
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      descriptionTemplate: { templateVersion: 'ucg-branded-v2', applied: true },
     });
     const templatedDigest = templated.manifestDigest as string;
     expect(templatedDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(templatedDigest).not.toBe(plainDigest);
     const changes = templated.changes as Array<{ field: string; after: { preview: string } }>;
     expect(changes.find((change) => change.field === 'description')!.after.preview)
-      .toContain('<!-- template:ucg-branded-v1 -->');
+      .toContain('<!-- template:ucg-branded-v2 -->');
 
     // The digest binds the templated HTML in both directions.
     await world.run(['establish-ownership',
@@ -574,7 +574,7 @@ describe('listing-revise operator CLI', () => {
       '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
       '--evidence-digest', `sha256:${'a'.repeat(64)}`]);
     await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
       '--manifest-digest', plainDigest,
       '--migration-store', world.migrationDatabasePath]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'REVISE_MANIFEST_DIGEST_MISMATCH' });
@@ -586,7 +586,7 @@ describe('listing-revise operator CLI', () => {
 
     // Approving the templated digest dispatches the exact rendered HTML.
     await world.run(['dispatch', ...targetArguments(revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
       '--manifest-digest', templatedDigest,
       '--migration-store', world.migrationDatabasePath]);
     const dispatched = lastJson(world.stdout);
@@ -597,13 +597,13 @@ describe('listing-revise operator CLI', () => {
       resolution: 'resolved_existing',
       providerDispatchReported: true,
       manifestDigest: templatedDigest,
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      descriptionTemplate: { templateVersion: 'ucg-branded-v2', applied: true },
       externalCommerceWritesAttempted: 1,
     });
     expect(world.adapterCalls).toEqual(['getInventoryItem', 'getOffer', 'putOffer']);
     expect(world.putOfferPayloads).toHaveLength(1);
     const dispatchedDescription = world.putOfferPayloads[0]!.listingDescription as string;
-    expect(dispatchedDescription.startsWith('<!-- template:ucg-branded-v1 -->')).toBe(true);
+    expect(dispatchedDescription.startsWith('<!-- template:ucg-branded-v2 -->')).toBe(true);
     expect(dispatchedDescription).toContain('<p>Freshly serviced &amp; film tested.</p>');
     expect(dispatchedDescription).toContain('<span class="ucg-condition">Used</span>');
     expect(dispatchedDescription).toContain('SKU: CAN3570-U119');
@@ -615,13 +615,13 @@ describe('listing-revise operator CLI', () => {
     const world = await createWorld();
     const derived = deriveListingReviseManifest(world.revision);
     const untouched = applyListingDescriptionTemplate({
-      derived, revision: world.revision, templateVersion: 'ucg-branded-v1',
+      derived, revision: world.revision, templateVersion: 'ucg-branded-v2',
     });
     expect(untouched.descriptionTemplateApplied).toBe(false);
     expect(untouched.manifestDigest).toBe(derived.manifestDigest);
     expect(untouched.manifest).toBe(derived.manifest);
     expect(() => applyListingDescriptionTemplate({
-      derived, revision: world.revision, templateVersion: 'ucg-branded-v1 ',
+      derived, revision: world.revision, templateVersion: 'ucg-branded-v2 ',
     })).toThrow(ListingReviseManifestError);
   });
 

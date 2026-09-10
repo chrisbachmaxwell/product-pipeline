@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Badge,
   Banner,
-  Modal,
   BlockStack,
   Button,
   Card,
@@ -346,27 +345,37 @@ const ListingDetail: React.FC = () => {
         )}
 
         {publishConfirmOpen && (
-          <Modal
-            open
-            onClose={() => setPublishConfirmOpen(false)}
-            title="Publish to eBay?"
-            primaryAction={{ content: 'Publish', loading: publishing, onAction: () => { void runPublish(); } }}
-            secondaryActions={[{ content: 'Cancel', onAction: () => setPublishConfirmOpen(false) }]}
-          >
-            <Modal.Section>
-              <BlockStack gap="200">
-                <Text as="p">
-                  This creates a live eBay listing for “{title}” using the saved draft
-                  {currentCatalog?.shopify
-                    ? ` at $${currentCatalog.shopify.price.amount} · ${currentCatalog.shopify.available ?? 0} available`
-                    : ''}.
-                </Text>
-                <Text as="p" tone="subdued">
-                  Buyers can purchase immediately. You can end the listing later from eBay.
-                </Text>
-              </BlockStack>
-            </Modal.Section>
-          </Modal>
+          /* In-flow confirm, deliberately not a Modal: overlay dialogs
+             misbehave inside the embedded admin iframe (the app document
+             never scrolls, so fixed backdrops wash out the page — hit live
+             2026-09-10). This card appears at the top of the page, right
+             where the Publish button that opened it lives. */
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">Publish to eBay?</Text>
+              <Text as="p">
+                This creates a live eBay listing for “{title}” using the saved draft
+                {currentCatalog?.shopify
+                  ? ` at $${currentCatalog.shopify.price.amount} · ${currentCatalog.shopify.available ?? 0} available`
+                  : ''}.
+              </Text>
+              <Text as="p" tone="subdued">
+                Buyers can purchase immediately. You can end the listing later from eBay.
+              </Text>
+              <InlineStack gap="200" align="end">
+                <Button onClick={() => setPublishConfirmOpen(false)} disabled={publishing}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  loading={publishing}
+                  onClick={() => { void runPublish(); }}
+                >
+                  Publish
+                </Button>
+              </InlineStack>
+            </BlockStack>
+          </Card>
         )}
 
         {priceCheckOpen && (

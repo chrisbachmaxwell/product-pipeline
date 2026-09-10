@@ -153,7 +153,7 @@ type DerivedTarget = {
 /**
  * Opt-in branded description templating. The flag is fail-closed: absent
  * means byte-identical legacy behavior, and any value other than the literal
- * `ucg-branded-v1` is a fixed-code denial before any store or remote read.
+ * `ucg-branded-v2` is a fixed-code denial before any store or remote read.
  */
 function assertDescriptionTemplateFlag(value: string | undefined): void {
   if (value !== undefined && value !== LISTING_DESCRIPTION_TEMPLATE_VERSION) {

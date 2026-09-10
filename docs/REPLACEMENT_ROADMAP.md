@@ -19,7 +19,7 @@ Legend: ☐ = pending · [USER] = only the user/operator can do it · [AGENT] = 
 
 Prove every listing lifecycle write end-to-end while MC still owns price/inventory/orders. No MC changes in this phase.
 
-- [x] [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise with `ucg-branded-v1`); verify on ebay.com; reconcile the exact attempt
+- [x] [USER] G10: save a draft on one live listing; run preflight → dispatch (description revise with `ucg-branded-v2`); verify on ebay.com; reconcile the exact attempt
 - **Current gate (2026-08-26):** Production is schema v4. Draft 1 for listing `147232036779` is publicly live and byte-identical to the approved raw HTML; eBay still shows price `$164.95` and quantity `5`. The existing job/attempt is authoritatively `revised_state_observed` / `resolved_existing`, with exactly one provider write and a valid migration-store audit chain. Brain L14 records the recovered comparator incident; L15 records the harmless denied replay.
 - ☐ [USER] Confirm MC price/quantity sync still behaves on that listing over 24h
 - ☐ [USER] G16a: create one new SKU end-to-end (branded template) via `listing-lifecycle-admin`; verify live listing

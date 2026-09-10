@@ -540,12 +540,12 @@ describe('listing-lifecycle operator CLI — create', () => {
     await world.run(establishArguments(world));
 
     await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
     ]);
     const preview = lastJson(world.stdout);
     expect(preview).toMatchObject({
       status: 'preview',
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      descriptionTemplate: { templateVersion: 'ucg-branded-v2', applied: true },
     });
     const manifestDigest = preview.manifestDigest as string;
 
@@ -558,20 +558,20 @@ describe('listing-lifecycle operator CLI — create', () => {
     expect(world.adapterCalls).toHaveLength(0);
 
     await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
       '--manifest-digest', manifestDigest,
       '--migration-store', world.migrationDatabasePath,
     ]);
     expect(lastJson(world.stdout)).toMatchObject({
       status: 'dispatched-and-reconciled',
       effect: 'created_state_observed',
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      descriptionTemplate: { templateVersion: 'ucg-branded-v2', applied: true },
     });
     const itemDescription = (world.itemPayloads[0]?.product as Record<string, unknown>)
       .description;
     const offerDescription = world.offerPayloads[0]?.listingDescription;
     expect(itemDescription).toBe('Clean plain text description');
-    expect(offerDescription).toContain('<!-- template:ucg-branded-v1 -->');
+    expect(offerDescription).toContain('<!-- template:ucg-branded-v2 -->');
     expect(offerDescription).not.toBe(itemDescription);
   });
 
@@ -579,12 +579,12 @@ describe('listing-lifecycle operator CLI — create', () => {
     const world = await createWorld();
     await world.run(establishArguments(world));
     await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
     ]);
     const manifestDigest = lastJson(world.stdout).manifestDigest as string;
     world.failPublish();
     await world.run(['dispatch-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
       '--manifest-digest', manifestDigest,
       '--migration-store', world.migrationDatabasePath,
     ]);
@@ -605,7 +605,7 @@ describe('listing-lifecycle operator CLI — create', () => {
     await world.run(['reconcile',
       '--action', 'create', '--catalog-id', CATALOG_ID, '--sku', SKU,
       '--revision-digest', world.revision.revisionDigest,
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
       '--migration-store', world.migrationDatabasePath,
       '--job-id', dispatched.jobId as string, '--attempt-id', dispatched.attemptId as string,
     ]);
@@ -613,14 +613,14 @@ describe('listing-lifecycle operator CLI — create', () => {
       status: 'reconciled',
       effect: 'created_state_observed',
       resolution: 'resolved_existing',
-      descriptionTemplate: { templateVersion: 'ucg-branded-v1', applied: true },
+      descriptionTemplate: { templateVersion: 'ucg-branded-v2', applied: true },
     });
   });
 
   it('fails closed for unsupported templates and requires exact raw HTML after create', async () => {
     const world = await createWorld();
     await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v2',
+      '--description-template', 'ucg-branded-v1',
     ]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'CREATE_TEMPLATE_UNSUPPORTED' });
     expect(world.adapterCalls).toHaveLength(0);
@@ -629,7 +629,7 @@ describe('listing-lifecycle operator CLI — create', () => {
     const templated = applyListingCreateDescriptionTemplate({
       derived,
       revision: world.revision,
-      templateVersion: 'ucg-branded-v1',
+      templateVersion: 'ucg-branded-v2',
     });
     const exactHtml = templated.manifest.proposed.description as string;
     expect(classifyCreateOutcome({
@@ -649,7 +649,7 @@ describe('listing-lifecycle operator CLI — create', () => {
   it('requires a description before deriving either provider payload', async () => {
     const world = await createWorld({ description: null });
     await world.run(['preflight-create', ...targetArguments(world.revision.revisionDigest),
-      '--description-template', 'ucg-branded-v1',
+      '--description-template', 'ucg-branded-v2',
     ]);
     expect(lastJson(world.stderr)).toMatchObject({
       status: 'denied',
@@ -692,10 +692,10 @@ describe('listing-lifecycle operator CLI — create', () => {
     expect(over.adapterCalls).toHaveLength(0);
   });
 
-  it('keeps a 4,470-character branded listing intact while Inventory gets the exact base text',
+  it('keeps the branded listing HTML intact while Inventory gets the exact base text',
     async () => {
       const renderInput = {
-        templateVersion: 'ucg-branded-v1' as const,
+        templateVersion: 'ucg-branded-v2' as const,
         title: 'Canon EF 24-70mm f/2.8L',
         bodyHtml: 'x',
         conditionId: '3000',
@@ -704,14 +704,18 @@ describe('listing-lifecycle operator CLI — create', () => {
         sku: SKU,
       };
       const oneCharacterLength = renderListingDescription(renderInput).length;
-      const baseDescription = 'x'.repeat(4_470 - oneCharacterLength + 1);
+      // The v2 template shell is larger than v1's; the invariant under test
+      // is unchanged — the full branded page ships as the offer listing
+      // description while Inventory gets the exact base text.
+      const targetLength = oneCharacterLength + 3_999;
+      const baseDescription = 'x'.repeat(targetLength - oneCharacterLength + 1);
       const world = await createWorld({ description: baseDescription });
       const templated = applyListingCreateDescriptionTemplate({
         derived: deriveListingCreateManifest(world.revision),
         revision: world.revision,
-        templateVersion: 'ucg-branded-v1',
+        templateVersion: 'ucg-branded-v2',
       });
-      expect(templated.manifest.proposed.description).toHaveLength(4_470);
+      expect(templated.manifest.proposed.description).toHaveLength(targetLength);
       expect(templated.manifest.proposed.inventoryProductDescription).toBe(baseDescription);
       const payloads = buildListingCreatePayloads(templated.manifest);
       expect((payloads.inventoryItemPayload.product as Record<string, unknown>).description)

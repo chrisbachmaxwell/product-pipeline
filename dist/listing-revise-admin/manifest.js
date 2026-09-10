@@ -137,12 +137,12 @@ function templateImageUrls(revision) {
 /**
  * Opt-in branded description templating: when the derived manifest carries a
  * `description` change, replace its after-value with the deterministic
- * `ucg-branded-v1` rendering built from the same stored revision the
+ * `ucg-branded-v2` rendering built from the same stored revision the
  * manifest derives from (title/condition/condition note/images use the
  * revision's proposed values, which the freshness gate has already bound to
  * the live remote state). The recomputed manifest digest therefore binds the
  * exact templated HTML the operator approves. Only the literal version
- * `ucg-branded-v1` is accepted; anything else is a fixed-code denial. With a
+ * `ucg-branded-v2` is accepted; anything else is a fixed-code denial. With a
  * manifest that carries no description change the manifest passes through
  * byte-identically and `descriptionTemplateApplied` is false.
  */

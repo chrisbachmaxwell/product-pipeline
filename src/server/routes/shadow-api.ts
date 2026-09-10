@@ -97,14 +97,19 @@ function escapeDescriptionText(value: string): string {
  */
 export function buildListingDescriptionPreviewInput(dto: ListingDraftDto): unknown {
   const { listing, content } = dto.sections;
-  const title = listing.title.draft ?? listing.title.ebay ?? listing.title.shopify;
-  const draftDescription = content.description.draft;
+  // Mirror the publish manifest's proposed-value semantics exactly: operator
+  // draft first, then the Shopify-inherited source layer, then the live eBay
+  // observation. The previous eBay-first fallback rendered an EMPTY
+  // description and zero photos for anything not yet listed — precisely the
+  // rows an operator previews before publishing.
+  const title = listing.title.draft ?? listing.title.shopify ?? listing.title.ebay;
+  const proposedDescription = content.description.draft ?? content.description.shopify;
   const observedDescription = content.description.ebay;
-  const bodyHtml = draftDescription
+  const bodyHtml = proposedDescription
     ?? (observedDescription === null
       ? ''
       : `<p>${escapeDescriptionText(observedDescription)}</p>`);
-  const serializedImages = content.images.ebay;
+  const serializedImages = content.images.draft ?? content.images.shopify ?? content.images.ebay;
   const imageUrls = serializedImages === null
     ? []
     : JSON.parse(serializedImages) as unknown;
@@ -112,8 +117,10 @@ export function buildListingDescriptionPreviewInput(dto: ListingDraftDto): unkno
     templateVersion: LISTING_DESCRIPTION_TEMPLATE_VERSION,
     title,
     bodyHtml,
-    conditionId: listing.condition.draft ?? listing.condition.ebay,
-    conditionNote: listing.conditionDescription.draft ?? listing.conditionDescription.ebay,
+    conditionId: listing.condition.draft ?? listing.condition.shopify ?? listing.condition.ebay,
+    conditionNote: listing.conditionDescription.draft
+      ?? listing.conditionDescription.shopify
+      ?? listing.conditionDescription.ebay,
     imageUrls,
     sku: dto.identity.rawSku,
   };

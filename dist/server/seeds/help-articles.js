@@ -207,7 +207,7 @@ It does not contact Shopify, eBay, Marketplace Connect, or Lightspeed. It cannot
         sort_order: 1,
         answer: `Publishing from the Shopify app remains unavailable: **Save draft** is local-only and never contacts eBay. An operator can publish one clean not-listed SKU through the isolated Railway listing-lifecycle ceremony after the Marketplace Connect single-writer gate and ProductPipeline ownership are recorded.
 
-The operator first saves and reviews an exact draft revision, including canonical item-specifics JSON required by the selected eBay category, then runs a read-only preflight. For Used Camera Gear's branded description, preflight, dispatch, and any later reconcile must all include \`--description-template ucg-branded-v1\`; the rendered HTML is bound into the approved manifest digest and verified against eBay's raw HTML after publishing. Each dispatch requires the exact catalog row, SKU, revision digest, preflight manifest digest, and ceremony-state database path. Nothing runs automatically on deploy, and unsupported templates or changed targets fail closed. See \`docs/LISTING_LIFECYCLE_DISPATCH.md\` for the operator commands and recovery rules.`,
+The operator first saves and reviews an exact draft revision, including canonical item-specifics JSON required by the selected eBay category, then runs a read-only preflight. For Used Camera Gear's branded description, preflight, dispatch, and any later reconcile must all include \`--description-template ucg-branded-v2\`; the rendered HTML is bound into the approved manifest digest and verified against eBay's raw HTML after publishing. Each dispatch requires the exact catalog row, SKU, revision digest, preflight manifest digest, and ceremony-state database path. Nothing runs automatically on deploy, and unsupported templates or changed targets fail closed. See \`docs/LISTING_LIFECYCLE_DISPATCH.md\` for the operator commands and recovery rules.`,
     },
     {
         question: 'How do I use the branded template when creating an eBay listing?',
@@ -216,7 +216,7 @@ The operator first saves and reviews an exact draft revision, including canonica
         answer: `The branded description is an opt-in part of the isolated one-item listing-create ceremony; it is not an in-app Publish button and does not run automatically.
 
 1. Save and review the exact local draft revision for a clean not-listed SKU.
-2. Include \`--description-template ucg-branded-v1\` in the read-only create preflight and review the returned manifest digest and template status.
+2. Include \`--description-template ucg-branded-v2\` in the read-only create preflight and review the returned manifest digest and template status.
 3. Include the same template flag in the separately approved dispatch with that exact manifest digest.
 4. If recovery verification is needed, include the same flag on \`reconcile --action create\`.
 

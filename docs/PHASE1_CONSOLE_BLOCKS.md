@@ -180,7 +180,7 @@ condition.
 cd /app
 node dist/listing-lifecycle-admin/index.js preflight-create \
   --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
-  --description-template ucg-branded-v1
+  --description-template ucg-branded-v2
 ```
 
 **4b. Dispatch** — the one action. The exact target plus the preflight manifest
@@ -190,7 +190,7 @@ digest *is* the operator approval. The template flag must exactly match 4a:
 cd /app
 node dist/listing-lifecycle-admin/index.js dispatch-create \
   --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
-  --description-template ucg-branded-v1 \
+  --description-template ucg-branded-v2 \
   --manifest-digest <sha256 from 4a> \
   --migration-store /data/migration-state/product-pipeline-migration-v1.sqlite
 ```
@@ -213,7 +213,7 @@ Read-only. Confirm on ebay.com that listing `147232036779` (Aputure, variant
 
 - price `$164.95`
 - quantity `5`
-- the live `ucg-branded-v1` description still byte-identical to the approved
+- the live `ucg-branded-v2` description still byte-identical to the approved
   10,144-byte HTML
 
 This is the 24-hour MC-behavior observation from the Phase 1 checklist. No

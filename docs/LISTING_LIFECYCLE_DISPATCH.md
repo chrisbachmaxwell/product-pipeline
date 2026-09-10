@@ -86,7 +86,7 @@ workspace row.
    ```
    node dist/listing-lifecycle-admin/index.js preflight-create \
      --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
-     --description-template ucg-branded-v1
+     --description-template ucg-branded-v2
    ```
 
    The target must be a clean not-listed item: any eBay listing, offer,
@@ -97,7 +97,7 @@ workspace row.
    Shopify-sourced initial price/quantity — and any Shopify or eBay drift
    since the draft was saved denies as `CREATE_BASE_STALE` (reopen and
    re-save the draft). It prints the manifest summary and the
-   **manifest digest**. `--description-template ucg-branded-v1` is the only
+   **manifest digest**. `--description-template ucg-branded-v2` is the only
    supported template and is opt-in. Manifest schema v2 separately binds the
    exact approved base description (required and at most 4,000 characters) for
    `InventoryItem.product.description` and the complete buyer-facing description
@@ -120,7 +120,7 @@ workspace row.
    ```
    node dist/listing-lifecycle-admin/index.js dispatch-create \
      --catalog-id <row id> --sku <sku> --revision-digest <sha256> \
-     --description-template ucg-branded-v1 \
+     --description-template ucg-branded-v2 \
      --manifest-digest <sha256> --migration-store <path>
    ```
 
@@ -218,7 +218,7 @@ workspace row.
   ```
   node dist/listing-lifecycle-admin/index.js reconcile \
     --action create --catalog-id … --sku … --revision-digest <sha256> \
-    --description-template ucg-branded-v1 \
+    --description-template ucg-branded-v2 \
     --migration-store <path> --job-id <id> --attempt-id <id>
 
   node dist/listing-lifecycle-admin/index.js reconcile \
