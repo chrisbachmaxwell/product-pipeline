@@ -439,11 +439,16 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
   });
 
   const actual = detail?.actual;
+  const defaults = workspace.listingDefaults ?? null;
   const source: Values = {
     title: shopify.title,
-    category: null,
-    condition: null,
-    condition_description: null,
+    // Automatic defaults (best-effort): category from eBay's suggestion for
+    // the title, condition from the store's condition-… tag, description
+    // text from the store's published grading chart. SOURCE layer only — an
+    // operator override on any listing still wins.
+    category: defaults?.categoryId ?? null,
+    condition: defaults?.conditionId ?? null,
+    condition_description: defaults?.conditionDescription ?? null,
     price: money(shopify.price),
     quantity: quantity(shopify.available),
     // Description and images now come from Shopify, which is where the
@@ -469,10 +474,10 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     // manifest requires.
     item_specifics: shopifyAspects(workspace.shopifyContent),
     identifiers: shopifyIdentifiers(workspace.shopifyContent),
-    fulfillment_policy: null,
-    payment_policy: null,
-    return_policy: null,
-    merchant_location: null,
+    fulfillment_policy: defaults?.fulfillmentPolicyId ?? null,
+    payment_policy: defaults?.paymentPolicyId ?? null,
+    return_policy: defaults?.returnPolicyId ?? null,
+    merchant_location: defaults?.merchantLocationKey ?? null,
   };
   const observed: Values = {
     title: actual?.content.title ?? null,
