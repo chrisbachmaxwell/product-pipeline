@@ -766,14 +766,6 @@ const ListingDraftEditor: React.FC<Props> = ({
 
         <InlineStack align="end" gap="300">
           <Button onClick={onCancel} disabled={saving}>Close</Button>
-          <Button onClick={() => setPreviewOpen(true)}
-            disabled={!hasChanges || invalidImage || !draftInputValid || saving}>
-            Preview changes
-          </Button>
-          <Button variant="primary" onClick={() => { void submit(); }} loading={saving}
-            disabled={!hasChanges || invalidImage || !draftInputValid}>
-            Save draft
-          </Button>
         </InlineStack>
 
         <Modal

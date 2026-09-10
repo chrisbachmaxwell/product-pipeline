@@ -1,7 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { useEffect, useState } from 'react';
 import { Badge, Banner, Modal, BlockStack, Button, Card, EmptyState, InlineGrid, InlineStack, Page, SkeletonBodyText, Text, } from '@shopify/polaris';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
 import { apiClient, usePriceCheck } from '../hooks/useApi';
 import ListingDescriptionPreviewModal from '../components/ListingDescriptionPreviewModal';
@@ -14,6 +14,7 @@ const MappingNode = ({ label, value }) => (_jsxs(BlockStack, { gap: "050", child
 const Difference = ({ children }) => (_jsxs(Text, { as: "p", variant: "bodySm", tone: "subdued", children: ["Shopify: ", children] }));
 const ListingDetail = () => {
     const { id } = useParams();
+    const navigate = useNavigate();
     const workspace = useListingWorkspace(id);
     const localDraft = useListingDraft(id);
     const saveDraft = useSaveListingDraft(id);
@@ -61,6 +62,19 @@ const ListingDetail = () => {
     const priceCheck = usePriceCheck(id, priceCheckOpen);
     const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
     const [draftState, setDraftState] = useState({ dirty: false, descriptionHtml: null });
+    // Warn before losing unsaved edits: browser/tab close via beforeunload,
+    // and the in-app back action via confirm below. (Shopify admin's own left
+    // nav cannot be intercepted from inside the iframe.)
+    useEffect(() => {
+        if (!draftState.dirty)
+            return undefined;
+        const handler = (event) => {
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', handler);
+        return () => window.removeEventListener('beforeunload', handler);
+    }, [draftState.dirty]);
     const [publishing, setPublishing] = useState(false);
     const [publishResult, setPublishResult] = useState(null);
     const draftRevision = currentDraft?.revision ?? null;
@@ -182,7 +196,17 @@ const ListingDetail = () => {
             setOpeningEditor(false);
         }
     };
-    return (_jsx(Page, { title: title || 'Listing', subtitle: listingSkuLabel(sku), backAction: { content: 'Listings', url: '/listings' }, titleMetadata: (_jsx(InlineStack, { gap: "200", blockAlign: "center", children: _jsx(Badge, { tone: listingStatusTone(catalog.lifecycleStatus), children: listingStatusLabel(catalog.lifecycleStatus) }) })), primaryAction: publishReady ? {
+    return (_jsx(Page, { title: title || 'Listing', subtitle: listingSkuLabel(sku), backAction: {
+            content: 'Listings',
+            onAction: () => {
+                if (draftState.dirty
+                    // eslint-disable-next-line no-alert
+                    && !window.confirm('You have unsaved changes. Leave without saving?')) {
+                    return;
+                }
+                navigate('/listings');
+            },
+        }, titleMetadata: (_jsx(InlineStack, { gap: "200", blockAlign: "center", children: _jsx(Badge, { tone: listingStatusTone(catalog.lifecycleStatus), children: listingStatusLabel(catalog.lifecycleStatus) }) })), primaryAction: publishReady ? {
             content: 'Publish to eBay',
             loading: publishing,
             onAction: () => setPublishConfirmOpen(true),
@@ -204,9 +228,7 @@ const ListingDetail = () => {
                                                 : 'Fill in the required fields and save, then Publish appears here.' })] }), publishReady && (_jsx(Button, { variant: "primary", loading: publishing, onClick: () => setPublishConfirmOpen(true), children: "Publish to eBay" }))] }) })), onCancel: () => setEditing(false), onSave: async (input) => {
                         await saveDraft.mutateAsync(input);
                     } })) : (_jsxs(Card, { children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsxs(BlockStack, { gap: "100", children: [_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Local draft" }), existingDraft && _jsx(Badge, { tone: "info", children: `Draft ${existingDraft.revisionNumber}` })] }), _jsx(Text, { as: "p", tone: "subdued", children: existingDraft ? `Saved ${formatVerifiedAt(existingDraft.createdAtUtc).replace('Updated ', '')}`
-                                                : 'Prepare changes without sending them to Shopify or eBay.' })] }), localDraft.isLoading ? (_jsx(Text, { as: "span", tone: "subdued", children: "Loading" })) : canEdit ? (_jsx(Button, { onClick: () => { void openFreshEditor(); }, loading: openingEditor, children: "Edit" })) : (_jsx(Badge, { tone: "attention", children: "Read only" }))] }), draftReadOnlyReason && !localDraft.isLoading && (_jsx("div", { style: { marginTop: '1rem' }, children: _jsx(Banner, { tone: "info", children: _jsx(Text, { as: "p", children: draftReadOnlyReason }) }) }))] })), !editing && (_jsxs(_Fragment, { children: [_jsx(Card, { children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Mapping" }), _jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Badge, { tone: "attention", children: "Owner unverified" }), _jsx(Badge, { tone: "info", children: "Synced automatically" })] })] }), _jsxs(InlineStack, { gap: "300", blockAlign: "center", wrap: true, children: [_jsx(MappingNode, { label: "Shopify variant", value: catalog.shopify?.variantTitle !== 'Default Title'
-                                                    ? catalog.shopify?.variantTitle ?? 'Not mapped'
-                                                    : 'Default variant' }), _jsx(Text, { as: "span", tone: "subdued", children: "\u2192" }), _jsx(MappingNode, { label: "SKU", value: listingSkuLabel(mapping.inventorySku ?? sku) }), _jsx(Text, { as: "span", tone: "subdued", children: "\u2192" }), _jsx(MappingNode, { label: "Model", value: managementLabel }), mapping.offerId && (_jsxs(_Fragment, { children: [_jsx(Text, { as: "span", tone: "subdued", children: "\u2192" }), _jsx(MappingNode, { label: "Offer", value: mapping.offerId })] })), _jsx(Text, { as: "span", tone: "subdued", children: "\u2192" }), _jsx(MappingNode, { label: "Listing", value: mapping.listingId ?? 'Not listed' })] }), _jsxs(InlineGrid, { columns: { xs: 1, sm: 2, md: 4 }, gap: "300", children: [_jsx(Fact, { label: "State", children: _jsx(Value, { children: mapping.state.replaceAll('_', ' ') }) }), _jsx(Fact, { label: "Join", children: _jsx(Value, { children: "Exact SKU" }) }), _jsx(Fact, { label: "Shopify variant ID", children: _jsx(Value, { children: mapping.shopifyVariantId ?? '—' }) }), _jsx(Fact, { label: "Control API", children: _jsx(Value, { children: ebayDetail?.management.controlApi ?? '—' }) })] })] }) }), _jsx(Card, { children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Listing" }), _jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Badge, { tone: "attention", children: "Owner unverified" }), _jsx(Badge, { tone: "info", children: "Synced automatically" })] })] }), _jsxs(InlineGrid, { columns: { xs: 1, sm: 2, md: 3 }, gap: "400", children: [_jsx(Fact, { label: "Status", children: _jsx(Value, { children: actual?.lifecycle.status ?? '—' }) }), _jsxs(Fact, { label: "Title", children: [_jsx(Value, { children: actual?.content.title ?? '—' }), titleDiffers && _jsx(Difference, { children: catalog.shopify?.title })] }), _jsx(Fact, { label: "Category", children: _jsx(Value, { children: category }) }), _jsx(Fact, { label: "Condition", children: _jsx(Value, { children: actual?.condition.name ?? actual?.condition.id ?? '—' }) }), _jsxs(Fact, { label: mapping.ownership.price === 'marketplace_connect'
+                                                : 'Prepare changes without sending them to Shopify or eBay.' })] }), localDraft.isLoading ? (_jsx(Text, { as: "span", tone: "subdued", children: "Loading" })) : canEdit ? (_jsx(Button, { onClick: () => { void openFreshEditor(); }, loading: openingEditor, children: "Edit" })) : (_jsx(Badge, { tone: "attention", children: "Read only" }))] }), draftReadOnlyReason && !localDraft.isLoading && (_jsx("div", { style: { marginTop: '1rem' }, children: _jsx(Banner, { tone: "info", children: _jsx(Text, { as: "p", children: draftReadOnlyReason }) }) }))] })), !editing && (_jsxs(_Fragment, { children: [_jsx(Card, { children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Listing" }), _jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Badge, { tone: "attention", children: "Owner unverified" }), _jsx(Badge, { tone: "info", children: "Synced automatically" })] })] }), _jsxs(InlineGrid, { columns: { xs: 1, sm: 2, md: 3 }, gap: "400", children: [_jsx(Fact, { label: "Status", children: _jsx(Value, { children: actual?.lifecycle.status ?? '—' }) }), _jsxs(Fact, { label: "Title", children: [_jsx(Value, { children: actual?.content.title ?? '—' }), titleDiffers && _jsx(Difference, { children: catalog.shopify?.title })] }), _jsx(Fact, { label: "Category", children: _jsx(Value, { children: category }) }), _jsx(Fact, { label: "Condition", children: _jsx(Value, { children: actual?.condition.name ?? actual?.condition.id ?? '—' }) }), _jsxs(Fact, { label: mapping.ownership.price === 'marketplace_connect'
                                                     ? 'Price · synced from Shopify' : 'Price', children: [_jsx(Value, { children: formatWorkspaceMoney(actualPrice) }), priceDiffers && _jsx(Difference, { children: formatListingPrice(shopifyPrice) })] }), _jsxs(Fact, { label: mapping.ownership.inventory === 'marketplace_connect'
                                                     ? 'Quantity · synced from Shopify' : 'Quantity', children: [_jsx(Value, { children: formatListingQuantity(actualQuantity) }), quantityDiffers && _jsx(Difference, { children: formatListingQuantity(shopifyQuantity) })] })] })] }) }), _jsx(Card, { children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Content" }), _jsx(Badge, { tone: "info", children: "eBay actual" })] }), _jsxs(InlineGrid, { columns: { xs: 1, md: '2fr 1fr' }, gap: "500", children: [_jsx(Fact, { label: "Description", children: _jsx(Text, { as: "p", children: descriptionSummary(actual?.content.descriptionHtml ?? null) }) }), _jsxs(InlineGrid, { columns: 2, gap: "300", children: [_jsx(Fact, { label: "Images", children: _jsx(Value, { children: actual?.content.imageUrls.length ?? '—' }) }), _jsx(Fact, { label: "Best offer", children: _jsx(Value, { children: actual?.commerce.bestOfferEnabled === null || !actual
                                                                 ? '—'

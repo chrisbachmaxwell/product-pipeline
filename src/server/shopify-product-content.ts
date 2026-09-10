@@ -112,7 +112,27 @@ export function brandFromVendor(
   const folded = trimmed.toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '');
   const foldedStore = storeName.toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '');
   if (folded === '' || folded === foldedStore) return null;
+  // The store operates as Pictureline; products sometimes carry the store
+  // (or a typo of it — a live listing shipped Brand "picturelin") as the
+  // vendor. A store name is never the manufacturer: refuse any vendor that
+  // is a prefix of, or prefixed by, one of the store identities.
+  for (const identity of ['pictureline', 'usedcameragear', foldedStore]) {
+    if (identity !== '' && (identity.startsWith(folded) || folded.startsWith(identity))) {
+      return null;
+    }
+  }
   return trimmed;
+}
+
+/**
+ * When the vendor is unusable, the first word of the title is a strong brand
+ * signal for camera gear ("Canon EF 300mm…"). Conservative: single clean
+ * word, capitalized, no digits-only tokens.
+ */
+export function brandFromTitle(title: string | null | undefined): string | null {
+  if (typeof title !== 'string') return null;
+  const first = title.trim().split(/\s+/u)[0] ?? '';
+  return /^[A-Z][A-Za-z-]{1,19}$/u.test(first) ? first : null;
 }
 
 export class ShopifyProductContentError extends Error {
@@ -239,7 +259,8 @@ export function createShopifyProductContentReader(dependencies: Readonly<{
     return Object.freeze({
       descriptionHtml,
       imageUrls: Object.freeze(imageUrls),
-      brand: brandFromVendor(product.vendor as string | undefined, STORE_NAME),
+      brand: brandFromVendor(product.vendor as string | undefined, STORE_NAME)
+        ?? brandFromTitle(product.title as string | undefined),
       mpn: variantMatches ? mpnFromSku(variant.sku as string | undefined) : null,
       upc: variantMatches ? normalizedGtin(variant.barcode as string | undefined) : null,
     });

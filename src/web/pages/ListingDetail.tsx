@@ -13,7 +13,7 @@ import {
   SkeletonBodyText,
   Text,
 } from '@shopify/polaris';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
 import { apiClient, usePriceCheck } from '../hooks/useApi';
 import ListingDescriptionPreviewModal from '../components/ListingDescriptionPreviewModal';
@@ -66,6 +66,7 @@ const Difference: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 
 const ListingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const workspace = useListingWorkspace(id);
   const localDraft = useListingDraft(id);
   const saveDraft = useSaveListingDraft(id);
@@ -118,6 +119,19 @@ const ListingDetail: React.FC = () => {
   const [draftState, setDraftState] = useState<{ dirty: boolean; descriptionHtml: string | null }>(
     { dirty: false, descriptionHtml: null },
   );
+
+  // Warn before losing unsaved edits: browser/tab close via beforeunload,
+  // and the in-app back action via confirm below. (Shopify admin's own left
+  // nav cannot be intercepted from inside the iframe.)
+  useEffect(() => {
+    if (!draftState.dirty) return undefined;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [draftState.dirty]);
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<
     | { ok: true; listingId: string | null }
@@ -272,7 +286,17 @@ const ListingDetail: React.FC = () => {
     <Page
       title={title || 'Listing'}
       subtitle={listingSkuLabel(sku)}
-      backAction={{ content: 'Listings', url: '/listings' }}
+      backAction={{
+        content: 'Listings',
+        onAction: () => {
+          if (draftState.dirty
+            // eslint-disable-next-line no-alert
+            && !window.confirm('You have unsaved changes. Leave without saving?')) {
+            return;
+          }
+          navigate('/listings');
+        },
+      }}
       titleMetadata={(
         <InlineStack gap="200" blockAlign="center">
           <Badge tone={listingStatusTone(catalog.lifecycleStatus)}>
@@ -459,43 +483,8 @@ const ListingDetail: React.FC = () => {
 
         {!editing && (
           <>
-        <Card>
-          <BlockStack gap="400">
-            <InlineStack align="space-between" blockAlign="center" gap="300">
-              <Text as="h2" variant="headingMd">Mapping</Text>
-              <InlineStack gap="200" blockAlign="center">
-                <Badge tone="attention">Owner unverified</Badge>
-                <Badge tone="info">Synced automatically</Badge>
-              </InlineStack>
-            </InlineStack>
-            <InlineStack gap="300" blockAlign="center" wrap>
-              <MappingNode
-                label="Shopify variant"
-                value={catalog.shopify?.variantTitle !== 'Default Title'
-                  ? catalog.shopify?.variantTitle ?? 'Not mapped'
-                  : 'Default variant'}
-              />
-              <Text as="span" tone="subdued">→</Text>
-              <MappingNode label="SKU" value={listingSkuLabel(mapping.inventorySku ?? sku)} />
-              <Text as="span" tone="subdued">→</Text>
-              <MappingNode label="Model" value={managementLabel} />
-              {mapping.offerId && (
-                <>
-                  <Text as="span" tone="subdued">→</Text>
-                  <MappingNode label="Offer" value={mapping.offerId} />
-                </>
-              )}
-              <Text as="span" tone="subdued">→</Text>
-              <MappingNode label="Listing" value={mapping.listingId ?? 'Not listed'} />
-            </InlineStack>
-            <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
-              <Fact label="State"><Value>{mapping.state.replaceAll('_', ' ')}</Value></Fact>
-              <Fact label="Join"><Value>Exact SKU</Value></Fact>
-              <Fact label="Shopify variant ID"><Value>{mapping.shopifyVariantId ?? '—'}</Value></Fact>
-              <Fact label="Control API"><Value>{ebayDetail?.management.controlApi ?? '—'}</Value></Fact>
-            </InlineGrid>
-          </BlockStack>
-        </Card>
+        {/* The Mapping card (join keys, gids, control API) was removed
+            2026-09-10: pure sync internals, meaningless to the operator. */}
 
         <Card>
           <BlockStack gap="400">
