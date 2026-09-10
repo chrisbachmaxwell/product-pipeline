@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Badge,
   Banner,
+  Modal,
   BlockStack,
   Button,
   Card,
@@ -14,6 +15,7 @@ import {
 } from '@shopify/polaris';
 import { useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
+import { apiClient, usePriceCheck } from '../hooks/useApi';
 import ListingDescriptionPreviewModal from '../components/ListingDescriptionPreviewModal';
 import {
   isListingDraftBoundToWorkspace,
@@ -200,6 +202,55 @@ const ListingDetail: React.FC = () => {
     }
   };
 
+  const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const priceCheck = usePriceCheck(id, priceCheckOpen);
+  const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState<
+    | { ok: true; listingId: string | null }
+    | { ok: false; message: string }
+    | null
+  >(null);
+
+  const draftRevision = currentDraft?.revision ?? null;
+  const publishReady = Boolean(
+    currentCatalog?.lifecycleStatus === 'not_listed'
+    && currentEditEligible
+    && draftRevision
+    && currentCatalog?.shopify,
+  );
+
+  const runPublish = async () => {
+    if (!currentCatalog?.shopify || !draftRevision || !id) return;
+    setPublishing(true);
+    setPublishResult(null);
+    try {
+      const result = await apiClient.post<{ status: string; listingId: string | null }>(
+        '/listing-publish',
+        {
+          catalogId: id,
+          sku: currentCatalog.shopify.sku,
+          revisionDigest: draftRevision.revisionDigest,
+        },
+      );
+      setPublishResult({ ok: true, listingId: result.listingId ?? null });
+      void workspace.refetch();
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : 'Publish failed';
+      const friendly = /REQUIRED_FIELD|PREREQUISITE/i.test(raw)
+        ? 'The draft is missing something eBay requires — category, condition, description, or photos. Add it, save, and publish again.'
+        : /NOT_ARMED/i.test(raw)
+          ? 'Publishing is not switched on for the server yet.'
+          : /BUSY/i.test(raw)
+            ? 'Another publish is still running — give it a moment.'
+            : raw;
+      setPublishResult({ ok: false, message: friendly });
+    } finally {
+      setPublishing(false);
+      setPublishConfirmOpen(false);
+    }
+  };
+
   return (
     <Page
       title={title || 'Listing'}
@@ -210,10 +261,13 @@ const ListingDetail: React.FC = () => {
           <Badge tone={listingStatusTone(catalog.lifecycleStatus)}>
             {listingStatusLabel(catalog.lifecycleStatus)}
           </Badge>
-          <Badge tone="info">Remote read only</Badge>
         </InlineStack>
       )}
-      primaryAction={ebayUrl ? {
+      primaryAction={publishReady ? {
+        content: 'Publish to eBay',
+        loading: publishing,
+        onAction: () => setPublishConfirmOpen(true),
+      } : ebayUrl ? {
         content: 'View on eBay',
         url: ebayUrl,
         external: true,
@@ -221,9 +275,9 @@ const ListingDetail: React.FC = () => {
       secondaryActions={[
         ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
         { content: 'Preview eBay description', onAction: () => setDescriptionPreviewOpen(true) },
+        { content: 'Check market prices', onAction: () => setPriceCheckOpen(true) },
         ...(shopifyUrl ? [{ content: 'View in Shopify', url: shopifyUrl, external: true }] : []),
       ]}
-      fullWidth
     >
       <BlockStack gap="400">
         <InlineStack align="end">
@@ -231,6 +285,86 @@ const ListingDetail: React.FC = () => {
             {formatVerifiedAt(observedAt)} · refreshes every minute
           </Text>
         </InlineStack>
+
+        {publishResult && (
+          <Banner
+            tone={publishResult.ok ? 'success' : 'critical'}
+            onDismiss={() => setPublishResult(null)}
+          >
+            {publishResult.ok ? (
+              <Text as="p">
+                Published to eBay.
+                {publishResult.listingId
+                  ? ` Listing ${publishResult.listingId} is live — it will appear here on the next refresh.`
+                  : ' It will appear here on the next refresh.'}
+              </Text>
+            ) : (
+              <Text as="p">{publishResult.message}</Text>
+            )}
+          </Banner>
+        )}
+
+        {publishConfirmOpen && (
+          <Modal
+            open
+            onClose={() => setPublishConfirmOpen(false)}
+            title="Publish to eBay?"
+            primaryAction={{ content: 'Publish', loading: publishing, onAction: () => { void runPublish(); } }}
+            secondaryActions={[{ content: 'Cancel', onAction: () => setPublishConfirmOpen(false) }]}
+          >
+            <Modal.Section>
+              <BlockStack gap="200">
+                <Text as="p">
+                  This creates a live eBay listing for “{title}” using the saved draft
+                  {currentCatalog?.shopify
+                    ? ` at $${currentCatalog.shopify.price.amount} · ${currentCatalog.shopify.available ?? 0} available`
+                    : ''}.
+                </Text>
+                <Text as="p" tone="subdued">
+                  Buyers can purchase immediately. You can end the listing later from eBay.
+                </Text>
+              </BlockStack>
+            </Modal.Section>
+          </Modal>
+        )}
+
+        {priceCheckOpen && (
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h3" variant="headingMd">Market prices</Text>
+                <Button variant="plain" onClick={() => setPriceCheckOpen(false)}>Close</Button>
+              </InlineStack>
+              {priceCheck.isLoading ? (
+                <Text as="p" tone="subdued">Checking current eBay listings…</Text>
+              ) : priceCheck.error || !priceCheck.data ? (
+                <Text as="p" tone="subdued">
+                  Market prices are unavailable right now. Try again in a minute.
+                </Text>
+              ) : priceCheck.data.sampleSize === 0 ? (
+                <Text as="p" tone="subdued">No comparable active listings found.</Text>
+              ) : (
+                <BlockStack gap="200">
+                  <Text as="p">
+                    {priceCheck.data.sampleSize} comparable active listings ·
+                    {' '}median {priceCheck.data.median ? `$${priceCheck.data.median}` : '—'}
+                  </Text>
+                  {priceCheck.data.comps.slice(0, 6).map((comp, index) => (
+                    <InlineStack key={index} align="space-between" blockAlign="center" gap="300">
+                      <Text as="span" variant="bodySm" truncate>{comp.title}</Text>
+                      <Text as="span" variant="bodySm" fontWeight="semibold">
+                        ${comp.price.value}
+                      </Text>
+                    </InlineStack>
+                  ))}
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Live eBay search for similar items — a sanity check, not an appraisal.
+                  </Text>
+                </BlockStack>
+              )}
+            </BlockStack>
+          </Card>
+        )}
 
         {id && (
           <ListingDescriptionPreviewModal
@@ -286,7 +420,7 @@ const ListingDetail: React.FC = () => {
               <Text as="h2" variant="headingMd">Mapping</Text>
               <InlineStack gap="200" blockAlign="center">
                 <Badge tone="attention">Owner unverified</Badge>
-                <Badge tone="info">Remote read only</Badge>
+                <Badge tone="info">Synced automatically</Badge>
               </InlineStack>
             </InlineStack>
             <InlineStack gap="300" blockAlign="center" wrap>
@@ -324,7 +458,7 @@ const ListingDetail: React.FC = () => {
               <Text as="h2" variant="headingMd">Listing</Text>
               <InlineStack gap="200" blockAlign="center">
                 <Badge tone="attention">Owner unverified</Badge>
-                <Badge tone="info">Remote read only</Badge>
+                <Badge tone="info">Synced automatically</Badge>
               </InlineStack>
             </InlineStack>
             <InlineGrid columns={{ xs: 1, sm: 2, md: 3 }} gap="400">
@@ -338,12 +472,12 @@ const ListingDetail: React.FC = () => {
                 <Value>{actual?.condition.name ?? actual?.condition.id ?? '—'}</Value>
               </Fact>
               <Fact label={mapping.ownership.price === 'marketplace_connect'
-                ? 'Price · Marketplace Connect' : 'Price'}>
+                ? 'Price · synced from Shopify' : 'Price'}>
                 <Value>{formatWorkspaceMoney(actualPrice)}</Value>
                 {priceDiffers && <Difference>{formatListingPrice(shopifyPrice)}</Difference>}
               </Fact>
               <Fact label={mapping.ownership.inventory === 'marketplace_connect'
-                ? 'Quantity · Marketplace Connect' : 'Quantity'}>
+                ? 'Quantity · synced from Shopify' : 'Quantity'}>
                 <Value>{formatListingQuantity(actualQuantity)}</Value>
                 {quantityDiffers && <Difference>{formatListingQuantity(shopifyQuantity)}</Difference>}
               </Fact>

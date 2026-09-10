@@ -54,6 +54,22 @@ function safeText(value, maximum = 512) {
 function optionalText(value, maximum = 512) {
     return value == null ? null : safeText(value, maximum);
 }
+const SAFE_PRODUCT_TAG_PATTERN = /^[a-z0-9 _-]{1,40}$/;
+const MAX_PRODUCT_TAGS_PER_PRODUCT = 20;
+/**
+ * Operator tags are free-form Shopify text, so unlike the identity fields
+ * they are sanitized by DROPPING what does not fit rather than denying the
+ * capture: each tag is lowercased and trimmed, only bounded ASCII tags are
+ * kept, and the per-product count is capped. A stray junk tag must never
+ * take the whole catalog down.
+ */
+function sanitizedProductTags(value) {
+    return Object.freeze(asArray(value)
+        .filter((tag) => typeof tag === 'string')
+        .map((tag) => tag.toLowerCase().trim())
+        .filter((tag) => SAFE_PRODUCT_TAG_PATTERN.test(tag))
+        .slice(0, MAX_PRODUCT_TAGS_PER_PRODUCT));
+}
 function asRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -201,7 +217,7 @@ const SHOPIFY_VARIANTS = `query RuntimeListingCatalogVariants($first: Int!, $aft
     nodes {
       id sku title price inventoryQuantity updatedAt image { url }
       product {
-        id title status updatedAt mediaCount { count }
+        id title status tags updatedAt mediaCount { count }
         featuredMedia { preview { image { url } } }
       }
     }
@@ -316,6 +332,7 @@ async function captureShopify(accessToken) {
                 title: safeText(product.title, 512),
                 variantTitle: safeText(node.title, 256),
                 productStatus,
+                productTags: sanitizedProductTags(product.tags),
                 primaryImageUrl,
                 imageCount: safeInteger(asRecord(product.mediaCount).count),
                 available,

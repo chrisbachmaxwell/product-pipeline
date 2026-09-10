@@ -64,3 +64,16 @@ export const useOperationalMonitoring = () => useQuery({
     queryFn: () => apiClient.get('/monitoring/digest'),
     refetchInterval: 60_000,
 });
+export const useActivity = () => useQuery({
+    queryKey: ['activity-feed'],
+    queryFn: () => apiClient.get('/activity'),
+    refetchInterval: 60_000,
+    retry: false,
+});
+export const usePriceCheck = (id, enabled) => useQuery({
+    queryKey: ['price-check', id],
+    queryFn: () => apiClient.get(`/price-check?id=${encodeURIComponent(id ?? '')}`),
+    enabled: enabled && Boolean(id),
+    staleTime: 60 * 60_000,
+    retry: false,
+});

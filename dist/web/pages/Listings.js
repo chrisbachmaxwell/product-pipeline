@@ -2,13 +2,14 @@ import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-run
 import { useEffect, useState } from 'react';
 import { Badge, BlockStack, Box, Card, EmptyState, IndexTable, InlineStack, Page, Pagination, Select, Spinner, Text, TextField, Thumbnail, } from '@shopify/polaris';
 import { ProductIcon, SearchIcon } from '@shopify/polaris-icons';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import { formatListingPrice, formatVerifiedAt, isLiveCatalogResponse, listingActionLabel, listingAttentionText, listingDisplaySku, listingDisplayTitle, listingFilterOptions, formatListingQuantity, listingSkuLabel, listingStatusLabel, listingStatusTone, verifiedListingImageUrl, } from '../operator-ui';
 const PAGE_SIZE = 25;
 const Listings = () => {
     const navigate = useNavigate();
-    const [filter, setFilter] = useState('all');
+    const [searchParams] = useSearchParams();
+    const [filter, setFilter] = useState(searchParams.get('filter') === 'ready' ? 'ready' : 'all');
     const [searchInput, setSearchInput] = useState('');
     const [search, setSearch] = useState('');
     const [offset, setOffset] = useState(0);
@@ -23,7 +24,8 @@ const Listings = () => {
     const listings = useAuthoritativeListings({
         limit: PAGE_SIZE,
         offset,
-        status: filter === 'all' ? undefined : filter,
+        status: filter === 'all' || filter === 'ready' ? undefined : filter,
+        ready: filter === 'ready' || undefined,
         search: search || undefined,
     });
     const valid = isLiveCatalogResponse(listings.data);
@@ -43,7 +45,15 @@ const Listings = () => {
                                                             setSearchInput('');
                                                             setSearch('');
                                                             setOffset(0);
-                                                        }, prefix: _jsx(SearchIcon, {}), clearButton: true, autoComplete: "off" }) }), _jsx(Box, { minWidth: "170px", children: _jsx(Select, { label: "eBay state", labelHidden: true, options: listingFilterOptions(valid ? listings.data?.summary : undefined), value: filter, onChange: (value) => {
+                                                        }, prefix: _jsx(SearchIcon, {}), clearButton: true, autoComplete: "off" }) }), _jsx(Box, { minWidth: "170px", children: _jsx(Select, { label: "eBay state", labelHidden: true, options: [
+                                                            ...listingFilterOptions(valid ? listings.data?.summary : undefined),
+                                                            {
+                                                                label: `Ready to list${typeof listings.data?.summary?.readyToList === 'number'
+                                                                    ? ` (${listings.data.summary.readyToList})`
+                                                                    : ''}`,
+                                                                value: 'ready',
+                                                            },
+                                                        ], value: filter, onChange: (value) => {
                                                             setFilter(value);
                                                             setOffset(0);
                                                         } }) })] }), valid && (_jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: listings.isPlaceholderData

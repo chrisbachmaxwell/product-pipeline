@@ -325,3 +325,50 @@ export const useOperationalMonitoring = () =>
     queryFn: () => apiClient.get<OperationalMonitoringResponse>('/monitoring/digest'),
     refetchInterval: 60_000,
   });
+
+/** One plain-English line per recent sync event (read-only). */
+export interface ActivityEvent {
+  atUtc: string;
+  kind: 'order_imported' | 'listing_ended' | 'listing_relisted' | 'quantity_updated'
+    | 'price_updated' | 'tracking_sent' | 'listing_created';
+  label: string;
+  sku?: string;
+  ebayOrderId?: string;
+  listingId?: string;
+}
+
+export interface ActivityResponse {
+  schemaVersion: 1;
+  available?: boolean;
+  events: ActivityEvent[];
+  windowHours: number;
+  generatedAtUtc: string;
+  externalWritesPerformed: 0;
+}
+
+export const useActivity = () =>
+  useQuery({
+    queryKey: ['activity-feed'],
+    queryFn: () => apiClient.get<ActivityResponse>('/activity'),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
+export interface PriceCheckResponse {
+  schemaVersion: 1;
+  query: string;
+  median: string | null;
+  currency: string | null;
+  sampleSize: number;
+  comps: Array<{ title: string; price: { value: string; currency: string }; condition: string }>;
+  externalWritesPerformed: 0;
+}
+
+export const usePriceCheck = (id: string | undefined, enabled: boolean) =>
+  useQuery({
+    queryKey: ['price-check', id],
+    queryFn: () => apiClient.get<PriceCheckResponse>(`/price-check?id=${encodeURIComponent(id ?? '')}`),
+    enabled: enabled && Boolean(id),
+    staleTime: 60 * 60_000,
+    retry: false,
+  });

@@ -164,15 +164,27 @@ const DraftTextField: React.FC<{
   />
 );
 
+/** Money and quantity may arrive as raw JSON strings; show them like money. */
+const formatCompareValue = (raw: string | null): string => {
+  if (raw === null) return '—';
+  try {
+    const parsed = JSON.parse(raw) as { amount?: string; currency?: string };
+    if (parsed && typeof parsed.amount === 'string') {
+      return `$${parsed.amount}${parsed.currency && parsed.currency !== 'USD' ? ` ${parsed.currency}` : ''}`;
+    }
+  } catch { /* plain string */ }
+  return raw;
+};
+
 const ReadOnlyCompare: React.FC<{ label: string; field: ListingDraftField }> = ({ label, field }) => (
   <BlockStack gap="100">
     <Text as="p" variant="bodySm" tone="subdued">{label}</Text>
-    <Text as="p" fontWeight="medium">{field.ebay ?? field.shopify ?? '—'}</Text>
+    <Text as="p" fontWeight="medium">{formatCompareValue(field.ebay ?? field.shopify)}</Text>
     {field.ebay !== null && field.shopify !== null && field.ebay !== field.shopify && (
-      <Text as="p" variant="bodySm" tone="subdued">Shopify: {field.shopify}</Text>
+      <Text as="p" variant="bodySm" tone="subdued">Shopify: {formatCompareValue(field.shopify)}</Text>
     )}
     <Text as="p" variant="bodySm" tone="subdued">
-      Synced by Marketplace Connect — not editable here
+      Synced from Shopify automatically
     </Text>
   </BlockStack>
 );

@@ -12,6 +12,8 @@ export const useAuthoritativeListings = (params) => useQuery({
             searchParams.set('search', params.search);
         if (params?.status)
             searchParams.set('status', params.status);
+        if (params?.ready)
+            searchParams.set('ready', '1');
         if (params?.id)
             searchParams.set('id', params.id);
         const query = searchParams.toString();

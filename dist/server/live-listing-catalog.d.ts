@@ -7,6 +7,12 @@ export type CapturedShopifyVariant = Readonly<{
     title: string;
     variantTitle: string;
     productStatus: string;
+    /**
+     * Sanitized operator tags (lowercased, bounded); `ready` marks the
+     * operator's ready-to-list queue. Optional so pre-existing captures and
+     * fixtures stay byte-identical; absent means no tags were observed.
+     */
+    productTags?: readonly string[];
     primaryImageUrl: string | null;
     imageCount: number;
     available: number | null;
@@ -116,6 +122,8 @@ export type LiveListingCatalogRow = Readonly<{
         title: string;
         variantTitle: string;
         productStatus: string;
+        /** Always set on built rows; optional so pre-existing fixtures compile. */
+        productTags?: readonly string[];
         primaryImageUrl: string | null;
         imageCount: number;
         available: number | null;
@@ -136,6 +144,14 @@ export type LiveListingCatalogRow = Readonly<{
         unpublishedArtifactCount: number;
     }>;
     lifecycleStatus: LiveListingStatus;
+    /**
+     * Operator-tagged `ready` queue: the product carries the `ready` tag, is
+     * ACTIVE with positive known stock, has no active eBay match and no eBay
+     * artifacts, and its SKU is present and unambiguous (zero attention
+     * reasons). Purely computed — never a write trigger. Always set on built
+     * rows; optional so pre-existing fixtures compile (absent means false).
+     */
+    readyToList?: boolean;
     lastVerifiedAtUtc: string;
     audit: Readonly<{
         verified: boolean;
@@ -158,6 +174,7 @@ export type LiveListingCatalogSnapshot = Readonly<{
         unknown: number;
         totalInStock: number;
         totalVisible: number;
+        readyToList: number;
     }>;
     coverage: LiveCatalogCoverage;
 }>;
@@ -198,6 +215,8 @@ export declare function projectLiveListingCatalogPage(snapshot: LiveListingCatal
     offset: number;
     search?: string;
     status?: LiveListingStatus;
+    /** When true, only rows whose readyToList is true are served. */
+    ready?: boolean;
     id?: string;
     nowEpochMs?: number;
     maxAgeMs?: number;

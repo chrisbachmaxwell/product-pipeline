@@ -151,6 +151,20 @@ export function isReadOnlyHttpMethod(method) {
 export function isExactLocalDraftAppend(method, originalUrl) {
     return method === 'POST' && originalUrl === '/api/listing-draft';
 }
+/**
+ * The one publish exception. The handler behind it performs no provider
+ * write in this process: it spawns the standalone listing-lifecycle-admin
+ * ceremonies (preflight-create → dispatch-create), which enforce the exact
+ * approved draft revision, idempotent intent, single-use approval, and
+ * post-dispatch reconciliation. The operator's authenticated Shopify-session
+ * click is the one-action approval; the route additionally requires the
+ * exact store session (see routes/listing-publish.ts) and refuses unless the
+ * operator has armed PUBLISH_*_ARGV on the server. Added 2026-09-10 when the
+ * operator required publishing from the UI.
+ */
+export function isExactListingPublish(method, originalUrl) {
+    return method === 'POST' && originalUrl === '/api/listing-publish';
+}
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(req, res, next) {
     if (isReadOnlyHttpMethod(req.method)) {
@@ -158,6 +172,10 @@ export function writerQuarantineMiddleware(req, res, next) {
         return;
     }
     if (isExactLocalDraftAppend(req.method, req.originalUrl || '')) {
+        next();
+        return;
+    }
+    if (isExactListingPublish(req.method, req.originalUrl || '')) {
         next();
         return;
     }

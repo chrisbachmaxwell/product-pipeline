@@ -525,14 +525,14 @@ describe('stocked listings operator UI', () => {
     }, catalog.id)).toBe(false);
   });
 
-  it('labels only price and inventory as Marketplace Connect owned', () => {
+  it('labels price and inventory as synced from Shopify', () => {
     const source = readFileSync(
       fileURLToPath(new URL('./pages/ListingDetail.tsx', import.meta.url)),
       'utf8',
     );
     expect(source).toContain('Owner unverified');
-    expect(source).toContain('Price · Marketplace Connect');
-    expect(source).toContain('Quantity · Marketplace Connect');
+    expect(source).toContain('Price · synced from Shopify');
+    expect(source).toContain('Quantity · synced from Shopify');
     expect(source).not.toMatch(/<Badge[^>]*>Marketplace Connect<\/Badge>/u);
   });
 });

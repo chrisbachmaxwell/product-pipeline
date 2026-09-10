@@ -182,6 +182,11 @@ router.get('/api/authoritative-listings', async (req: Request, res: Response) =>
     res.status(400).json({ error: 'Invalid listing status filter' });
     return;
   }
+  const rawReady = String(req.query.ready ?? '').trim();
+  if (rawReady && rawReady !== '1') {
+    res.status(400).json({ error: 'Invalid ready filter' });
+    return;
+  }
 
   try {
     const limit = boundedInteger(req.query.limit, 50, 1, 100);
@@ -198,6 +203,7 @@ router.get('/api/authoritative-listings', async (req: Request, res: Response) =>
       search,
       id,
       status: rawStatus ? rawStatus as LiveListingStatus : undefined,
+      ready: rawReady === '1' ? true : undefined,
       refreshFailed,
     }));
   } catch {
