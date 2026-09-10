@@ -337,10 +337,10 @@ describe('trading-model listing-revise dispatch', () => {
             '--evidence-digest', `sha256:${'a'.repeat(64)}`,
         ]);
         await world.run(['preflight', ...targetArguments(world.revision.revisionDigest),
-            '--description-template', 'ucg-branded-v1']);
+            '--description-template', 'ucg-branded-v2']);
         const manifestDigest = lastJson(world.stdout).manifestDigest;
         await world.run(['dispatch', ...targetArguments(world.revision.revisionDigest),
-            '--description-template', 'ucg-branded-v1',
+            '--description-template', 'ucg-branded-v2',
             '--manifest-digest', manifestDigest,
             '--migration-store', world.migrationDatabasePath,
         ]);
@@ -353,7 +353,7 @@ describe('trading-model listing-revise dispatch', () => {
             externalCommerceWritesAttempted: 1,
         });
         expect(world.requests).toHaveLength(1);
-        expect(world.requests[0].body).toContain('&lt;!-- template:ucg-branded-v1 --&gt;');
+        expect(world.requests[0].body).toContain('&lt;!-- template:ucg-branded-v2 --&gt;');
         expect(world.requests[0].body).not.toMatch(NO_PRICE_OR_QUANTITY);
     });
     it('keeps one-byte branded-description drift partial and unresolved', async () => {
@@ -369,10 +369,10 @@ describe('trading-model listing-revise dispatch', () => {
             '--evidence-digest', `sha256:${'a'.repeat(64)}`,
         ]);
         await world.run(['preflight', ...targetArguments(world.revision.revisionDigest),
-            '--description-template', 'ucg-branded-v1']);
+            '--description-template', 'ucg-branded-v2']);
         const manifestDigest = lastJson(world.stdout).manifestDigest;
         await world.run(['dispatch', ...targetArguments(world.revision.revisionDigest),
-            '--description-template', 'ucg-branded-v1',
+            '--description-template', 'ucg-branded-v2',
             '--manifest-digest', manifestDigest,
             '--migration-store', world.migrationDatabasePath,
         ]);
@@ -386,7 +386,7 @@ describe('trading-model listing-revise dispatch', () => {
             externalCommerceWritesAttempted: 1,
         });
         await world.run(['reconcile', ...targetArguments(world.revision.revisionDigest),
-            '--description-template', 'ucg-branded-v1',
+            '--description-template', 'ucg-branded-v2',
             '--migration-store', world.migrationDatabasePath,
             '--job-id', dispatched.jobId,
             '--attempt-id', dispatched.attemptId,
@@ -495,7 +495,7 @@ describe('trading-model listing-revise dispatch', () => {
     it('serializes a templated branded description as bounded, escaped XML text', async () => {
         const { renderListingDescription } = await import('../../server/listing-description-template.js');
         const rendered = renderListingDescription({
-            templateVersion: 'ucg-branded-v1',
+            templateVersion: 'ucg-branded-v2',
             title: 'Nikon 50mm f/1.8 AI-s (#204) *USED*',
             bodyHtml: '<p>Freshly serviced &amp; film tested.</p>',
             conditionId: '3000',
@@ -507,7 +507,7 @@ describe('trading-model listing-revise dispatch', () => {
             listingId: LISTING_ID,
             changes: [{ field: 'description', after: rendered }],
         });
-        expect(xml).toContain('&lt;!-- template:ucg-branded-v1 --&gt;');
+        expect(xml).toContain('&lt;!-- template:ucg-branded-v2 --&gt;');
         // The rendered HTML rides as escaped XML text: no raw HTML tag survives.
         expect(xml).not.toContain('<style>');
         expect(xml).not.toContain('<div');

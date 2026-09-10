@@ -1,4 +1,4 @@
-export declare const LISTING_DESCRIPTION_TEMPLATE_VERSION = "ucg-branded-v1";
+export declare const LISTING_DESCRIPTION_TEMPLATE_VERSION = "ucg-branded-v2";
 export type ListingDescriptionTemplateInput = Readonly<{
     templateVersion: typeof LISTING_DESCRIPTION_TEMPLATE_VERSION;
     title: string;

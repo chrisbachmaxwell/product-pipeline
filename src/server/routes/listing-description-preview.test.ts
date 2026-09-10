@@ -163,10 +163,12 @@ describe('GET /api/listing-description-preview', () => {
     expect(requested).toEqual([CATALOG_ID]);
     expect(response.status).toBe(200);
     expect(Object.keys(response.body).sort()).toEqual(['html', 'templateVersion']);
-    expect(response.body.templateVersion).toBe('ucg-branded-v1');
+    expect(response.body.templateVersion).toBe('ucg-branded-v2');
     const html = response.body.html as string;
-    expect(html.startsWith('<!-- template:ucg-branded-v1 -->')).toBe(true);
-    expect(html).toContain('Canon 35-70mm f/3.5-4.5 FD Zoom (#119) *USED*');
+    expect(html.startsWith('<!-- template:ucg-branded-v2 -->')).toBe(true);
+    // Source-first, exactly like the publish manifest: the Shopify title is
+    // what a publish/revise would push, so it is what the preview shows.
+    expect(html).toContain('<h1 class="ucg-title">Shopify Title</h1>');
     expect(html).toContain('<span class="ucg-condition">Used</span>');
     expect(html).toContain('SKU: CAN3570-U119');
     // The observed plain-text description is escaped into one paragraph.
@@ -228,8 +230,8 @@ describe('GET /api/listing-description-preview', () => {
 
   it('builds the exact deterministic template input from the draft DTO', () => {
     expect(buildListingDescriptionPreviewInput(draftDto())).toEqual({
-      templateVersion: 'ucg-branded-v1',
-      title: 'Canon 35-70mm f/3.5-4.5 FD Zoom (#119) *USED*',
+      templateVersion: 'ucg-branded-v2',
+      title: 'Shopify Title',
       bodyHtml: '<p>Observed plain text with &lt;angle&gt; &amp; ampersand.</p>',
       conditionId: '3000',
       conditionNote: 'Excellent condition.',

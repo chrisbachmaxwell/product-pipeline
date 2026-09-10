@@ -87,7 +87,7 @@ still stales the draft and denies dispatch.
 
 ## Branded description template
 
-An opt-in `--description-template ucg-branded-v1` flag on `preflight`,
+An opt-in `--description-template ucg-branded-v2` flag on `preflight`,
 `dispatch`, and `reconcile` wraps the draft's allowlisted description in our
 own branded page (replacing the Marketplace Connect/Codisto shell):
 usedcameragear.com wordmark header, H1 title, condition badge, the draft's
@@ -99,7 +99,7 @@ iframes, forms, event handlers, `javascript:` urls, external styles, or
 
 - Rendering is `renderListingDescription` in
   `src/server/listing-description-template.ts`: deterministic (byte-identical
-  output for identical input, `<!-- template:ucg-branded-v1 -->` marker),
+  output for identical input, `<!-- template:ucg-branded-v2 -->` marker),
   fail-closed validated, and bounded to 400,000 bytes.
 - The template input derives from the same stored revision the manifest
   derives from (title/condition/condition note/images use the revision's
@@ -111,7 +111,7 @@ iframes, forms, event handlers, `javascript:` urls, external styles, or
 - Templating applies only when the manifest carries a `description` change;
   otherwise the manifest passes through unchanged (`applied: false`).
 - Without the flag, behavior is byte-identical to the untemplated CLI. Any
-  flag value other than the literal `ucg-branded-v1` is denied as
+  flag value other than the literal `ucg-branded-v2` is denied as
   `REVISE_TEMPLATE_UNSUPPORTED`. Both management models are supported — the
   rendered page is simply a larger description string, still subject to the
   adapters' existing payload bounds (oversized renders deny cleanly, never

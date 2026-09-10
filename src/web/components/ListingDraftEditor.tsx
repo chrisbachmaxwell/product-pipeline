@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { SaveBar } from '@shopify/app-bridge-react';
 import {
   Badge,
   Banner,
@@ -9,7 +10,6 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
-  Modal,
   Text,
   TextField,
   Thumbnail,
@@ -491,10 +491,97 @@ const ListingDraftEditor: React.FC<Props> = ({
     );
   };
 
+  const discard = () => {
+    setSaveError(false);
+    setValues(initial);
+    setImages(effectiveDraftImages(editBase.sections.content.images));
+    setImagesDirty(false);
+    setNewImageUrl('');
+    setDescriptionHtml(initial.description === null
+      ? currentDescriptionHtml
+      : sanitizeListingHtml(initial.description));
+    setPreviewOpen(false);
+  };
+
   return (
     <BlockStack gap="400">
+      {/* Shopify's own contextual save bar, rendered by the admin OUTSIDE
+          this iframe. position:sticky/fixed cannot work inside the embedded
+          iframe (it is as tall as its content and never scrolls), which is
+          why the previous in-page attempt shipped as nothing. App Bridge
+          also arms leave-page protection while the bar is open. */}
+      <SaveBar id="listing-draft-save-bar" open={hasChanges}>
+        <button
+          variant="primary"
+          disabled={!draftInputValid || invalidImage || saving ? true : undefined}
+          loading={saving ? '' : undefined}
+          onClick={() => { void submit(); }}
+        />
+        <button disabled={saving ? true : undefined} onClick={discard} />
+      </SaveBar>
       {statusCard}
       <BlockStack gap="400">
+        {hasChanges && (
+          <Card>
+            <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+              <Text as="span" fontWeight="medium">Unsaved changes</Text>
+              <InlineStack gap="200">
+                <Button
+                  onClick={() => setPreviewOpen((current) => !current)}
+                  disabled={saving}
+                >
+                  {previewOpen ? 'Hide changes' : 'Review changes'}
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() => { void submit(); }}
+                  loading={saving}
+                  disabled={!draftInputValid || invalidImage}
+                >
+                  Save draft
+                </Button>
+              </InlineStack>
+            </InlineStack>
+          </Card>
+        )}
+        {previewOpen && hasChanges && (
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h3" variant="headingMd">Draft changes</Text>
+                <Button variant="plain" onClick={() => setPreviewOpen(false)}>Close</Button>
+              </InlineStack>
+              <Banner tone="info"><Text as="p">Preview only. Nothing will be applied.</Text></Banner>
+              {changes.map((change) => (
+                <Box
+                  key={change.label}
+                  background="bg-surface-secondary"
+                  borderRadius="200"
+                  padding="300"
+                >
+                  <BlockStack gap="150">
+                    <InlineStack gap="200" blockAlign="center">
+                      <Text as="h3" variant="headingSm">{change.label}</Text>
+                      <Badge tone="attention">Changed</Badge>
+                    </InlineStack>
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="200">
+                      <BlockStack gap="050">
+                        <Text as="p" variant="bodySm" tone="subdued">Before</Text>
+                        <Text as="p" tone="subdued" textDecorationLine="line-through">
+                          {change.before}
+                        </Text>
+                      </BlockStack>
+                      <BlockStack gap="050">
+                        <Text as="p" variant="bodySm" tone="subdued">After</Text>
+                        <Text as="p" fontWeight="medium">{change.after}</Text>
+                      </BlockStack>
+                    </InlineGrid>
+                  </BlockStack>
+                </Box>
+              ))}
+            </BlockStack>
+          </Card>
+        )}
 
         {saveError && (
           <Banner tone="critical">
@@ -768,45 +855,6 @@ const ListingDraftEditor: React.FC<Props> = ({
           <Button onClick={onCancel} disabled={saving}>Close</Button>
         </InlineStack>
 
-        <Modal
-          open={previewOpen}
-          onClose={() => setPreviewOpen(false)}
-          title="Draft changes"
-          primaryAction={{ content: 'Close', onAction: () => setPreviewOpen(false) }}
-        >
-          <Modal.Section>
-            <BlockStack gap="300">
-              <Banner tone="info"><Text as="p">Preview only. Nothing will be applied.</Text></Banner>
-              {changes.map((change) => (
-                <Box
-                  key={change.label}
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                  padding="300"
-                >
-                  <BlockStack gap="150">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Text as="h3" variant="headingSm">{change.label}</Text>
-                      <Badge tone="attention">Changed</Badge>
-                    </InlineStack>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="200">
-                      <BlockStack gap="050">
-                        <Text as="p" variant="bodySm" tone="subdued">Before</Text>
-                        <Text as="p" tone="subdued" textDecorationLine="line-through">
-                          {change.before}
-                        </Text>
-                      </BlockStack>
-                      <BlockStack gap="050">
-                        <Text as="p" variant="bodySm" tone="subdued">After</Text>
-                        <Text as="p" fontWeight="medium">{change.after}</Text>
-                      </BlockStack>
-                    </InlineGrid>
-                  </BlockStack>
-                </Box>
-              ))}
-            </BlockStack>
-          </Modal.Section>
-        </Modal>
       </BlockStack>
     </BlockStack>
   );

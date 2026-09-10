@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isAllowlistedListingHtml } from '../shared/listing-html.js';
+import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
 import {
   ListingControlStoreError,
   deriveListingBaseDigests,
@@ -351,6 +351,23 @@ function htmlToPlainText(value: string | null): string | null {
     .replace(/\s+/gu, ' ').trim();
   return decoded.length === 0 ? null : decoded;
 }
+/**
+ * Shopify's rich description, converted to the shared attribute-free
+ * allowlist so buyers keep the merchant's headings, bold text, and bullet
+ * lists (Marketplace Connect preserved these; flattening them was a real
+ * regression buyers could see). Falls back to the plain-text flattening when
+ * sanitization cannot produce allowlisted markup.
+ */
+function richDescription(value: string | null): string | null {
+  if (value === null) return null;
+  const sanitized = sanitizeListingHtml(value).trim();
+  if (sanitized.length > 0) return sanitized;
+  // Flattening decodes entities, so re-escape: the field's consumers treat
+  // it as HTML and the allowlist rejects stray tag-like text otherwise.
+  const flat = htmlToPlainText(value);
+  if (flat === null) return null;
+  return flat.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 function money(value: { value?: string; amount?: string; currency: string } | null): string | null {
   if (!value) return null;
   return json({ amount: value.value ?? value.amount, currency: value.currency });
@@ -460,7 +477,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     //
     // These remain the SOURCE layer, so they are defaults: an operator
     // override still wins for any individual listing.
-    description: htmlToPlainText(workspace.shopifyContent?.descriptionHtml ?? null),
+    description: richDescription(workspace.shopifyContent?.descriptionHtml ?? null),
     images: workspace.shopifyContent && workspace.shopifyContent.imageUrls.length > 0
       ? json([...workspace.shopifyContent.imageUrls])
       : null,
