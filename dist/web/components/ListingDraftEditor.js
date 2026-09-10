@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge, Banner, BlockStack, Box, Button, Card, InlineGrid, InlineStack, Modal, Text, TextField, Thumbnail, } from '@shopify/polaris';
 import { canonicalDraftImages, canonicalDraftItemSpecifics, draftFieldValue, effectiveDraftImages, inheritedFieldValue, isListingDraftSaveInput, parseDraftImages, verifiedDraftImageUrl, } from '../hooks/useListingDraft';
 import { emptyListingEditorMetadata, useListingEditorMetadata, } from '../hooks/useListingEditorMetadata';
@@ -123,7 +123,7 @@ const SpecificsRows = ({ label, changed, raw, editable, error, onChange }) => {
     }
     return (_jsxs(BlockStack, { gap: "200", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Text, { as: "span", fontWeight: "medium", children: label }), changed && _jsx(Badge, { tone: "attention", children: "Changed" })] }), _jsx(Button, { variant: "plain", disabled: !editable || rows.length >= 50, onClick: () => emit([...rows, { name: '', value: '' }]), children: "Add row" })] }), error && _jsx(Text, { as: "p", variant: "bodySm", tone: "critical", children: error }), rows.length === 0 && (_jsx(Text, { as: "p", tone: "subdued", children: "Add details buyers filter by \u2014 Brand, Model, Type, Mount\u2026" })), rows.map((row, index) => (_jsxs(InlineStack, { gap: "200", blockAlign: "center", wrap: false, children: [_jsx("div", { style: { flex: 1 }, children: _jsx(TextField, { label: "Name", labelHidden: true, placeholder: "Name (e.g. Brand)", value: row.name, disabled: !editable, onChange: (value) => emit(rows.map((entry, entryIndex) => entryIndex === index ? { ...entry, name: value } : entry)), autoComplete: "off" }) }), _jsx("div", { style: { flex: 2 }, children: _jsx(TextField, { label: "Value", labelHidden: true, placeholder: "Value (e.g. Canon)", value: row.value, disabled: !editable, onChange: (value) => emit(rows.map((entry, entryIndex) => entryIndex === index ? { ...entry, value } : entry)), autoComplete: "off" }) }), _jsx(Button, { variant: "plain", tone: "critical", disabled: !editable, onClick: () => emit(rows.filter((_, entryIndex) => entryIndex !== index)), accessibilityLabel: `Remove specific ${index + 1}`, children: "Remove" })] }, String(index))))] }));
 };
-const ListingDraftEditor = ({ draft, saving, onCancel, onSave, statusCard }) => {
+const ListingDraftEditor = ({ draft, saving, onCancel, onSave, statusCard, onDraftStateChange, }) => {
     const [newImageUrl, setNewImageUrl] = useState('');
     const [editBase] = useState(draft);
     const initial = useMemo(() => initialValues(editBase), [editBase]);
@@ -200,6 +200,10 @@ const ListingDraftEditor = ({ draft, saving, onCancel, onSave, statusCard }) => 
         });
     }
     const hasChanges = changes.length > 0;
+    useEffect(() => {
+        onDraftStateChange?.({ dirty: hasChanges, descriptionHtml });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasChanges, descriptionHtml]);
     const normalizedValues = fields.reduce((result, [key, , field]) => ({
         ...result,
         [key]: isSemanticScalarChange(field, initial[key], values[key]) ? values[key] : initial[key],

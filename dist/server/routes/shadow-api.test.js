@@ -366,16 +366,19 @@ describe('shadow API allowlist', () => {
         const unfiltered = await requestShadowJson('/api/authoritative-listings', readyRouter);
         expect(unfiltered).toMatchObject({
             status: 200,
-            body: { total: 2, summary: { notListed: 2, readyToList: 1 } },
+            body: { total: 2, summary: { notListed: 2, readyToList: 2 } },
         });
         const ready = await requestShadowJson('/api/authoritative-listings?ready=1', readyRouter);
         expect(ready.status).toBe(200);
-        expect(ready.body.total).toBe(1);
-        expect(ready.body.data).toEqual([expect.objectContaining({
+        expect(ready.body.total).toBe(2);
+        expect(ready.body.data).toEqual(expect.arrayContaining([expect.objectContaining({
                 readyToList: true,
-                shopify: expect.objectContaining({ sku: 'READY-1', productTags: ['ready'] }),
-            })]);
-        expect(ready.body.summary.readyToList).toBe(1);
+                shopify: expect.objectContaining({ sku: 'READY-1' }),
+            }), expect.objectContaining({
+                readyToList: true,
+                shopify: expect.objectContaining({ sku: 'PLAIN-1' }),
+            })]));
+        expect(ready.body.summary.readyToList).toBe(2);
         const invalidReady = await requestShadowJson('/api/authoritative-listings?ready=yes', readyRouter);
         expect(invalidReady).toEqual({ status: 400, body: { error: 'Invalid ready filter' } });
     });

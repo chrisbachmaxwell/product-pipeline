@@ -225,21 +225,18 @@ describe('live listing catalog truth reducer', () => {
     expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
   });
 
-  it('marks a ready-tagged, in-stock, unlisted row readyToList and counts it', () => {
+  it('marks ANY active in-stock unlisted row readyToList — no tag required', () => {
+    // Operator's rule (2026-09-10): if an item goes active in Shopify it
+    // should be on eBay. The earlier `ready`-tag gate is gone.
     const built = snapshot({ variants: [
-      variant({ productTags: ['ready', 'lens'] }),
+      variant({ productTags: ['lens'] }),
       variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED' }),
     ] });
-    const tagged = built.rows.find((row) => row.shopify?.sku === 'SAFE-SKU')!;
-    const untagged = built.rows.find((row) => row.shopify?.sku === 'UNTAGGED')!;
-    expect(tagged).toMatchObject({
-      lifecycleStatus: 'not_listed',
-      readyToList: true,
-      shopify: { productTags: ['ready', 'lens'] },
-    });
-    // Untagged in-stock unlisted row stays out of the queue.
-    expect(untagged).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: false });
-    expect(built.summary.readyToList).toBe(1);
+    const first = built.rows.find((row) => row.shopify?.sku === 'SAFE-SKU')!;
+    const second = built.rows.find((row) => row.shopify?.sku === 'UNTAGGED')!;
+    expect(first).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: true });
+    expect(second).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: true });
+    expect(built.summary.readyToList).toBe(2);
   });
 
   it('never marks a ready-tagged row without positive known stock readyToList', () => {
@@ -281,7 +278,7 @@ describe('live listing catalog truth reducer', () => {
   it('serves only readyToList rows under the ready filter and zeroes the queue when stale', () => {
     const built = snapshot({ variants: [
       variant({ productTags: ['ready'] }),
-      variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED' }),
+      variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED', available: 0 }),
     ] });
     const page = projectLiveListingCatalogPage(built, {
       limit: 50, offset: 0, ready: true, nowEpochMs: Date.parse(observedAtUtc),

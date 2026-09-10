@@ -115,6 +115,9 @@ const ListingDetail: React.FC = () => {
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
   const priceCheck = usePriceCheck(id, priceCheckOpen);
   const [publishConfirmOpen, setPublishConfirmOpen] = useState(false);
+  const [draftState, setDraftState] = useState<{ dirty: boolean; descriptionHtml: string | null }>(
+    { dirty: false, descriptionHtml: null },
+  );
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<
     | { ok: true; listingId: string | null }
@@ -384,7 +387,8 @@ const ListingDetail: React.FC = () => {
           <ListingDescriptionPreviewModal
             catalogId={id}
             open={descriptionPreviewOpen}
-            hasUnsavedChanges={editing}
+            hasUnsavedChanges={draftState.dirty}
+            draftDescriptionHtml={draftState.descriptionHtml}
             onClose={() => setDescriptionPreviewOpen(false)}
           />
         )}
@@ -393,6 +397,7 @@ const ListingDetail: React.FC = () => {
           <ListingDraftEditor
             draft={validDraft}
             saving={saveDraft.isPending}
+            onDraftStateChange={setDraftState}
             statusCard={(
               <Card>
                 <InlineStack align="space-between" blockAlign="center" gap="300">

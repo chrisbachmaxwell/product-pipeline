@@ -8,6 +8,11 @@ interface Props {
     onSave: (input: ListingDraftSaveInput) => Promise<unknown>;
     /** Rendered above the editor (e.g. the Publish card). */
     statusCard?: React.ReactNode;
+    /** Reports the live edit state so the page can keep previews truthful. */
+    onDraftStateChange?: (state: {
+        dirty: boolean;
+        descriptionHtml: string | null;
+    }) => void;
 }
 export declare const initialDraftValues: (draft: ListingDraftResponse) => EditableValues;
 export declare const buildListingDraftSaveInput: (draft: ListingDraftResponse, values: EditableValues, images: string | null) => ListingDraftSaveInput;
