@@ -1,5 +1,6 @@
 import { parseStringPromise } from 'xml2js';
 import { loadEbayCredentials } from '../config/credentials.js';
+import { createListingCatalogSnapshotStore } from './listing-catalog-snapshot-store.js';
 import { warn } from '../utils/logger.js';
 import { openShadowDatabase } from './shadow-db.js';
 import { buildLiveListingCatalogSnapshot, LiveListingCatalogError, } from './live-listing-catalog.js';
@@ -767,6 +768,15 @@ export function createLiveListingCatalogCache(capture, options = {}) {
     const now = options.now ?? Date.now;
     const ttlMs = options.ttlMs ?? SNAPSHOT_TTL_MS;
     let cached = null;
+    const persisted = options.persist?.load() ?? null;
+    if (persisted) {
+        const persistedAt = Date.parse(persisted.observedAtUtc);
+        cached = {
+            value: persisted,
+            refreshedAt: Number.isNaN(persistedAt) ? 0 : persistedAt,
+            expiresAt: 0,
+        };
+    }
     let flight = null;
     let lastAttemptAt = null;
     let lastFailureAt = null;
@@ -780,6 +790,7 @@ export function createLiveListingCatalogCache(capture, options = {}) {
             const refreshedAt = now();
             cached = { value, refreshedAt, expiresAt: refreshedAt + ttlMs };
             lastFailureAt = null;
+            options.persist?.save(value);
             return value;
         }
         catch (error) {
@@ -831,7 +842,7 @@ export function hasUnresolvedLiveListingRefreshFailure(status) {
     return status?.lastFailureAtEpochMs !== null
         && status?.lastFailureAtEpochMs !== undefined;
 }
-export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
+export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog, { persist: createListingCatalogSnapshotStore() });
 // The scheduled census is a BACKSTOP for missed events, not the freshness
 // mechanism: Shopify webhooks and eBay push notifications refresh the
 // snapshot the moment something changes, and UI reads refresh on the TTL.

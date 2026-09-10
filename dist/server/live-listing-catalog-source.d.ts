@@ -79,6 +79,17 @@ export declare function captureLiveListingCatalog(): Promise<LiveListingCatalogS
 export declare function createLiveListingCatalogCache(capture: () => Promise<LiveListingCatalogSnapshot>, options?: Readonly<{
     now?: () => number;
     ttlMs?: number;
+    /**
+     * Optional disk persistence for the last good snapshot. A persisted
+     * copy seeds the cache ALREADY EXPIRED: every read still attempts a
+     * live capture first and only falls back to the seed when the capture
+     * fails — so a restart during a provider outage degrades to labeled
+     * stale data instead of a blank app (2026-09-10).
+     */
+    persist?: Readonly<{
+        load: () => LiveListingCatalogSnapshot | null;
+        save: (snapshot: LiveListingCatalogSnapshot) => void;
+    }>;
 }>): (() => Promise<LiveListingCatalogSnapshot>) & {
     refresh: () => Promise<LiveListingCatalogSnapshot>;
     refreshIfStale: (maxAgeMs: number) => Promise<LiveListingCatalogSnapshot>;

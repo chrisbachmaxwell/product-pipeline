@@ -71,10 +71,24 @@ const Dashboard: React.FC = () => {
   const attention = summary?.attention ?? null;
   const unknown = summary?.unknown ?? null;
 
+  // A served snapshot can be an honest-but-old fallback (restart during a
+  // provider outage): label its age instead of pretending it is current.
+  const observedAgeMs = valid && listings.data
+    ? Date.now() - new Date(listings.data.observedAtUtc).getTime()
+    : null;
+  const stale = observedAgeMs !== null && observedAgeMs > 20 * 60_000;
+  const staleLabel = observedAgeMs !== null
+    ? new Date(Date.now() - observedAgeMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null;
+
   let heroTone: 'success' | 'warning' | 'critical' = 'success';
   let heroHeading = 'Everything is synced';
   let heroBody = 'Your eBay listings match Shopify.';
-  if (unavailable) {
+  if (stale) {
+    heroTone = 'warning';
+    heroHeading = 'Showing last known eBay state';
+    heroBody = `Live checks are paused — this is what eBay looked like at ${staleLabel}. Refreshing resumes automatically.`;
+  } else if (unavailable) {
     heroTone = 'warning';
     heroHeading = 'Checking eBay…';
     heroBody = 'Live status is temporarily unavailable. Syncing continues in the background.';

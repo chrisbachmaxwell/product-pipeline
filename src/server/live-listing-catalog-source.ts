@@ -1,5 +1,6 @@
 import { parseStringPromise } from 'xml2js';
 import { loadEbayCredentials } from '../config/credentials.js';
+import { createListingCatalogSnapshotStore } from './listing-catalog-snapshot-store.js';
 import { warn } from '../utils/logger.js';
 import { openShadowDatabase } from './shadow-db.js';
 import {
@@ -845,7 +846,21 @@ export async function captureLiveListingCatalog(): Promise<LiveListingCatalogSna
 
 export function createLiveListingCatalogCache(
   capture: () => Promise<LiveListingCatalogSnapshot>,
-  options: Readonly<{ now?: () => number; ttlMs?: number }> = {},
+  options: Readonly<{
+    now?: () => number;
+    ttlMs?: number;
+    /**
+     * Optional disk persistence for the last good snapshot. A persisted
+     * copy seeds the cache ALREADY EXPIRED: every read still attempts a
+     * live capture first and only falls back to the seed when the capture
+     * fails — so a restart during a provider outage degrades to labeled
+     * stale data instead of a blank app (2026-09-10).
+     */
+    persist?: Readonly<{
+      load: () => LiveListingCatalogSnapshot | null;
+      save: (snapshot: LiveListingCatalogSnapshot) => void;
+    }>;
+  }> = {},
 ) {
   const now = options.now ?? Date.now;
   const ttlMs = options.ttlMs ?? SNAPSHOT_TTL_MS;
@@ -854,6 +869,15 @@ export function createLiveListingCatalogCache(
     refreshedAt: number;
     expiresAt: number;
   } | null = null;
+  const persisted = options.persist?.load() ?? null;
+  if (persisted) {
+    const persistedAt = Date.parse(persisted.observedAtUtc);
+    cached = {
+      value: persisted,
+      refreshedAt: Number.isNaN(persistedAt) ? 0 : persistedAt,
+      expiresAt: 0,
+    };
+  }
   let flight: Promise<LiveListingCatalogSnapshot> | null = null;
   let lastAttemptAt: number | null = null;
   let lastFailureAt: number | null = null;
@@ -866,6 +890,7 @@ export function createLiveListingCatalogCache(
       const refreshedAt = now();
       cached = { value, refreshedAt, expiresAt: refreshedAt + ttlMs };
       lastFailureAt = null;
+      options.persist?.save(value);
       return value;
     } catch (error) {
       lastFailureAt = now();
@@ -919,7 +944,10 @@ export function hasUnresolvedLiveListingRefreshFailure(
     && status?.lastFailureAtEpochMs !== undefined;
 }
 
-export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(captureLiveListingCatalog);
+export const getLiveListingCatalogSnapshot = createLiveListingCatalogCache(
+  captureLiveListingCatalog,
+  { persist: createListingCatalogSnapshotStore() },
+);
 
 // The scheduled census is a BACKSTOP for missed events, not the freshness
 // mechanism: Shopify webhooks and eBay push notifications refresh the
