@@ -34,12 +34,21 @@ const ListingDescriptionPreviewModal: React.FC<Props> = ({
   const [narrow, setNarrow] = useState(false);
   const preview = useListingDescriptionPreview(catalogId, { enabled: open });
   const serverHtml = preview.data?.html ?? null;
-  // When the operator has unsaved edits, previewing the stale saved draft is
-  // actively misleading — show what they are LOOKING AT instead. The branded
-  // frame (header, shipping/returns cards) is applied by the template at
-  // publish; the body is theirs.
-  const liveHtml = hasUnsavedChanges && draftDescriptionHtml
-    ? `<body style="margin:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a1a1a;line-height:1.5;background:#ffffff">${draftDescriptionHtml}</body>`
+  // Two truths, in order of preference:
+  // 1. Unsaved edits -> show what the operator is LOOKING AT (previewing the
+  //    stale saved draft would be misleading).
+  // 2. Server preview unavailable (its live Shopify read fails
+  //    intermittently) -> STILL show the editor's current description
+  //    rather than a dead-end warning. The operator hit exactly that wall
+  //    live on 2026-09-10 ("Preview is unavailable right now" with a full
+  //    description sitting in the editor behind the modal).
+  // The branded frame (header, shipping/returns cards) is applied by the
+  // template at publish; the body is theirs either way.
+  const wrapDraft = (inner: string) =>
+    `<body style="margin:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a1a1a;line-height:1.5;background:#ffffff">${inner}</body>`;
+  const liveHtml = draftDescriptionHtml
+    && (hasUnsavedChanges || (!preview.isLoading && serverHtml === null))
+    ? wrapDraft(draftDescriptionHtml)
     : null;
   const html = liveHtml ?? serverHtml;
   const templateVersion = preview.data?.templateVersion ?? null;
