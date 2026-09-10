@@ -116,51 +116,51 @@ export declare function buildMigrationStatus(local: LocalMigrationState, servedA
             note: string;
         };
     };
-    phase: "marketplace-connect-incumbent";
+    phase: "product-pipeline-steady-state";
     effectiveMode: "shadow-read-only";
     externalWritesAllowed: false;
     historicalBackfillAllowed: false;
-    cutoverWatermarkUtc: null;
+    cutoverWatermarkUtc: "2026-09-08T21:50:00.000Z";
     remoteVerification: "not-performed";
     servedAt: string;
     responsibilities: ({
-        owner: "marketplace-connect";
-        productPipelineAccess: "disabled";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "marketplace-connect";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "marketplace-connect";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
-        writesAllowed: false;
-        responsibility: string;
-    } | {
-        owner: "unverified";
-        productPipelineAccess: "read-only";
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {
         owner: "unverified";
         productPipelineAccess: "read-only";
+        writesAllowed: false;
+        responsibility: string;
+    } | {
+        owner: "product-pipeline";
+        productPipelineAccess: "ceremony";
         writesAllowed: false;
         responsibility: string;
     } | {

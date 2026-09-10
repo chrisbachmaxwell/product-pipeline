@@ -19,7 +19,7 @@ import {
   listingDisplayTitle,
   listingSkuLabel,
 } from '../operator-ui';
-import { OperationalMonitoring } from '../components/OperationalMonitoring';
+import { SyncHealth } from '../components/SyncHealth';
 
 const PAGE_SIZE = 25;
 
@@ -36,25 +36,25 @@ const Issues: React.FC = () => {
   const unavailable = Boolean(listings.error || (listings.data && !valid));
 
   return (
-    <Page title="Issues" fullWidth>
+    <Page title="Review" fullWidth>
       <BlockStack gap="500">
-      <OperationalMonitoring />
+      <SyncHealth />
       {listings.isLoading ? (
         <Card><SkeletonBodyText lines={5} /></Card>
       ) : unavailable ? (
         <Card>
           <EmptyState
-            heading="Issues unavailable"
+            heading="Review list unavailable"
             image=""
             action={{ content: 'Try again', onAction: () => { void listings.refetch(); } }}
           >
-            <Text as="p">Current Shopify and eBay issues are unavailable.</Text>
+            <Text as="p">The live check has not finished. Syncing continues in the background.</Text>
           </EmptyState>
         </Card>
       ) : rows.length === 0 ? (
         <Card>
-          <EmptyState heading="No listing issues" image="">
-            <Text as="p">Everything is clear.</Text>
+          <EmptyState heading="Nothing needs review" image="">
+            <Text as="p">Every listing matches Shopify.</Text>
           </EmptyState>
         </Card>
       ) : (
@@ -70,7 +70,7 @@ const Issues: React.FC = () => {
                   <Text as="p" tone="critical">{listingAttentionText(row)}</Text>
                 </BlockStack>
                 <InlineStack gap="300" blockAlign="center">
-                  <Badge tone="critical">Needs attention</Badge>
+                  <Badge tone="critical">Review</Badge>
                   <Link
                     to={`/listings/${encodeURIComponent(row.id)}`}
                     aria-label={`View details for ${title}`}

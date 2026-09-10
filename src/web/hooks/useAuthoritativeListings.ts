@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { apiClient } from './useApi';
 
 export type AuthoritativeListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
@@ -155,6 +155,9 @@ export const useAuthoritativeListings = (params?: {
     staleTime: 0,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+    // Keep showing the previous page while a new search/filter/page loads:
+    // without this every keystroke blanked the table into a spinner.
+    placeholderData: keepPreviousData,
   });
 
 export const useAuthoritativeListing = (id: string | undefined) => {

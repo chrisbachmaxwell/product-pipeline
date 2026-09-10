@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, BlockStack, Box, Card, EmptyState, IndexTable, InlineStack, Page, Pagination, Select, Spinner, Text, TextField, Thumbnail, } from '@shopify/polaris';
 import { ProductIcon, SearchIcon } from '@shopify/polaris-icons';
 import { Link, useNavigate } from 'react-router-dom';
@@ -9,8 +9,17 @@ const PAGE_SIZE = 25;
 const Listings = () => {
     const navigate = useNavigate();
     const [filter, setFilter] = useState('all');
+    const [searchInput, setSearchInput] = useState('');
     const [search, setSearch] = useState('');
     const [offset, setOffset] = useState(0);
+    // Debounce: one request when typing pauses, not one per keystroke.
+    useEffect(() => {
+        const handle = setTimeout(() => {
+            setSearch(searchInput);
+            setOffset(0);
+        }, 300);
+        return () => clearTimeout(handle);
+    }, [searchInput]);
     const listings = useAuthoritativeListings({
         limit: PAGE_SIZE,
         offset,
@@ -30,16 +39,16 @@ const Listings = () => {
     return (_jsx(Page, { title: "Listings", fullWidth: true, primaryAction: nextReview ? {
             content: 'Review next',
             onAction: () => navigate(`/listings/${encodeURIComponent(nextReview.id)}`),
-        } : undefined, children: _jsxs(BlockStack, { gap: "400", children: [_jsx(Card, { padding: "0", children: _jsx(Box, { padding: "400", children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", gap: "300", blockAlign: "center", children: [_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Box, { minWidth: "260px", maxWidth: "420px", children: _jsx(TextField, { label: "Search listings", labelHidden: true, placeholder: "Search product or SKU", value: search, onChange: (value) => {
-                                                            setSearch(value);
-                                                            setOffset(0);
-                                                        }, onClearButtonClick: () => {
+        } : undefined, children: _jsxs(BlockStack, { gap: "400", children: [_jsx(Card, { padding: "0", children: _jsx(Box, { padding: "400", children: _jsxs(BlockStack, { gap: "400", children: [_jsxs(InlineStack, { align: "space-between", gap: "300", blockAlign: "center", children: [_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Box, { minWidth: "260px", maxWidth: "420px", children: _jsx(TextField, { label: "Search listings", labelHidden: true, placeholder: "Search product or SKU", value: searchInput, onChange: setSearchInput, onClearButtonClick: () => {
+                                                            setSearchInput('');
                                                             setSearch('');
                                                             setOffset(0);
                                                         }, prefix: _jsx(SearchIcon, {}), clearButton: true, autoComplete: "off" }) }), _jsx(Box, { minWidth: "170px", children: _jsx(Select, { label: "eBay state", labelHidden: true, options: listingFilterOptions(valid ? listings.data?.summary : undefined), value: filter, onChange: (value) => {
                                                             setFilter(value);
                                                             setOffset(0);
-                                                        } }) })] }), valid && (_jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: formatVerifiedAt(listings.data?.observedAtUtc) }))] }), unavailable ? (_jsx(EmptyState, { heading: "Listings unavailable", image: "", action: { content: 'Try again', onAction: () => { void listings.refetch(); } }, children: _jsx(Text, { as: "p", children: "Current Shopify and eBay listings are unavailable." }) })) : listings.isLoading ? (_jsx(Box, { padding: "1200", children: _jsx(InlineStack, { align: "center", children: _jsx(Spinner, { accessibilityLabel: "Loading listings", size: "large" }) }) })) : rows.length === 0 ? (_jsx(EmptyState, { heading: "No matching products", image: "", children: _jsx(Text, { as: "p", children: "Try another search or state." }) })) : (_jsxs(_Fragment, { children: [_jsx("div", { className: "operator-listings-desktop", children: _jsx(IndexTable, { resourceName: { singular: 'product', plural: 'products' }, itemCount: rows.length, selectable: false, headings: [
+                                                        } }) })] }), valid && (_jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: listings.isPlaceholderData
+                                                ? 'Updating…'
+                                                : formatVerifiedAt(listings.data?.observedAtUtc) }))] }), unavailable ? (_jsx(EmptyState, { heading: "Listings unavailable", image: "", action: { content: 'Try again', onAction: () => { void listings.refetch(); } }, children: _jsx(Text, { as: "p", children: "Current Shopify and eBay listings are unavailable." }) })) : listings.isLoading ? (_jsx(Box, { padding: "1200", children: _jsx(InlineStack, { align: "center", children: _jsx(Spinner, { accessibilityLabel: "Loading listings", size: "large" }) }) })) : rows.length === 0 ? (_jsx(EmptyState, { heading: "No matching products", image: "", children: _jsx(Text, { as: "p", children: "Try another search or state." }) })) : (_jsxs(_Fragment, { children: [_jsx("div", { className: "operator-listings-desktop", children: _jsx(IndexTable, { resourceName: { singular: 'product', plural: 'products' }, itemCount: rows.length, selectable: false, headings: [
                                                     { title: 'Product' },
                                                     { title: 'eBay' },
                                                     { title: 'Available' },

@@ -3,61 +3,72 @@ import {
   Badge,
   BlockStack,
   Card,
-  Divider,
   InlineStack,
   Page,
-  SkeletonBodyText,
   Text,
 } from '@shopify/polaris';
-import { useMigrationStatus } from '../hooks/useApi';
+import { useMigrationStatus, useOperationalMonitoring } from '../hooks/useApi';
 
+/**
+ * Orders is a reassurance page, not a work surface: imports are automatic,
+ * and the actual orders live in Shopify's own Orders section where the
+ * operator already works. This page says what runs, and what never will.
+ */
 const Orders: React.FC = () => {
   const migration = useMigrationStatus();
-  const status = migration.data;
-  const historicalCount = status?.reconciliation?.counts?.historicalEbayOrders;
+  const monitoring = useOperationalMonitoring();
+  const historical = migration.data?.reconciliation?.counts?.historicalEbayOrders
+    ?? migration.data?.reconciliation?.counts?.historicalOrdersIneligible;
+  const shadow = monitoring.data?.dailyDigest?.shadow;
 
   return (
     <Page title="Orders" fullWidth>
-      <BlockStack gap="500">
+      <BlockStack gap="400">
         <Card>
-          {migration.isLoading ? (
-            <SkeletonBodyText lines={4} />
-          ) : migration.error ? (
+          <BlockStack gap="200">
             <InlineStack align="space-between" blockAlign="center">
-              <Text as="p">Order status unavailable</Text>
-              <Badge tone="critical">Unavailable</Badge>
+              <Text as="h3" variant="headingMd">Automatic import</Text>
+              <Badge tone="success">On</Badge>
             </InlineStack>
-          ) : (
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h2" variant="headingMd">Order import</Text>
-                <Badge tone="attention">Marketplace Connect</Badge>
-              </InlineStack>
-              <Text as="p" tone="subdued">ProductPipeline order import is off.</Text>
-              <Divider />
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="p">Cutover</Text>
-                <Badge tone="info">Not started</Badge>
-              </InlineStack>
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="p">Historical import</Text>
-                <Badge tone="success">Blocked</Badge>
-              </InlineStack>
-            </BlockStack>
-          )}
+            <Text as="p" tone="subdued">
+              When something sells on eBay, ProductPipeline creates the Shopify order
+              (tagged “eBay”), lowers the stock count, and — once you ship with a
+              tracking number — sends that tracking back to eBay. No clicks needed.
+            </Text>
+            <Text as="p" tone="subdued">
+              Find the orders themselves in Shopify’s Orders section, filtered by the
+              “eBay” tag.
+            </Text>
+          </BlockStack>
         </Card>
 
-        {typeof historicalCount === 'number' && (
+        {shadow && shadow.observedCount > 0 && (
           <Card>
-            <InlineStack align="space-between" blockAlign="center">
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">Historical records</Text>
-                <Text as="p" tone="subdued">View only · never eligible for import</Text>
-              </BlockStack>
-              <Text as="p" variant="headingXl">{historicalCount.toLocaleString()}</Text>
-            </InlineStack>
+            <BlockStack gap="200">
+              <Text as="h3" variant="headingMd">Latest check</Text>
+              <Text as="p">
+                {shadow.matchedCount} of {shadow.observedCount} recent eBay orders are
+                confirmed in Shopify
+                {shadow.unmatchedCount > 0
+                  ? ` — ${shadow.unmatchedCount} still importing or need a look.`
+                  : '.'}
+              </Text>
+            </BlockStack>
           </Card>
         )}
+
+        <Card>
+          <BlockStack gap="200">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h3" variant="headingMd">Old eBay orders</Text>
+              <Text as="p" variant="headingLg">{typeof historical === 'number' ? historical : '—'}</Text>
+            </InlineStack>
+            <Text as="p" tone="subdued">
+              Orders from before September 8, 2026 stay in eBay’s history and are never
+              imported into Shopify. That protection is permanent.
+            </Text>
+          </BlockStack>
+        </Card>
       </BlockStack>
     </Page>
   );

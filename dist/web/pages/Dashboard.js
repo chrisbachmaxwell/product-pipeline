@@ -1,18 +1,43 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { Badge, BlockStack, Card, InlineGrid, InlineStack, Page, SkeletonBodyText, Text, } from '@shopify/polaris';
-import { Link } from 'react-router-dom';
+import { Badge, BlockStack, Button, Card, InlineGrid, InlineStack, Page, SkeletonBodyText, Text, } from '@shopify/polaris';
+import { useNavigate } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
-import { useMigrationStatus } from '../hooks/useApi';
+import { useOperationalMonitoring } from '../hooks/useApi';
 import { formatVerifiedAt, isLiveCatalogResponse } from '../operator-ui';
-const CountCard = ({ label, value, tone, }) => (_jsx(Card, { children: _jsxs(BlockStack, { gap: "200", children: [_jsx(Text, { as: "p", tone: "subdued", children: label }), _jsx(Text, { as: "p", variant: "heading2xl", tone: tone, children: value })] }) }));
+const CountCard = ({ label, value, tone, onClick }) => (_jsx(Card, { children: _jsxs(BlockStack, { gap: "200", children: [_jsx(Text, { as: "p", tone: "subdued", children: label }), _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "p", variant: "heading2xl", tone: tone, children: value ?? '—' }), onClick && value !== null && value > 0 && (_jsx(Button, { variant: "plain", onClick: onClick, children: "View" }))] })] }) }));
+/**
+ * Home answers three questions in one glance, in plain words:
+ * is everything synced, what sold, and what needs me?
+ */
 const Dashboard = () => {
+    const navigate = useNavigate();
     const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
-    const migration = useMigrationStatus();
+    const monitoring = useOperationalMonitoring();
     const valid = isLiveCatalogResponse(listings.data);
     const summary = valid ? listings.data?.summary : undefined;
+    const loading = listings.isLoading;
     const unavailable = Boolean(listings.error || (listings.data && !valid));
-    const connectionsUnavailable = unavailable || Boolean(migration.error);
-    const connectionsCurrent = valid && listings.data?.authoritative === true && !migration.error;
-    return (_jsx(Page, { title: "Overview", fullWidth: true, children: _jsxs(BlockStack, { gap: "500", children: [listings.isLoading ? (_jsx(SkeletonBodyText, { lines: 4 })) : unavailable || !summary ? (_jsx(Card, { children: _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "p", children: "Listings unavailable" }), _jsx(Badge, { tone: "critical", children: "Unavailable" })] }) })) : (_jsxs(BlockStack, { gap: "200", children: [_jsx(InlineStack, { align: "end", children: _jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: formatVerifiedAt(listings.data?.observedAtUtc) }) }), _jsxs(InlineGrid, { columns: { xs: 1, sm: 2, md: 4 }, gap: "300", children: [_jsx(CountCard, { label: "Needs attention", value: summary.attention, tone: summary.attention > 0 ? 'critical' : undefined }), _jsx(CountCard, { label: "Not listed", value: summary.notListed }), _jsx(CountCard, { label: "Active", value: summary.active }), _jsx(CountCard, { label: "Unknown", value: summary.unknown, tone: summary.unknown > 0 ? 'critical' : undefined })] })] })), !unavailable && summary && (_jsxs(InlineGrid, { columns: { xs: 1, md: '2fr 1fr' }, gap: "400", children: [_jsx(Card, { children: _jsxs(BlockStack, { gap: "300", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Issues" }), _jsx(Badge, { tone: summary.attention > 0 ? 'critical' : 'success', children: String(summary.attention) })] }), _jsx(Link, { to: "/issues", children: "View issues" })] }) }), _jsx(Card, { children: _jsxs(BlockStack, { gap: "300", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Connections" }), _jsx(Badge, { tone: connectionsUnavailable ? 'critical' : connectionsCurrent ? 'success' : 'attention', children: connectionsUnavailable ? 'Unavailable' : connectionsCurrent ? 'Current' : 'Unknown' })] }), _jsx(Text, { as: "p", children: "Shopify + eBay" }), _jsx(Link, { to: "/settings", children: "View settings" })] }) })] })), _jsx(Card, { children: _jsxs(InlineStack, { align: "space-between", blockAlign: "center", gap: "300", children: [_jsxs(BlockStack, { gap: "100", children: [_jsx(Text, { as: "h2", variant: "headingMd", children: "Ownership" }), _jsx(Text, { as: "p", tone: "subdued", children: "Orders, price, and inventory" })] }), _jsx(Badge, { tone: "attention", children: "Marketplace Connect" })] }) })] }) }));
+    const shadow = monitoring.data?.dailyDigest?.shadow;
+    const attention = summary?.attention ?? null;
+    const unknown = summary?.unknown ?? null;
+    let heroTone = 'success';
+    let heroHeading = 'Everything is synced';
+    let heroBody = 'Your eBay listings match Shopify.';
+    if (unavailable) {
+        heroTone = 'warning';
+        heroHeading = 'Checking eBay…';
+        heroBody = 'Live status is temporarily unavailable. Syncing continues in the background.';
+    }
+    else if ((attention ?? 0) > 0) {
+        heroTone = 'critical';
+        heroHeading = attention === 1 ? '1 listing needs your review' : `${attention} listings need your review`;
+        heroBody = 'Everything else is synced.';
+    }
+    else if ((unknown ?? 0) > 0) {
+        heroTone = 'warning';
+        heroHeading = 'Refreshing eBay status…';
+        heroBody = 'The latest check has not finished. Syncing continues in the background.';
+    }
+    return (_jsx(Page, { title: "Home", fullWidth: true, children: _jsxs(BlockStack, { gap: "400", children: [_jsx(Card, { children: loading ? (_jsx(SkeletonBodyText, { lines: 2 })) : (_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsxs(BlockStack, { gap: "100", children: [_jsxs(InlineStack, { gap: "200", blockAlign: "center", children: [_jsx(Badge, { tone: heroTone === 'success' ? 'success' : heroTone === 'warning' ? 'attention' : 'critical', children: heroTone === 'success' ? 'Synced' : heroTone === 'warning' ? 'Checking' : 'Review' }), _jsx(Text, { as: "h2", variant: "headingLg", children: heroHeading })] }), _jsx(Text, { as: "p", tone: "subdued", children: heroBody })] }), (attention ?? 0) > 0 && (_jsx(Button, { variant: "primary", onClick: () => navigate('/issues'), children: "Review now" }))] })) }), _jsxs(InlineGrid, { columns: { xs: 1, sm: 3 }, gap: "400", children: [_jsx(CountCard, { label: "Live on eBay", value: summary?.active ?? null }), _jsx(CountCard, { label: "Not on eBay", value: summary?.notListed ?? null, onClick: () => navigate('/listings') }), _jsx(CountCard, { label: "Needs review", value: attention, tone: (attention ?? 0) > 0 ? 'critical' : undefined, onClick: () => navigate('/issues') })] }), _jsx(Card, { children: _jsxs(BlockStack, { gap: "200", children: [_jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "h3", variant: "headingMd", children: "eBay orders" }), _jsx(Badge, { tone: "success", children: "Automatic" })] }), _jsx(Text, { as: "p", tone: "subdued", children: "New eBay sales become Shopify orders within a few minutes, stock counts update everywhere, and tracking is sent back to eBay when you ship." }), shadow && shadow.observedCount > 0 && (_jsxs(Text, { as: "p", children: ["Last checked window: ", shadow.matchedCount, " of ", shadow.observedCount, " eBay orders confirmed in Shopify."] }))] }) }), _jsxs(InlineStack, { align: "space-between", blockAlign: "center", children: [_jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: valid ? formatVerifiedAt(listings.data?.observedAtUtc) : 'Waiting for the next check…' }), _jsx(Text, { as: "span", variant: "bodySm", tone: "subdued", children: "Shopify + eBay" })] })] }) }));
 };
 export default Dashboard;

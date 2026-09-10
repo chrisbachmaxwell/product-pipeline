@@ -189,7 +189,7 @@ describe('stocked listings operator UI', () => {
                 unresolvedCount: 1,
                 attentionReasons: ['ebay_multiple_active_matches'],
             },
-        }))).toBe('Multiple active matches');
+        }))).toBe('More than one eBay listing uses this SKU');
         expect(listingAttentionText(listing({
             lifecycleStatus: 'attention',
             ebay: { ...listing().ebay, state: 'attention', unpublishedArtifactCount: 1 },
@@ -198,7 +198,7 @@ describe('stocked listings operator UI', () => {
                 unresolvedCount: 1,
                 attentionReasons: ['ebay_unpublished_artifact'],
             },
-        }))).toBe('eBay inventory needs review');
+        }))).toBe('Leftover eBay draft data to clean up');
     });
     it('fails closed on malformed, incomplete, empty, or inconsistent catalog responses', () => {
         expect(isLiveCatalogResponse(response())).toBe(true);
@@ -310,11 +310,19 @@ describe('stocked listings operator UI', () => {
             summary: { active: 0, notListed: 1, attention: 0, unknown: 0, totalInStock: 1, totalVisible: 1 },
         }))).toBe(false);
     });
-    it('queries exact IDs, never carries stale filtered rows, and treats exact-ID misses as unavailable', () => {
+    it('queries exact IDs, marks placeholder rows as stale, and treats exact-ID misses as unavailable', () => {
         const hookSource = readFileSync(fileURLToPath(new URL('./hooks/useAuthoritativeListings.ts', import.meta.url)), 'utf8');
         expect(hookSource).toContain("searchParams.set('id', params.id)");
-        expect(hookSource).not.toMatch(/keepPreviousData|placeholderData/);
         expect(hookSource).toContain('query.data && listing');
+        // placeholderData is permitted ONLY together with a truthful staleness
+        // marker: while previous rows are shown during a search/filter/page
+        // load, the Listings page must say so instead of presenting them as the
+        // current result (the hazard the previous outright ban protected
+        // against, without the blank-spinner-per-keystroke it caused).
+        if (/keepPreviousData|placeholderData/.test(hookSource)) {
+            const listingsSource = readFileSync(fileURLToPath(new URL('./pages/Listings.tsx', import.meta.url)), 'utf8');
+            expect(listingsSource).toContain('isPlaceholderData');
+        }
     });
     it('keeps desktop table and mobile card paths with no commerce mutation surface', () => {
         const listingsSource = readFileSync(fileURLToPath(new URL('./pages/Listings.tsx', import.meta.url)), 'utf8');
@@ -330,7 +338,9 @@ describe('stocked listings operator UI', () => {
     it('renders compact unavailable states instead of empty success claims', () => {
         for (const page of ['Dashboard', 'Listings', 'ListingDetail', 'Issues', 'Settings']) {
             const pageSource = readFileSync(fileURLToPath(new URL(`./pages/${page}.tsx`, import.meta.url)), 'utf8');
-            expect(pageSource).toMatch(/Unavailable|unavailable/);
+            // An explicit not-current state (any honest wording), never an empty
+            // page that reads as success.
+            expect(pageSource).toMatch(/unavailable|Checking|not finished|Waiting for/i);
         }
     });
     it('renders only verified HTTPS image hosts', () => {
@@ -349,14 +359,9 @@ describe('stocked listings operator UI', () => {
         expect(isHistoricalBackfillProtected({ historicalBackfillAllowed: false })).toBe(true);
         expect(isHistoricalBackfillProtected(undefined)).toBe(false);
     });
-    it('scopes migration safety copy to provider writes and local draft eligibility', () => {
-        const source = readFileSync(fileURLToPath(new URL('./components/MigrationSafety.tsx', import.meta.url)), 'utf8');
-        expect(source).toContain('Shopify and eBay writes remain blocked');
-        expect(source).toContain('Local draft availability is shown on each listing.');
-        expect(source).toContain('Provider writes');
-        expect(source).not.toContain('ProductPipeline remains observation-only');
-        expect(source).not.toContain('No write action is available');
-    });
+    // MigrationSafety.tsx was removed in the 2026-09-10 simplification: it was
+    // unreachable from every route, and its copy described the pre-cutover
+    // shadow phase.
     it('validates the listing workspace identity and remains read only', () => {
         const catalog = listing();
         const workspace = {

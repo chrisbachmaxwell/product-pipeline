@@ -51,13 +51,18 @@ describe('writer quarantine policy', () => {
     expect(status.effectiveMode).toBe('shadow-read-only');
     expect(status.externalWritesAllowed).toBe(false);
     expect(status.historicalBackfillAllowed).toBe(false);
-    expect(status.cutoverWatermarkUtc).toBeNull();
+    // The permanent order watermark from the 2026-09-08 G13 cutover.
+    expect(status.cutoverWatermarkUtc).toBe('2026-09-08T21:50:00.000Z');
     expect(status.servedAt).toBe('2026-08-11T18:00:00.000Z');
     expect(status).not.toHaveProperty('observedAt');
     expect(status.quarantine.runtimeOverrideAvailable).toBe(false);
+    // DESCRIPTION updated at cutover; ENFORCEMENT stays permanently false —
+    // 'ceremony' means every write runs in a standalone operator CLI and
+    // this server process still mounts no writer.
     expect(MARKETPLACE_CONNECT_BASELINE.responsibilities.orderImport.owner).toBe(
-      'marketplace-connect',
+      'product-pipeline',
     );
+    expect(MARKETPLACE_CONNECT_BASELINE.responsibilities.orderImport.writesAllowed).toBe(false);
 
   });
 

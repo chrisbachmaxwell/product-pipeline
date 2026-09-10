@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { apiClient } from './useApi';
 export const useAuthoritativeListings = (params) => useQuery({
     queryKey: ['authoritative-listings-v3', params],
@@ -20,6 +20,9 @@ export const useAuthoritativeListings = (params) => useQuery({
     staleTime: 0,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+    // Keep showing the previous page while a new search/filter/page loads:
+    // without this every keystroke blanked the table into a spinner.
+    placeholderData: keepPreviousData,
 });
 export const useAuthoritativeListing = (id) => {
     const query = useAuthoritativeListings({ limit: 1, offset: 0, id });

@@ -1,41 +1,55 @@
 export const WRITER_QUARANTINE_CODE = 'WRITER_QUARANTINED';
 export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
-    policyVersion: 1,
-    phase: 'marketplace-connect-incumbent',
+    // DESCRIPTION vs ENFORCEMENT: `owner` and `productPipelineAccess` describe
+    // who runs each responsibility and are updated when ownership ceremonies
+    // transfer it. `writesAllowed`, `externalWritesAllowed`, and the quarantine
+    // remain the ENFORCEMENT truth about THIS SERVER PROCESS: it mounts no
+    // provider writers, ever — every write happens in the standalone ceremony
+    // CLIs. Those fields stay false permanently and must never be edited to
+    // reflect ceremony-side capability.
+    policyVersion: 2,
+    phase: 'product-pipeline-steady-state',
     effectiveMode: 'shadow-read-only',
     externalWritesAllowed: false,
     historicalBackfillAllowed: false,
-    cutoverWatermarkUtc: null,
+    // The permanent order watermark established 2026-09-08 (G13 cutover).
+    cutoverWatermarkUtc: '2026-09-08T21:50:00.000Z',
     remoteVerification: 'not-performed',
     responsibilities: Object.freeze({
         orderImport: Object.freeze({
-            owner: 'marketplace-connect',
-            productPipelineAccess: 'disabled',
+            // Ownership v3, permanent watermark 2026-09-08T21:50Z (G13 cutover).
+            // Imports run via order-import-admin ceremonies; the server-side
+            // trigger only SPAWNS them — no writer is mounted in this process.
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         price: Object.freeze({
-            owner: 'marketplace-connect',
-            productPipelineAccess: 'read-only',
+            // Ownership 2026-09-01; MC "Sync price" recorded off 2026-09-08
+            // (correction — the toggle was found alive after being recorded off).
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         inventory: Object.freeze({
-            owner: 'marketplace-connect',
-            productPipelineAccess: 'read-only',
+            // Ownership 2026-09-01; MC "Sync inventory" confirmed off 2026-09-03.
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         listingCreate: Object.freeze({
-            owner: 'unverified',
-            productPipelineAccess: 'read-only',
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         listingRevise: Object.freeze({
-            owner: 'unverified',
-            productPipelineAccess: 'read-only',
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         listingEndRelist: Object.freeze({
-            owner: 'unverified',
-            productPipelineAccess: 'read-only',
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         mapping: Object.freeze({
@@ -44,8 +58,10 @@ export const MARKETPLACE_CONNECT_BASELINE = Object.freeze({
             writesAllowed: false,
         }),
         fulfillment: Object.freeze({
-            owner: 'unverified',
-            productPipelineAccess: 'read-only',
+            // Ownership v3 established 2026-09-09; tracking pushes run via the
+            // fulfillment-tracking-admin ceremonies.
+            owner: 'product-pipeline',
+            productPipelineAccess: 'ceremony',
             writesAllowed: false,
         }),
         feedback: Object.freeze({
@@ -154,7 +170,7 @@ export function getMigrationPolicyStatus(servedAt = new Date().toISOString()) {
         effectiveMode: MARKETPLACE_CONNECT_BASELINE.effectiveMode,
         externalWritesAllowed: false,
         historicalBackfillAllowed: false,
-        cutoverWatermarkUtc: null,
+        cutoverWatermarkUtc: MARKETPLACE_CONNECT_BASELINE.cutoverWatermarkUtc,
         remoteVerification: MARKETPLACE_CONNECT_BASELINE.remoteVerification,
         servedAt,
         responsibilities: Object.entries(MARKETPLACE_CONNECT_BASELINE.responsibilities).map(([responsibility, policy]) => ({ responsibility, ...policy })),
