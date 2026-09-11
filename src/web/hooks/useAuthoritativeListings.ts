@@ -50,6 +50,8 @@ export interface AuthoritativeListingItem {
   lifecycleStatus: AuthoritativeListingStatus;
   /** Tagged 'ready' in Shopify, in stock, and not yet on eBay. */
   readyToList?: boolean;
+  /** Ready rows missing something publish requires (today: 'condition'). */
+  readyToListGaps?: Array<'condition'>;
   lastVerifiedAtUtc: string;
   audit: {
     verified: boolean;
