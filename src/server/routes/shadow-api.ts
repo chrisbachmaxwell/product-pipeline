@@ -16,7 +16,6 @@ import {
   type ListingWorkspaceDto,
 } from '../listing-workspace-reader.js';
 import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
-import { editorFacetSweep, type EditorFacetSweep } from '../listing-editor-facet-sweep.js';
 import {
   EbayCategorySearchError,
   browseEbayCategories,
@@ -130,12 +129,6 @@ export function createShadowApiRouter(
   dependencies: LiveListingCatalogRouteDependencies & Readonly<{
     readWorkspace?: (rowId: string) => Promise<ListingWorkspaceDto>;
     getListingDraft?: (catalogId: string) => Promise<ListingDraftDto>;
-    /**
-     * Background used-facet enrichment sweep. Only merged when explicitly
-     * provided so hand-built test routers stay snapshot-only; the default
-     * production router below passes the shared production sweep.
-     */
-    facetSweep?: EditorFacetSweep;
     searchEbayCategories?: EbayCategorySearch;
     browseEbayCategories?: EbayCategoryBrowse;
     readMonitoring?: () => Promise<OperationalMonitoringProjection>;
@@ -143,7 +136,6 @@ export function createShadowApiRouter(
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
     readWorkspace: readListingWorkspace,
-    facetSweep: editorFacetSweep,
     searchEbayCategories,
     browseEbayCategories,
   },
@@ -249,8 +241,12 @@ router.get('/api/listing-editor-metadata', async (_req: Request, res: Response) 
       res.status(503).json({ error: 'Listing editor metadata is unavailable' });
       return;
     }
-    const sweepObservations = dependencies.facetSweep?.getObservations() ?? [];
-    res.json(buildListingEditorMetadata(await dependencies.getSnapshot(), sweepObservations));
+    // Editor metadata comes entirely from facets the census capture already
+    // extracts from the bulk Trading/getOffers bodies. The per-listing
+    // GetItem "facet sweep" that used to merge in here was removed
+    // 2026-09-11: ~110 Trading calls per run to re-derive category names the
+    // census already carries (largest single consumer in the L58 outage).
+    res.json(buildListingEditorMetadata(await dependencies.getSnapshot()));
   } catch {
     res.status(503).json({ error: 'Listing editor metadata is unavailable' });
   }

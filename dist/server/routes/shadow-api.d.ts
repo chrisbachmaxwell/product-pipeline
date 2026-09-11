@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { type LiveListingCatalogRouteDependencies } from '../live-listing-catalog-source.js';
 import { type ListingWorkspaceDto } from '../listing-workspace-reader.js';
-import { type EditorFacetSweep } from '../listing-editor-facet-sweep.js';
 import { type EbayCategoryBrowse, type EbayCategorySearch } from '../ebay-category-search.js';
 import { type ListingDraftDto } from '../listing-draft-service.js';
 import { type OperationalMonitoringProjection } from '../operational-monitoring.js';
@@ -31,12 +30,6 @@ export declare function buildListingDescriptionPreviewInput(dto: ListingDraftDto
 export declare function createShadowApiRouter(dependencies?: LiveListingCatalogRouteDependencies & Readonly<{
     readWorkspace?: (rowId: string) => Promise<ListingWorkspaceDto>;
     getListingDraft?: (catalogId: string) => Promise<ListingDraftDto>;
-    /**
-     * Background used-facet enrichment sweep. Only merged when explicitly
-     * provided so hand-built test routers stay snapshot-only; the default
-     * production router below passes the shared production sweep.
-     */
-    facetSweep?: EditorFacetSweep;
     searchEbayCategories?: EbayCategorySearch;
     browseEbayCategories?: EbayCategoryBrowse;
     readMonitoring?: () => Promise<OperationalMonitoringProjection>;

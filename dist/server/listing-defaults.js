@@ -94,9 +94,7 @@ export function createListingDefaultsReader(dependencies = {}) {
         let returnPolicyId = null;
         let merchantLocationKey = null;
         try {
-            const observations = getSweepObservations
-                ? getSweepObservations()
-                : (await import('./listing-editor-facet-sweep.js')).editorFacetSweep.getObservations();
+            const observations = getSweepObservations ? getSweepObservations() : [];
             const metadata = buildListingEditorMetadata(await getSnapshot(), observations);
             fulfillmentPolicyId = metadata.policies.fulfillment[0]?.id ?? null;
             paymentPolicyId = metadata.policies.payment[0]?.id ?? null;

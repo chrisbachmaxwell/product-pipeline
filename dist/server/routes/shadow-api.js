@@ -5,7 +5,6 @@ import { projectLiveListingCatalogPage, } from '../live-listing-catalog.js';
 import { getLiveListingCatalogSnapshot, hasUnresolvedLiveListingRefreshFailure, } from '../live-listing-catalog-source.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from '../listing-workspace-reader.js';
 import { buildListingEditorMetadata } from '../listing-editor-metadata.js';
-import { editorFacetSweep } from '../listing-editor-facet-sweep.js';
 import { EbayCategorySearchError, browseEbayCategories, searchEbayCategories, } from '../ebay-category-search.js';
 import { createListingDraftService, ListingDraftServiceError, } from '../listing-draft-service.js';
 import { LISTING_DESCRIPTION_TEMPLATE_VERSION, renderListingDescription, } from '../listing-description-template.js';
@@ -86,7 +85,6 @@ export function createShadowApiRouter(dependencies = {
     getSnapshot: getLiveListingCatalogSnapshot,
     getSnapshotStatus: getLiveListingCatalogSnapshot.status,
     readWorkspace: readListingWorkspace,
-    facetSweep: editorFacetSweep,
     searchEbayCategories,
     browseEbayCategories,
 }) {
@@ -179,8 +177,12 @@ export function createShadowApiRouter(dependencies = {
                 res.status(503).json({ error: 'Listing editor metadata is unavailable' });
                 return;
             }
-            const sweepObservations = dependencies.facetSweep?.getObservations() ?? [];
-            res.json(buildListingEditorMetadata(await dependencies.getSnapshot(), sweepObservations));
+            // Editor metadata comes entirely from facets the census capture already
+            // extracts from the bulk Trading/getOffers bodies. The per-listing
+            // GetItem "facet sweep" that used to merge in here was removed
+            // 2026-09-11: ~110 Trading calls per run to re-derive category names the
+            // census already carries (largest single consumer in the L58 outage).
+            res.json(buildListingEditorMetadata(await dependencies.getSnapshot()));
         }
         catch {
             res.status(503).json({ error: 'Listing editor metadata is unavailable' });
