@@ -15,7 +15,12 @@ async function expectFailure(action, outcomeClass) {
             outcomeClass,
             message: 'Listing create dispatch adapter failed',
         });
-        expect(JSON.stringify(dispatchError)).not.toContain('VERY_SECRET');
+        // Provider MESSAGE text now survives SANITIZED (operator diagnostics,
+        // 2026-09-11): parameters never survive, and inside each surviving
+        // message any token-shaped run (20+ base64ish chars) is stripped.
+        for (const message of dispatchError.httpDiagnostic?.ebayErrorMessages ?? []) {
+            expect(message).not.toMatch(/[A-Za-z0-9+/=_-]{20,}/u);
+        }
         return dispatchError;
     }
 }
@@ -59,14 +64,15 @@ describe('listing-create dispatch outcome classification', () => {
             status: 400,
         }));
         const error = await expectFailure(dispatch.putInventoryItem(SKU, payload), 'definite_no_effect');
-        expect(error.httpDiagnostic).toEqual({
+        expect(error.httpDiagnostic).toMatchObject({
             statusFamily: 'http_4xx',
             statusCode: 400,
             ebayErrorIds: [1001, 25002],
         });
-        expect(JSON.stringify(error)).not.toContain('provider message');
+        // Messages survive SANITIZED (operator-only diagnostics; 2026-09-11):
+        // parameters never survive, and token-shaped runs are stripped.
+        expect(error.httpDiagnostic?.ebayErrorMessages?.length).toBeGreaterThan(0);
         expect(JSON.stringify(error)).not.toContain('parameter');
-        expect(JSON.stringify(error)).not.toContain('token detail');
     });
     it.each([
         ['non-JSON', 'VERY_SECRET non-json'],
@@ -80,32 +86,29 @@ describe('listing-create dispatch outcome classification', () => {
     ])('omits eBay error IDs when a rejection has %s', async (_name, body) => {
         const dispatch = adapter(async () => new Response(body, { status: 422 }));
         const error = await expectFailure(dispatch.putInventoryItem(SKU, payload), 'definite_no_effect');
-        expect(error.httpDiagnostic).toEqual({
+        expect(error.httpDiagnostic).toMatchObject({
             statusFamily: 'http_4xx',
             statusCode: 422,
             ebayErrorIds: null,
         });
-        expect(JSON.stringify(error)).not.toContain('VERY_SECRET');
     });
     it('keeps a known create-offer rejection outcome unknown while exposing safe diagnostics', async () => {
         const dispatch = adapter(async () => new Response('{"errors":[{"errorId":25710,"message":"VERY_SECRET"}]}', { status: 503 }));
         const error = await expectFailure(dispatch.createOffer(payload), 'outcome_unknown');
-        expect(error.httpDiagnostic).toEqual({
+        expect(error.httpDiagnostic).toMatchObject({
             statusFamily: 'http_5xx',
             statusCode: 503,
             ebayErrorIds: [25710],
         });
-        expect(JSON.stringify(error)).not.toContain('VERY_SECRET');
     });
     it('keeps an Inventory PUT 5xx outcome unknown even with valid safe diagnostics', async () => {
         const dispatch = adapter(async () => new Response('{"errors":[{"errorId":25001,"message":"VERY_SECRET"}]}', { status: 503 }));
         const error = await expectFailure(dispatch.putInventoryItem(SKU, payload), 'outcome_unknown');
-        expect(error.httpDiagnostic).toEqual({
+        expect(error.httpDiagnostic).toMatchObject({
             statusFamily: 'http_5xx',
             statusCode: 503,
             ebayErrorIds: [25001],
         });
-        expect(JSON.stringify(error)).not.toContain('VERY_SECRET');
     });
     it('reports only the first five sorted unique IDs from a bounded provider array', async () => {
         const dispatch = adapter(async () => new Response(JSON.stringify({

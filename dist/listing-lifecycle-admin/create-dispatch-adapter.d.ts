@@ -26,6 +26,13 @@ export type ListingCreateDispatchHttpDiagnostic = Readonly<{
     statusCode: number;
     /** Present only when the bounded body matches eBay's REST errors shape. */
     ebayErrorIds: readonly number[] | null;
+    /**
+     * Bounded provider error text for the OPERATOR's ceremony output only —
+     * never persisted to any store. Added 2026-09-11 after eBay refused a
+     * publish with only the generic id 25002, which names nothing; the
+     * message is what eBay's own seller UI would have shown.
+     */
+    ebayErrorMessages: readonly string[] | null;
 }>;
 export declare class ListingCreateDispatchError extends Error {
     readonly code: 'CREATE_DISPATCH_AUTHORITY_UNAVAILABLE' | 'CREATE_DISPATCH_TARGET_INVALID' | 'CREATE_DISPATCH_PAYLOAD_TOO_LARGE' | 'CREATE_DISPATCH_WRITE_FAILED' | 'CREATE_DISPATCH_RESPONSE_INVALID';

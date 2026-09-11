@@ -330,6 +330,7 @@ async function createWorld(draftOverrides: Partial<DraftValues> = {}): Promise<W
             statusFamily: 'http_4xx',
             statusCode: 400,
             ebayErrorIds: Object.freeze([25002]),
+            ebayErrorMessages: Object.freeze(['A user error has occurred']),
           }),
         );
       }
