@@ -26,7 +26,12 @@ import { readListingWorkspace, } from './listing-workspace-reader.js';
  * - At most 150 listings per sweep, at most 3 detail reads in flight, and
  *   the completed aggregate is cached in memory for 6 hours.
  */
-const SWEEP_TTL_MS = 6 * 60 * 60_000;
+// Once per day: the sweep reads EVERY live listing via Trading GetItem
+// (~110 calls per run), and at a 6h TTL it was the single largest consumer
+// of the 5,000/day aggregate quota (~450-500 calls/day) for editor dropdown
+// polish the auto-defaults layer has since superseded. Editor suggestions
+// tolerate day-old facets.
+const SWEEP_TTL_MS = 24 * 60 * 60_000;
 const MAX_SWEEP_LISTINGS = 150;
 const SWEEP_CONCURRENCY = 3;
 const MAX_FACET_STRING_LENGTH = 256;
