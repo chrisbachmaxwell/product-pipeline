@@ -195,7 +195,13 @@ const ListingDetail: React.FC = () => {
       const code = detail?.[1] ?? null;
       const fieldLabel = detail?.[2] ? (FIELD_LABELS[detail[2]] ?? detail[2]) : null;
       const missingField = code !== null && /REQUIRED_FIELD|PREREQUISITE|PREVALIDATION/.test(code);
-      const friendly = code === 'PUBLISH_UNRESOLVED'
+      const staleBase = code !== null && /BASE_STALE/.test(code);
+      const friendly = staleBase
+        ? 'Shopify’s values have changed since this draft was saved (price,'
+          + ' description, or automatic defaults). Publishing always uses the'
+          + ' saved draft, so use “Update draft & publish again” to re-save'
+          + ' with the current values and retry in one step.'
+        : code === 'PUBLISH_UNRESOLVED'
         ? 'eBay accepted the upload but the listing could not be confirmed live.'
           + ' Do not publish again — the item now needs a one-time recovery'
           + ' (leftover eBay draft data must be cleared first). This page will'
@@ -210,7 +216,7 @@ const ListingDetail: React.FC = () => {
           : /BUSY/.test(raw)
             ? 'Another publish is still running — give it a moment.'
             : raw;
-      setPublishResult({ ok: false, message: friendly, canRebase: missingField });
+      setPublishResult({ ok: false, message: friendly, canRebase: missingField || staleBase });
     } finally {
       setPublishing(false);
       setPublishConfirmOpen(false);
