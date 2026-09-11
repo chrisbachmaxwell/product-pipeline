@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
+import { deriveLensAspects } from './camera-aspect-derivation.js';
 import { ListingControlStoreError, deriveListingBaseDigests, openListingControlStore, openListingControlStoreReadOnly, sha256Digest, } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE, LISTING_DRAFT_SINGLE_WRITER_ACK, } from '../listing-control-config.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from './listing-workspace-reader.js';
@@ -224,13 +225,18 @@ function canonicalJson(value) {
  * visibly empty for the operator rather than shipping a wrong aspect.
  * Deliberately omits Model — see the note at the source values.
  */
-function shopifyAspects(content) {
-    if (!content)
+function shopifyAspects(content, title) {
+    // Title-derived lens aspects (Focal Length, Type, Focus Type, Maximum
+    // Aperture, Mount) fill eBay's REQUIRED item specifics for lens
+    // categories; Brand/MPN from Shopify always win on key collision. All of
+    // this is the SOURCE layer — the operator's editor override replaces the
+    // whole set.
+    const aspects = { ...deriveLensAspects(title) };
+    if (!content && Object.keys(aspects).length === 0)
         return null;
-    const aspects = {};
-    if (content.brand !== null)
+    if (content?.brand != null)
         aspects.Brand = [content.brand];
-    if (content.mpn !== null)
+    if (content?.mpn != null)
         aspects.MPN = [content.mpn];
     return Object.keys(aspects).length === 0 ? null : canonicalJson(aspects);
 }
@@ -403,7 +409,7 @@ function eligibleBasis(workspace) {
         // "ST-E2" or "a7 III". It stays an operator field until a Shopify
         // metafield carries it. canonicalJson sorts keys, which the create
         // manifest requires.
-        item_specifics: shopifyAspects(workspace.shopifyContent),
+        item_specifics: shopifyAspects(workspace.shopifyContent, shopify.title),
         identifiers: shopifyIdentifiers(workspace.shopifyContent),
         fulfillment_policy: defaults?.fulfillmentPolicyId ?? null,
         payment_policy: defaults?.paymentPolicyId ?? null,

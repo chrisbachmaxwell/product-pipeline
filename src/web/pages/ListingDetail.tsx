@@ -197,7 +197,14 @@ const ListingDetail: React.FC = () => {
       const fieldLabel = detail?.[2] ? (FIELD_LABELS[detail[2]] ?? detail[2]) : null;
       const missingField = code !== null && /REQUIRED_FIELD|PREREQUISITE|PREVALIDATION/.test(code);
       const staleBase = code !== null && /BASE_STALE/.test(code);
-      const friendly = staleBase
+      // A PUBLISH_UNRESOLVED body now carries eBay's own (sanitized) words
+      // in the error text itself; show them verbatim when present.
+      const providerDetail = code === 'PUBLISH_UNRESOLVED' && /eBay refused the listing:/.test(raw)
+        ? raw.replace(/\s*\(PUBLISH_UNRESOLVED[^)]*\)\s*$/, '')
+        : null;
+      const friendly = providerDetail
+        ? `${providerDetail} The Item specifics panel below lists everything this category requires — fill the named field, save, and publish again.`
+        : staleBase
         ? 'Shopify’s values have changed since this draft was saved (price,'
           + ' description, or automatic defaults). Publishing always uses the'
           + ' saved draft, so use “Update draft & publish again” to re-save'

@@ -32,6 +32,7 @@ import {
   useListingEditorMetadata,
   type ListingEditorIdUsage,
 } from '../hooks/useListingEditorMetadata';
+import { useEbayCategoryAspects, type EbayCategoryAspect } from '../hooks/useApi';
 import {
   isAllowlistedListingHtml,
   LISTING_DESCRIPTION_MAX_LENGTH,
@@ -206,7 +207,9 @@ const SpecificsRows: React.FC<{
   editable: boolean;
   error?: string;
   onChange: (canonicalJson: string) => void;
-}> = ({ label, changed, raw, editable, error, onChange }) => {
+  /** The selected category's specifics (required first), when known. */
+  categoryAspects?: EbayCategoryAspect[];
+}> = ({ label, changed, raw, editable, error, onChange, categoryAspects }) => {
   const parsed = useMemo(() => {
     if (raw === null || raw.trim() === '') return { rows: [] as Array<{ name: string; value: string }>, multi: false };
     try {
@@ -266,6 +269,60 @@ const SpecificsRows: React.FC<{
         </Button>
       </InlineStack>
       {error && <Text as="p" variant="bodySm" tone="critical">{error}</Text>}
+      {(() => {
+        // eBay refuses to publish without the category's REQUIRED specifics
+        // (learned live, 2026-09-11: lenses demand six). Show the gap here,
+        // before publish, with one-click add.
+        const present = new Set(rows.map((row) => row.name.trim().toLowerCase()));
+        const missingRequired = (categoryAspects ?? [])
+          .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()));
+        const suggestions = (categoryAspects ?? [])
+          .filter((aspect) => !aspect.required && !present.has(aspect.name.toLowerCase()))
+          .slice(0, 6);
+        if (missingRequired.length === 0 && suggestions.length === 0) return null;
+        return (
+          <BlockStack gap="150">
+            {missingRequired.length > 0 && (
+              <Banner tone="warning" title="eBay requires these for the selected category">
+                <BlockStack gap="100">
+                  {missingRequired.map((aspect) => (
+                    <InlineStack key={aspect.name} gap="200" blockAlign="center">
+                      <Button
+                        variant="plain"
+                        disabled={!editable}
+                        onClick={() => emit([...rows, { name: aspect.name, value: '' }])}
+                      >
+                        {`Add ${aspect.name}`}
+                      </Button>
+                      {aspect.values.length > 0 && (
+                        <Text as="span" variant="bodySm" tone="subdued">
+                          e.g. {aspect.values.slice(0, 4).join(' · ')}
+                        </Text>
+                      )}
+                    </InlineStack>
+                  ))}
+                </BlockStack>
+              </Banner>
+            )}
+            {suggestions.length > 0 && (
+              <InlineStack gap="200" blockAlign="center" wrap>
+                <Text as="span" variant="bodySm" tone="subdued">Buyers also filter by:</Text>
+                {suggestions.map((aspect) => (
+                  <Button
+                    key={aspect.name}
+                    variant="plain"
+                    size="micro"
+                    disabled={!editable}
+                    onClick={() => emit([...rows, { name: aspect.name, value: '' }])}
+                  >
+                    {`+ ${aspect.name}`}
+                  </Button>
+                ))}
+              </InlineStack>
+            )}
+          </BlockStack>
+        );
+      })()}
       {rows.length === 0 && (
         <Text as="p" tone="subdued">
           Add details buyers filter by — Brand, Model, Type, Mount…
@@ -331,6 +388,15 @@ const ListingDraftEditor: React.FC<Props> = ({
 
   const metadataQuery = useListingEditorMetadata();
   const metadata = metadataQuery.data ?? emptyListingEditorMetadata();
+  // The category that will actually publish: override, else inherited.
+  const effectiveCategoryId = values.category
+    ?? editBase.sections.listing.category.draft
+    ?? editBase.sections.listing.category.shopify
+    ?? editBase.sections.listing.category.ebay;
+  const categoryAspectsQuery = useEbayCategoryAspects(effectiveCategoryId);
+  const categoryAspects = categoryAspectsQuery.data?.available
+    ? categoryAspectsQuery.data.aspects
+    : undefined;
 
   const setValue = (key: keyof EditableValues, value: string | null) => {
     setSaveError(false);
@@ -803,6 +869,7 @@ const ListingDraftEditor: React.FC<Props> = ({
               ? 'Item specifics could not be read — fix the highlighted rows'
               : undefined}
             onChange={(next) => setValue('itemSpecifics', next)}
+            categoryAspects={categoryAspects}
           />
         </BlockStack>
         </Card>
