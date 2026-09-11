@@ -136,6 +136,7 @@ type ExactTargetOptions = {
   offerId: string;
   revisionDigest: string;
   descriptionTemplate?: string;
+  allowUnchanged?: boolean;
 };
 
 type DescriptionTemplateNote = Readonly<{
@@ -232,7 +233,9 @@ async function deriveExactTarget(
   if ((revision as ListingRevision).revisionDigest !== options.revisionDigest) {
     deny('REVISE_DRAFT_REVISION_MISMATCH');
   }
-  const derivedBase = deriveListingReviseManifest(revision as ListingRevision);
+  const derivedBase = deriveListingReviseManifest(revision as ListingRevision, {
+    allowUnchanged: options.allowUnchanged === true,
+  });
   assertFreshBasisMatchesRevision({ revision: revision as ListingRevision, freshBasis: basis });
   const templated = applyTemplateOption(
     derivedBase, revision as ListingRevision, options.descriptionTemplate,
@@ -460,6 +463,11 @@ export function buildListingReviseAdminProgram(
       '--description-template <version>',
       'Opt-in branded description templating; the only supported value is '
       + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`,
+    )
+    .option(
+      '--allow-unchanged',
+      'Permit a zero-change manifest so payload-level policy corrections '
+      + '(catalog-details opt-out) can dispatch on an otherwise-unchanged listing',
     );
 
   withTargetOptions(program

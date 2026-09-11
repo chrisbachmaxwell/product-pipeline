@@ -506,6 +506,21 @@ describe('listing-revise operator CLI', () => {
     expect(payloads.inventoryItemChanged).toBe(true);
     expect(payloads.offerChanged).toBe(false);
 
+    // Policy-only mode: zero overrides is a hard deny by default and
+    // permitted only with the explicit opt-in.
+    const noOverrides = {
+      ...world.revision,
+      fields: world.revision.fields.map((field) => ({
+        ...field,
+        proposedSource: field.proposedSource === 'override' ? 'source' : field.proposedSource,
+        overrideValue: null,
+      })),
+    } as typeof world.revision;
+    expect(() => deriveListingReviseManifest(noOverrides))
+      .toThrow('Listing revise manifest derivation failed');
+    const unchanged = deriveListingReviseManifest(noOverrides, { allowUnchanged: true });
+    expect(unchanged.manifest.changes).toHaveLength(0);
+
     // Catalog-details policy: a raw offer still carrying eBay's TRUE
     // default gets corrected (and therefore dispatched) by any revise.
     const legacyOffer = { ...rawOffer() };
