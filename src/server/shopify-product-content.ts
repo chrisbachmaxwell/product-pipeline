@@ -189,45 +189,62 @@ export function createShopifyProductContentReader(dependencies: Readonly<{
     }
     if (typeof token !== 'string' || token.length === 0 || token.length > 4_096) fail();
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    let status = 0;
-    let text = '';
-    try {
-      const response = await fetchImpl(`${SHOPIFY_ADMIN_ORIGIN}${SHOPIFY_ADMIN_PATH}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': token,
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          query: PRODUCT_CONTENT_QUERY,
-          variables: { id: productGid, variantId: variantGid },
-        }),
-        redirect: 'error',
-        signal: controller.signal,
-      });
-      const declared = Number(response.headers.get('content-length') ?? '0');
-      if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) fail();
-      text = await response.text();
-      if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) fail();
-      status = response.status;
-    } catch (error) {
-      if (error instanceof ShopifyProductContentError) throw error;
-      fail();
-    } finally {
-      clearTimeout(timeout);
+    // Shopify signals throttling as HTTP 429 OR as a 200 whose GraphQL body
+    // carries a THROTTLED error. Every ceremony (preflight, dispatch,
+    // reconcile) runs this read, and during 2026-09-11's bulk publishing a
+    // single throttled response killed whole dispatches. Bounded retries
+    // with a fixed pause absorb it.
+    let body: Record<string, unknown> | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => { setTimeout(resolve, 8_000); });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      let status = 0;
+      let text = '';
+      try {
+        const response = await fetchImpl(`${SHOPIFY_ADMIN_ORIGIN}${SHOPIFY_ADMIN_PATH}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': token,
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            query: PRODUCT_CONTENT_QUERY,
+            variables: { id: productGid, variantId: variantGid },
+          }),
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        const declared = Number(response.headers.get('content-length') ?? '0');
+        if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) fail();
+        text = await response.text();
+        if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) fail();
+        status = response.status;
+      } catch (error) {
+        if (error instanceof ShopifyProductContentError) throw error;
+        fail();
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (status === 429 && attempt < 2) continue;
+      if (status !== 200) fail();
+      let parsed: Record<string, unknown> | null;
+      try {
+        parsed = asRecord(JSON.parse(text));
+      } catch {
+        return fail();
+      }
+      if (parsed !== null && parsed.errors !== undefined) {
+        if (attempt < 2 && /THROTTLED/i.test(JSON.stringify(parsed.errors).slice(0, 2_000))) {
+          continue;
+        }
+        fail();
+      }
+      body = parsed;
+      break;
     }
-    if (status !== 200) fail();
-
-    let body: Record<string, unknown> | null;
-    try {
-      body = asRecord(JSON.parse(text));
-    } catch {
-      return fail();
-    }
-    if (body === null || body.errors !== undefined) fail();
+    if (body === null) fail();
     const product = asRecord(asRecord(body.data)?.product);
     if (product === null) fail();
     // The response must be the product that was asked for, never a redirect
