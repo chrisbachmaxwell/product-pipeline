@@ -221,12 +221,21 @@ const ListingDetail: React.FC = () => {
   // operator override, re-inheriting today's source values and defaults),
   // then publish the fresh revision immediately.
   const [rebasing, setRebasing] = useState(false);
+  // Re-save keeping operator overrides while re-inheriting today's source
+  // values (defaults, brand, description improvements). Exposed both as the
+  // failure-banner one-click and as a standalone action, because a saved
+  // revision is a snapshot: source-side fixes never enter it on their own.
+  const rebaseDraft = async () => {
+    if (!currentDraft) return null;
+    await saveDraft.mutateAsync(buildListingDraftRebaseInput(currentDraft));
+    return localDraft.refetch();
+  };
   const rebaseAndPublish = async () => {
     if (!currentDraft || rebasing) return;
     setRebasing(true);
     try {
-      await saveDraft.mutateAsync(buildListingDraftRebaseInput(currentDraft));
-      const refreshed = await localDraft.refetch();
+      const refreshed = await rebaseDraft();
+      if (!refreshed) return;
       const freshDigest = isListingDraftResponse(refreshed.data, id)
         ? refreshed.data.revision?.revisionDigest
         : undefined;
@@ -387,6 +396,10 @@ const ListingDetail: React.FC = () => {
       } : undefined}
       secondaryActions={[
         ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
+        ...(currentDraft?.revision ? [{
+          content: 'Refresh draft from Shopify',
+          onAction: () => { void rebaseDraft(); },
+        }] : []),
         { content: 'Preview eBay description', onAction: () => setDescriptionPreviewOpen(true) },
         { content: 'Check market prices', onAction: () => setPriceCheckOpen(true) },
         ...(shopifyUrl ? [{ content: 'View in Shopify', url: shopifyUrl, external: true }] : []),
