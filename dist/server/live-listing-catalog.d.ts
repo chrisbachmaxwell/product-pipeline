@@ -152,6 +152,14 @@ export type LiveListingCatalogRow = Readonly<{
      * rows; optional so pre-existing fixtures compile (absent means false).
      */
     readyToList?: boolean;
+    /**
+     * Present only on ready rows missing something publish preflight will
+     * refuse without. Today the single detectable gap is 'condition' (no
+     * recognized condition-… product tag, so the auto-default cannot fill
+     * it). The row STAYS in the ready queue — the operator asked to see
+     * these with a callout, not to have them hidden (2026-09-11).
+     */
+    readyToListGaps?: readonly 'condition'[];
     lastVerifiedAtUtc: string;
     audit: Readonly<{
         verified: boolean;

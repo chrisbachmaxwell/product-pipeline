@@ -4,6 +4,7 @@ export declare function createListingPublishRouter(dependencies?: Readonly<{
     runStep?: StepRunner;
     preflightArgv?: readonly string[] | null;
     dispatchArgv?: readonly string[] | null;
+    refreshCatalog?: () => Promise<unknown>;
 }>): Router;
 declare const _default: Router;
 export default _default;

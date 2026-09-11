@@ -1,3 +1,5 @@
+import { conditionFromTags } from '../shared/condition-tags.js';
+
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
 export type ListingAttentionReason =
@@ -165,6 +167,14 @@ export type LiveListingCatalogRow = Readonly<{
    * rows; optional so pre-existing fixtures compile (absent means false).
    */
   readyToList?: boolean;
+  /**
+   * Present only on ready rows missing something publish preflight will
+   * refuse without. Today the single detectable gap is 'condition' (no
+   * recognized condition-… product tag, so the auto-default cannot fill
+   * it). The row STAYS in the ready queue — the operator asked to see
+   * these with a callout, not to have them hidden (2026-09-11).
+   */
+  readyToListGaps?: readonly 'condition'[];
   lastVerifiedAtUtc: string;
   audit: Readonly<{
     verified: boolean;
@@ -482,8 +492,13 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       && variant.sku.trim() !== ''
       && reasons.size === 0;
 
+    const readyToListGaps = readyToList && conditionFromTags(variant.productTags) === null
+      ? Object.freeze(['condition' as const])
+      : null;
+
     return [Object.freeze({
       id: `shopify-variant:${variant.variantId}`,
+      ...(readyToListGaps ? { readyToListGaps } : {}),
       shopify: Object.freeze({
         ...variant,
         productTags: Object.freeze([...(variant.productTags ?? [])]),
