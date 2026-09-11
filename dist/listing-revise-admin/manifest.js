@@ -76,7 +76,7 @@ function revisionField(revision, field) {
  * override is dispatchable for the target's management model, and the
  * revision observed the preserved price and quantity values.
  */
-export function deriveListingReviseManifest(revision) {
+export function deriveListingReviseManifest(revision, options = {}) {
     const identity = revision.identity;
     const inventoryManaged = identity.managementModel === 'inventory_api'
         && identity.ebayInventorySku !== null
@@ -90,7 +90,7 @@ export function deriveListingReviseManifest(revision) {
         deny('REVISE_TARGET_NOT_INVENTORY_MANAGED');
     }
     const overrides = revision.fields.filter((field) => field.proposedSource === 'override' && field.overrideValue !== null);
-    if (overrides.length === 0)
+    if (overrides.length === 0 && options.allowUnchanged !== true)
         deny('REVISE_NO_CHANGES');
     const dispatchable = new Set(tradingManaged ? TRADING_DISPATCHABLE_FIELDS : DISPATCHABLE_FIELDS);
     for (const field of overrides) {

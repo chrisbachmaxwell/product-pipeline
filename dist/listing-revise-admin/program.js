@@ -147,7 +147,9 @@ async function deriveExactTarget(dependencies, options) {
     if (revision.revisionDigest !== options.revisionDigest) {
         deny('REVISE_DRAFT_REVISION_MISMATCH');
     }
-    const derivedBase = deriveListingReviseManifest(revision);
+    const derivedBase = deriveListingReviseManifest(revision, {
+        allowUnchanged: options.allowUnchanged === true,
+    });
     assertFreshBasisMatchesRevision({ revision: revision, freshBasis: basis });
     const templated = applyTemplateOption(derivedBase, revision, options.descriptionTemplate);
     return {
@@ -329,7 +331,9 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
         .requiredOption('--offer-id <id>', 'Exact eBay offer id of the one target, or the literal "none" for a Trading-model target')
         .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest')
         .option('--description-template <version>', 'Opt-in branded description templating; the only supported value is '
-        + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`);
+        + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`)
+        .option('--allow-unchanged', 'Permit a zero-change manifest so payload-level policy corrections '
+        + '(catalog-details opt-out) can dispatch on an otherwise-unchanged listing');
     withTargetOptions(program
         .command('preflight')
         .description('Derive and print the exact dispatch manifest without any store or provider write'))

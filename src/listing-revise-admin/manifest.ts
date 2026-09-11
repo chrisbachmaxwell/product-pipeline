@@ -123,7 +123,19 @@ function revisionField(revision: ListingRevision, field: ListingFieldName) {
  * override is dispatchable for the target's management model, and the
  * revision observed the preserved price and quantity values.
  */
-export function deriveListingReviseManifest(revision: ListingRevision): DerivedListingReviseManifest {
+export function deriveListingReviseManifest(
+  revision: ListingRevision,
+  options: Readonly<{
+    /**
+     * Policy-only revises (2026-09-11): permit a manifest with ZERO field
+     * changes so the dispatch can still apply payload-level policy
+     * corrections (today: forcing includeCatalogProductDetails false on
+     * offers published before the create-side fix). Explicit opt-in via
+     * the CLI's --allow-unchanged; a plain revise still refuses no-ops.
+     */
+    allowUnchanged?: boolean;
+  }> = {},
+): DerivedListingReviseManifest {
   const identity = revision.identity;
   const inventoryManaged = identity.managementModel === 'inventory_api'
     && identity.ebayInventorySku !== null
@@ -140,7 +152,7 @@ export function deriveListingReviseManifest(revision: ListingRevision): DerivedL
   const overrides = revision.fields.filter(
     (field) => field.proposedSource === 'override' && field.overrideValue !== null,
   );
-  if (overrides.length === 0) deny('REVISE_NO_CHANGES');
+  if (overrides.length === 0 && options.allowUnchanged !== true) deny('REVISE_NO_CHANGES');
   const dispatchable = new Set<ListingFieldName>(
     tradingManaged ? TRADING_DISPATCHABLE_FIELDS : DISPATCHABLE_FIELDS,
   );

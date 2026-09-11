@@ -70,7 +70,16 @@ export type DerivedListingReviseManifest = Readonly<{
  * override is dispatchable for the target's management model, and the
  * revision observed the preserved price and quantity values.
  */
-export declare function deriveListingReviseManifest(revision: ListingRevision): DerivedListingReviseManifest;
+export declare function deriveListingReviseManifest(revision: ListingRevision, options?: Readonly<{
+    /**
+     * Policy-only revises (2026-09-11): permit a manifest with ZERO field
+     * changes so the dispatch can still apply payload-level policy
+     * corrections (today: forcing includeCatalogProductDetails false on
+     * offers published before the create-side fix). Explicit opt-in via
+     * the CLI's --allow-unchanged; a plain revise still refuses no-ops.
+     */
+    allowUnchanged?: boolean;
+}>): DerivedListingReviseManifest;
 export type TemplatedListingReviseManifest = Readonly<{
     manifest: ListingReviseManifest;
     manifestDigest: Digest;
