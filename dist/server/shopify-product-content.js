@@ -27,6 +27,7 @@ const PRODUCT_GID_PATTERN = /^gid:\/\/shopify\/Product\/\d{1,32}$/u;
 const PRODUCT_CONTENT_QUERY = `query ListingDraftProductContent($id: ID!, $variantId: ID!) {
   product(id: $id) {
     id
+    title
     vendor
     descriptionHtml
     media(first: ${MAX_IMAGES}) {

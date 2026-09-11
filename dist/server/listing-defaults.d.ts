@@ -1,4 +1,5 @@
 import { buildListingEditorMetadata } from './listing-editor-metadata.js';
+export { conditionFromTags } from '../shared/condition-tags.js';
 import type { EbayCategorySearch } from './ebay-category-search.js';
 /**
  * Automatic draft defaults, so a ready-to-list item needs review, not data
@@ -18,10 +19,12 @@ export type ListingDefaults = Readonly<{
     returnPolicyId: string | null;
     merchantLocationKey: string | null;
 }>;
-export declare function conditionFromTags(productTags: readonly string[] | undefined): {
-    id: string;
-    description: string;
-} | null;
+/**
+ * The store's grading scale (usedcameragear.com Item Condition Chart) mapped
+ * to eBay's used-condition IDs, with the chart's own buyer-facing language
+ * as the condition description. eBay grades: 2750 Like New · 3000 Excellent
+ * · 4000 Very Good · 5000 Good · 6000 Acceptable · 7000 For parts.
+ */
 /** Strip the store's title decorations before asking eBay for categories. */
 export declare function categoryQueryFromTitle(title: string): string;
 export declare function createListingDefaultsReader(dependencies?: Readonly<{

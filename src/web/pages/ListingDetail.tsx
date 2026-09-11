@@ -179,7 +179,15 @@ const ListingDetail: React.FC = () => {
         },
       );
       setPublishResult({ ok: true, listingId: result.listingId ?? null });
-      void workspace.refetch();
+      // The server refreshed its catalog; poll the workspace until the new
+      // listing shows up so the operator never has to reload by hand.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const refreshed = await workspace.refetch();
+        const listed = isListingWorkspaceResponse(refreshed.data, id)
+          && refreshed.data.catalog.ebay.listingId !== null;
+        if (listed) break;
+        await new Promise((resolve) => { setTimeout(resolve, 4000); });
+      }
     } catch (error) {
       const raw = error instanceof Error ? error.message : 'Publish failed';
       // apiClient appends "(CODE: field)" when the server names the refusal.
@@ -187,7 +195,12 @@ const ListingDetail: React.FC = () => {
       const code = detail?.[1] ?? null;
       const fieldLabel = detail?.[2] ? (FIELD_LABELS[detail[2]] ?? detail[2]) : null;
       const missingField = code !== null && /REQUIRED_FIELD|PREREQUISITE|PREVALIDATION/.test(code);
-      const friendly = missingField
+      const friendly = code === 'PUBLISH_UNRESOLVED'
+        ? 'eBay accepted the upload but the listing could not be confirmed live.'
+          + ' Do not publish again — the item now needs a one-time recovery'
+          + ' (leftover eBay draft data must be cleared first). This page will'
+          + ' show “Fix needed” until that is done.'
+        : missingField
         ? `eBay requires ${fieldLabel ?? 'a field'} and the saved draft does not have it yet.`
           + ' Your draft was saved before this value auto-filled — use'
           + ' “Update draft & publish again” below to re-save with the values'
@@ -398,10 +411,8 @@ const ListingDetail: React.FC = () => {
           >
             {publishResult.ok ? (
               <Text as="p">
-                Published to eBay.
-                {publishResult.listingId
-                  ? ` Listing ${publishResult.listingId} is live — it will appear here on the next refresh.`
-                  : ' It will appear here on the next refresh.'}
+                Published — eBay listing {publishResult.listingId ?? ''} is live
+                and verified. This page is updating itself now.
               </Text>
             ) : (
               <Text as="p">{publishResult.message}</Text>

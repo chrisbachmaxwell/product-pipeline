@@ -48,6 +48,9 @@ function parseArgvEnv(name) {
 }
 export function createListingPublishRouter(dependencies = {}) {
     const runStep = dependencies.runStep ?? createProcessStepRunner();
+    const refreshCatalog = dependencies.refreshCatalog
+        ?? (async () => (await import('../live-listing-catalog-source.js'))
+            .getLiveListingCatalogSnapshot.refresh());
     const preflightArgv = dependencies.preflightArgv !== undefined
         ? dependencies.preflightArgv : parseArgvEnv('PUBLISH_PREFLIGHT_ARGV');
     const dispatchArgv = dependencies.dispatchArgv !== undefined
@@ -110,6 +113,24 @@ export function createListingPublishRouter(dependencies = {}) {
                 const listingId = typeof dispatched.json?.listingId === 'string' ? dispatched.json.listingId : null;
                 const offerId = typeof dispatched.json?.offerId === 'string' ? dispatched.json.offerId : null;
                 info(`[Listing Publish] ${sku}: ${status}${listingId ? ` listing ${listingId}` : ''}`);
+                // TRUTH GATE (2026-09-11 incident): a dispatch that could not verify
+                // the listing live on eBay is NOT a success — the first UI publish
+                // returned a green "Published" banner while the offer sat
+                // UNPUBLISHED. Only a reconciled create with a listing id may report
+                // success; anything else is surfaced as unresolved for recovery.
+                if (status !== 'created-and-reconciled' || listingId === null) {
+                    warn(`[Listing Publish] ${sku}: unresolved dispatch (${status})`);
+                    res.status(502).json({
+                        error: 'eBay accepted the upload but the listing could not be confirmed live',
+                        code: 'PUBLISH_UNRESOLVED',
+                        stage: 'dispatch',
+                        status,
+                    });
+                    return;
+                }
+                // Fire-and-forget so the catalog reflects the new listing without
+                // waiting for the next census; the client polls the workspace.
+                void refreshCatalog().catch(() => undefined);
                 res.json({
                     schemaVersion: 1,
                     status,
