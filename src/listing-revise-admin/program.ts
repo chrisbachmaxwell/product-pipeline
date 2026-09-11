@@ -136,7 +136,7 @@ type ExactTargetOptions = {
   offerId: string;
   revisionDigest: string;
   descriptionTemplate?: string;
-  allowUnchanged?: boolean;
+  allowUnchanged?: boolean | string;
 };
 
 type DescriptionTemplateNote = Readonly<{
@@ -233,8 +233,16 @@ async function deriveExactTarget(
   if ((revision as ListingRevision).revisionDigest !== options.revisionDigest) {
     deny('REVISE_DRAFT_REVISION_MISMATCH');
   }
+  const allowUnchanged = options.allowUnchanged !== undefined
+    && options.allowUnchanged !== false;
+  const rawOrdinal = typeof options.allowUnchanged === 'string'
+    ? Number.parseInt(options.allowUnchanged, 10)
+    : undefined;
   const derivedBase = deriveListingReviseManifest(revision as ListingRevision, {
-    allowUnchanged: options.allowUnchanged === true,
+    allowUnchanged,
+    ...(rawOrdinal !== undefined && Number.isSafeInteger(rawOrdinal) && rawOrdinal > 0
+      ? { policyOrdinal: rawOrdinal }
+      : {}),
   });
   assertFreshBasisMatchesRevision({ revision: revision as ListingRevision, freshBasis: basis });
   const templated = applyTemplateOption(
@@ -465,9 +473,11 @@ export function buildListingReviseAdminProgram(
       + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`,
     )
     .option(
-      '--allow-unchanged',
+      '--allow-unchanged [ordinal]',
       'Permit a zero-change manifest so payload-level policy corrections '
-      + '(catalog-details opt-out) can dispatch on an otherwise-unchanged listing',
+      + '(catalog-details opt-out) can dispatch on an otherwise-unchanged '
+      + 'listing; the optional ordinal salts the manifest digest so an '
+      + 'operator-authorized retry gets a fresh single-use intent',
     );
 
   withTargetOptions(program

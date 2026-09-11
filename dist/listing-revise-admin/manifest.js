@@ -117,6 +117,11 @@ export function deriveListingReviseManifest(revision, options = {}) {
         baseEbayObservationDigest: revision.baseEbayObservationDigest,
         changes: Object.freeze(changes),
         preserved: Object.freeze({ price: preservedPrice, quantity: preservedQuantity }),
+        ...(options.allowUnchanged === true
+            && Number.isSafeInteger(options.policyOrdinal)
+            && options.policyOrdinal > 0
+            ? { policyOrdinal: options.policyOrdinal }
+            : {}),
     });
     return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
 }

@@ -678,3 +678,26 @@ describe('listing-revise operator CLI', () => {
     expect(manifestSource).not.toMatch(/fetch\s*\(/);
   });
 });
+
+describe('revise dispatch adapter headers', () => {
+  it('sends a well-formed Accept-Language header and never the underscore typo', async () => {
+    // eBay 25709-rejects 'Accept_Language'; the create adapter pinned this
+    // in 2026-08 but the revise adapter kept the typo until the first LIVE
+    // inventory-model revise died on it (2026-09-11).
+    const { createListingReviseDispatchAdapter } = await import('../dispatch-adapter.js');
+    let seenAccept: string | null = null;
+    let hasUnderscore = true;
+    const adapter = createListingReviseDispatchAdapter({
+      getAccessToken: async () => 'token',
+      fetchImpl: (async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+        const headers = new Headers(init?.headers);
+        seenAccept = headers.get('Accept-Language');
+        hasUnderscore = headers.has('Accept_Language');
+        return new Response('{"sku":"X"}', { status: 200 });
+      }) as typeof fetch,
+    });
+    await adapter.getInventoryItem('X').catch(() => undefined);
+    expect(seenAccept).toBe('en-US');
+    expect(hasUnderscore).toBe(false);
+  });
+});
