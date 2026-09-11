@@ -11,6 +11,7 @@ import {
   Page,
   SkeletonBodyText,
   Text,
+  Toast,
 } from '@shopify/polaris';
 import { useNavigate, useParams } from 'react-router-dom';
 import ListingDraftEditor from '../components/ListingDraftEditor';
@@ -227,6 +228,10 @@ const ListingDetail: React.FC = () => {
   // operator override, re-inheriting today's source values and defaults),
   // then publish the fresh revision immediately.
   const [rebasing, setRebasing] = useState(false);
+  // Every action must visibly START and visibly END (operator feedback rule,
+  // 2026-09-11: 'Refresh draft' failed silently — no spinner, no error, no
+  // way to know anything happened).
+  const [toast, setToast] = useState<string | null>(null);
   // Re-save keeping operator overrides while re-inheriting today's source
   // values (defaults, brand, description improvements). Exposed both as the
   // failure-banner one-click and as a standalone action, because a saved
@@ -236,12 +241,39 @@ const ListingDetail: React.FC = () => {
     await saveDraft.mutateAsync(buildListingDraftRebaseInput(currentDraft));
     return localDraft.refetch();
   };
+  const refreshDraftAction = async () => {
+    if (rebasing) return;
+    setRebasing(true);
+    setToast('Refreshing draft…');
+    try {
+      const refreshed = await rebaseDraft();
+      const revisionNumber = refreshed && isListingDraftResponse(refreshed.data, id)
+        ? refreshed.data.revision?.revisionNumber ?? null
+        : null;
+      setToast(null);
+      setPublishResult(null);
+      setToast(revisionNumber !== null
+        ? `Draft refreshed — revision ${revisionNumber} saved with current Shopify values`
+        : 'Draft refreshed with current Shopify values');
+    } catch (error) {
+      setToast(null);
+      setPublishResult({
+        ok: false,
+        message: `Draft refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+        canRebase: false,
+      });
+    } finally {
+      setRebasing(false);
+    }
+  };
   const rebaseAndPublish = async () => {
     if (!currentDraft || rebasing) return;
     setRebasing(true);
+    setToast('Updating draft…');
     try {
       const refreshed = await rebaseDraft();
       if (!refreshed) return;
+      setToast('Draft updated — publishing…');
       const freshDigest = isListingDraftResponse(refreshed.data, id)
         ? refreshed.data.revision?.revisionDigest
         : undefined;
@@ -254,10 +286,11 @@ const ListingDetail: React.FC = () => {
           canRebase: false,
         });
       }
-    } catch {
+    } catch (error) {
+      setToast(null);
       setPublishResult({
         ok: false,
-        message: 'Re-saving the draft failed. Reload this listing and try again.',
+        message: `Re-saving the draft failed: ${error instanceof Error ? error.message : 'unknown error'}. Reload this listing and try again.`,
         canRebase: false,
       });
     } finally {
@@ -403,8 +436,8 @@ const ListingDetail: React.FC = () => {
       secondaryActions={[
         ...(canEdit ? [{ content: 'Edit local draft', onAction: () => { void openFreshEditor(); } }] : []),
         ...(currentDraft?.revision ? [{
-          content: 'Refresh draft from Shopify',
-          onAction: () => { void rebaseDraft(); },
+          content: rebasing ? 'Refreshing draft…' : 'Refresh draft from Shopify',
+          onAction: () => { void refreshDraftAction(); },
         }] : []),
         { content: 'Preview eBay description', onAction: () => setDescriptionPreviewOpen(true) },
         { content: 'Check market prices', onAction: () => setPriceCheckOpen(true) },
@@ -412,6 +445,9 @@ const ListingDetail: React.FC = () => {
       ]}
     >
       <BlockStack gap="400">
+        {toast && (
+          <Toast content={toast} onDismiss={() => setToast(null)} duration={4000} />
+        )}
         <InlineStack align="end">
           <Text as="span" variant="bodySm" tone="subdued">
             {formatVerifiedAt(observedAt)} · refreshes every few minutes
