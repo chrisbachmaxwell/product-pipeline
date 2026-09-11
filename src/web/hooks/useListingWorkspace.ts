@@ -396,6 +396,6 @@ export const useListingWorkspace = (id: string | undefined) =>
     ),
     enabled: Boolean(id),
     staleTime: 0,
-    refetchInterval: 120_000,
+    refetchInterval: 300_000,
     refetchOnWindowFocus: true,
   });
