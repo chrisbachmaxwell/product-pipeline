@@ -193,6 +193,20 @@ export function buildListingEditorMetadata(snapshot, sweepObservations = []) {
             ?? safeFacetString(offer?.returnPolicyId));
         tally(merchantLocations, safeFacetString(offer?.merchantLocationKey));
     }
+    // The census's location capture: bulk getOffers omits merchantLocationKey
+    // in practice, so without this the list — and the auto-default every
+    // create requires — stays empty. Zero usage-count entries rank last, so
+    // real usage data still wins whenever it exists.
+    if (Array.isArray(snapshot.merchantLocationKeys)) {
+        for (const raw of snapshot.merchantLocationKeys.slice(0, MAX_FACET_ENTRIES)) {
+            const key = safeFacetString(raw);
+            // Same grammar the create preflight enforces; anything else could
+            // flow into the location auto-default and fail every publish.
+            if (key !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,35}$/.test(key)
+                && !merchantLocations.has(key))
+                merchantLocations.set(key, 0);
+        }
+    }
     return Object.freeze({
         conditions: EBAY_CONDITIONS,
         categories: categoryList(categories),

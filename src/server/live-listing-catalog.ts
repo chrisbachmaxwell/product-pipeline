@@ -181,6 +181,12 @@ export type LiveListingCatalogSnapshot = Readonly<{
   rows: readonly LiveListingCatalogRow[];
   /** Additive; absent on hand-built snapshots. Never served through row projections. */
   editorFacets?: readonly ListingEditorFacetObservation[];
+  /**
+   * Additive: the seller's enabled Inventory API merchant location keys,
+   * captured once per census. Feeds editor metadata and the location
+   * auto-default every create requires.
+   */
+  merchantLocationKeys?: readonly string[];
   summary: Readonly<{
     active: number;
     notListed: number;

@@ -100,8 +100,9 @@ export function createListingPublishRouter(dependencies: Readonly<{
         const manifestDigest = preflight.json?.manifestDigest;
         if (typeof manifestDigest !== 'string' || !DIGEST.test(manifestDigest)) {
           const code = typeof preflight.json?.code === 'string' ? preflight.json.code : 'no-summary';
-          warn(`[Listing Publish] preflight refused ${sku}: ${code}`);
-          res.status(422).json({ error: 'Preflight refused the draft', code, stage: 'preflight' });
+          const field = typeof preflight.json?.field === 'string' ? preflight.json.field : null;
+          warn(`[Listing Publish] preflight refused ${sku}: ${code}${field ? ` field=${field}` : ''}`);
+          res.status(422).json({ error: 'Preflight refused the draft', code, field, stage: 'preflight' });
           return;
         }
         const prerequisites = preflight.json?.prerequisites;
@@ -111,8 +112,9 @@ export function createListingPublishRouter(dependencies: Readonly<{
         const status = typeof dispatched.json?.status === 'string' ? dispatched.json.status : 'no-summary';
         if (dispatched.json === null || status === 'denied') {
           const code = typeof dispatched.json?.code === 'string' ? dispatched.json.code : 'no-summary';
-          warn(`[Listing Publish] dispatch refused ${sku}: ${code}`);
-          res.status(422).json({ error: 'Dispatch refused', code, stage: 'dispatch' });
+          const field = typeof dispatched.json?.field === 'string' ? dispatched.json.field : null;
+          warn(`[Listing Publish] dispatch refused ${sku}: ${code}${field ? ` field=${field}` : ''}`);
+          res.status(422).json({ error: 'Dispatch refused', code, field, stage: 'dispatch' });
           return;
         }
         const listingId = typeof dispatched.json?.listingId === 'string' ? dispatched.json.listingId : null;

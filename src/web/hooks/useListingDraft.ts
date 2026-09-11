@@ -370,3 +370,38 @@ export const useSaveListingDraft = (catalogId: string | undefined) => {
     },
   });
 };
+
+/**
+ * A "rebase" save input: every stored operator override is kept exactly as
+ * saved and every non-overridden field re-inherits TODAY's source values.
+ * Exists because a saved revision snapshots the source layer at save time:
+ * a draft saved before the automatic defaults (or any later source
+ * improvement) can fail publish preflight on fields the editor now shows
+ * filled. Saving this input creates a fresh revision without the operator
+ * having to fake an edit.
+ */
+export const buildListingDraftRebaseInput = (
+  draft: ListingDraftResponse,
+): ListingDraftSaveInput => ({
+  schemaVersion: 1,
+  action: 'save_local_draft',
+  catalogId: draft.catalogId,
+  expectedRevisionDigest: draft.revision?.revisionDigest ?? null,
+  base: {
+    sourceDigest: draft.base.sourceDigest,
+    ebayDigest: draft.base.ebayDigest,
+  },
+  draft: {
+    title: draft.sections.listing.title.draft,
+    category: draft.sections.listing.category.draft,
+    condition: draft.sections.listing.condition.draft,
+    conditionDescription: draft.sections.listing.conditionDescription.draft,
+    description: draft.sections.content.description.draft,
+    images: draft.sections.content.images.draft,
+    itemSpecifics: draft.sections.content.itemSpecifics.draft,
+    fulfillmentPolicyId: draft.sections.delivery.fulfillmentPolicyId.draft,
+    paymentPolicyId: draft.sections.delivery.paymentPolicyId.draft,
+    returnPolicyId: draft.sections.delivery.returnPolicyId.draft,
+    merchantLocation: draft.sections.delivery.merchantLocation.draft,
+  },
+});

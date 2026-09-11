@@ -118,3 +118,18 @@ export const useEbayCategoryBrowse = (
     isError: enabled && browse.isError,
   };
 };
+
+/**
+ * Full "Root:…:Leaf (id)" path label for one category id, resolved from the
+ * same in-memory tree the drill-down browser uses (no provider calls). Null
+ * while loading or when the id cannot be resolved. Replaces the deleted
+ * per-listing GetItem facet sweep as the editor's category-name source.
+ */
+export const useEbayCategoryPath = (id: string | null): string | null => {
+  const numeric = id !== null && /^\d+$/u.test(id);
+  const browse = useEbayCategoryBrowse(numeric ? id : null, numeric);
+  if (!numeric) return null;
+  const crumbs = browse.level.breadcrumb;
+  if (crumbs.length === 0 || crumbs[crumbs.length - 1]!.id !== id) return null;
+  return `${crumbs.map((crumb) => crumb.name).join(':')} (${id})`;
+};

@@ -493,6 +493,23 @@ describe('GET /api/listing-editor-metadata', () => {
     expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.tradingListingFacets({ ItemID: '1' })).toEqual({});
   });
 
+  it('merges census-captured merchant location keys at zero usage, real usage first', () => {
+    const snapshot = {
+      ...snapshotWithRows([]),
+      merchantLocationKeys: ['pictureline-slc', 'warehouse-1', 'bad key!', 42],
+      editorFacets: [{
+        listingId: '1', categoryId: null, categoryName: null,
+        fulfillmentPolicyId: null, paymentPolicyId: null, returnPolicyId: null,
+        merchantLocationKey: 'warehouse-1',
+      }],
+    } as never;
+    const metadata = buildListingEditorMetadata(snapshot);
+    expect(metadata.merchantLocations).toEqual([
+      { id: 'warehouse-1', usageCount: 1 },
+      { id: 'pictureline-slc', usageCount: 0 },
+    ]);
+  });
+
   it('extracts only validated facets from captured offer bodies', () => {
     expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.offerListingFacets({
       offerId: 'OFFER-A',
