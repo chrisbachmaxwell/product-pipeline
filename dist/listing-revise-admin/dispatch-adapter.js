@@ -81,7 +81,10 @@ export function createListingReviseDispatchAdapter(dependencies) {
             Accept: 'application/json',
             'Content-Type': 'application/json',
             'Content-Language': 'en-US',
-            Accept_Language: 'en-US',
+            // eBay rejects the malformed 'Accept_Language' name with 25709; this
+            // latent typo broke every LIVE inventory-model revise until the first
+            // one actually ran (2026-09-11).
+            'Accept-Language': 'en-US',
         };
     }
     async function getResource(kind, identifier) {
