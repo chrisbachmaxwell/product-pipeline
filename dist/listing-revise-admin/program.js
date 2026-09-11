@@ -147,8 +147,16 @@ async function deriveExactTarget(dependencies, options) {
     if (revision.revisionDigest !== options.revisionDigest) {
         deny('REVISE_DRAFT_REVISION_MISMATCH');
     }
+    const allowUnchanged = options.allowUnchanged !== undefined
+        && options.allowUnchanged !== false;
+    const rawOrdinal = typeof options.allowUnchanged === 'string'
+        ? Number.parseInt(options.allowUnchanged, 10)
+        : undefined;
     const derivedBase = deriveListingReviseManifest(revision, {
-        allowUnchanged: options.allowUnchanged === true,
+        allowUnchanged,
+        ...(rawOrdinal !== undefined && Number.isSafeInteger(rawOrdinal) && rawOrdinal > 0
+            ? { policyOrdinal: rawOrdinal }
+            : {}),
     });
     assertFreshBasisMatchesRevision({ revision: revision, freshBasis: basis });
     const templated = applyTemplateOption(derivedBase, revision, options.descriptionTemplate);
@@ -332,8 +340,10 @@ export function buildListingReviseAdminProgram(dependencies = {}) {
         .requiredOption('--revision-digest <sha256>', 'Exact approved draft revision digest')
         .option('--description-template <version>', 'Opt-in branded description templating; the only supported value is '
         + `"${LISTING_DESCRIPTION_TEMPLATE_VERSION}"`)
-        .option('--allow-unchanged', 'Permit a zero-change manifest so payload-level policy corrections '
-        + '(catalog-details opt-out) can dispatch on an otherwise-unchanged listing');
+        .option('--allow-unchanged [ordinal]', 'Permit a zero-change manifest so payload-level policy corrections '
+        + '(catalog-details opt-out) can dispatch on an otherwise-unchanged '
+        + 'listing; the optional ordinal salts the manifest digest so an '
+        + 'operator-authorized retry gets a fresh single-use intent');
     withTargetOptions(program
         .command('preflight')
         .description('Derive and print the exact dispatch manifest without any store or provider write'))

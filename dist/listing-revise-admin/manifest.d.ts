@@ -79,6 +79,14 @@ export declare function deriveListingReviseManifest(revision: ListingRevision, o
      * the CLI's --allow-unchanged; a plain revise still refuses no-ops.
      */
     allowUnchanged?: boolean;
+    /**
+     * Operator-supplied retry ordinal for policy-only revises: mixed into
+     * the manifest (and so its digest/intent), because a dispatch that
+     * fails before writing still consumes its single-use intent, and a
+     * zero-change manifest is otherwise byte-identical on every retry.
+     * Each ordinal is one explicit operator authorization.
+     */
+    policyOrdinal?: number;
 }>): DerivedListingReviseManifest;
 export type TemplatedListingReviseManifest = Readonly<{
     manifest: ListingReviseManifest;

@@ -134,6 +134,14 @@ export function deriveListingReviseManifest(
      * the CLI's --allow-unchanged; a plain revise still refuses no-ops.
      */
     allowUnchanged?: boolean;
+    /**
+     * Operator-supplied retry ordinal for policy-only revises: mixed into
+     * the manifest (and so its digest/intent), because a dispatch that
+     * fails before writing still consumes its single-use intent, and a
+     * zero-change manifest is otherwise byte-identical on every retry.
+     * Each ordinal is one explicit operator authorization.
+     */
+    policyOrdinal?: number;
   }> = {},
 ): DerivedListingReviseManifest {
   const identity = revision.identity;
@@ -181,6 +189,11 @@ export function deriveListingReviseManifest(
     baseEbayObservationDigest: revision.baseEbayObservationDigest,
     changes: Object.freeze(changes),
     preserved: Object.freeze({ price: preservedPrice, quantity: preservedQuantity }),
+    ...(options.allowUnchanged === true
+      && Number.isSafeInteger(options.policyOrdinal)
+      && (options.policyOrdinal as number) > 0
+      ? { policyOrdinal: options.policyOrdinal }
+      : {}),
   });
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
 }
