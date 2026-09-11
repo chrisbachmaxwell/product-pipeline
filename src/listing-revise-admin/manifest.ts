@@ -424,6 +424,17 @@ export function buildListingRevisePayloads(input: {
   let inventoryItemChanged = false;
   let offerChanged = false;
 
+  // STORE POLICY (2026-09-11): eBay catalog product details are never
+  // wanted — the omitted-default TRUE injected eBay's unformatted "About
+  // this product" blurb (observed live carrying the WRONG product's text)
+  // above the branded description. Creates set false explicitly; any
+  // revise corrects a live offer that still carries the old default. This
+  // is the one deliberate exception to byte-for-byte raw preservation.
+  if (offerPayload.includeCatalogProductDetails !== false) {
+    offerPayload.includeCatalogProductDetails = false;
+    offerChanged = true;
+  }
+
   for (const change of manifest.changes) {
     switch (change.field) {
       case 'title': {

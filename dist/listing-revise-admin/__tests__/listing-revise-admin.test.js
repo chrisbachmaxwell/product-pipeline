@@ -131,6 +131,7 @@ function rawOffer() {
         categoryId: '3323',
         listingPolicies: { fulfillmentPolicyId: '111', paymentPolicyId: '222', returnPolicyId: '333' },
         merchantLocationKey: 'warehouse-1',
+        includeCatalogProductDetails: false,
         listing: { listingId: LISTING_ID, listingStatus: 'ACTIVE' },
     };
 }
@@ -429,6 +430,17 @@ describe('listing-revise operator CLI', () => {
         });
         expect(payloads.inventoryItemChanged).toBe(true);
         expect(payloads.offerChanged).toBe(false);
+        // Catalog-details policy: a raw offer still carrying eBay's TRUE
+        // default gets corrected (and therefore dispatched) by any revise.
+        const legacyOffer = { ...rawOffer() };
+        delete legacyOffer.includeCatalogProductDetails;
+        const corrected = buildListingRevisePayloads({
+            manifest,
+            rawInventoryItem: rawInventoryItem(),
+            rawOffer: legacyOffer,
+        });
+        expect(corrected.offerChanged).toBe(true);
+        expect(corrected.offerPayload.includeCatalogProductDetails).toBe(false);
         expect(payloads.inventoryItemPayload.product).toMatchObject({ title: 'Operator Title' });
         expect(JSON.stringify(payloads.offerPayload.pricingSummary))
             .toBe(JSON.stringify(rawOffer().pricingSummary));
