@@ -54,6 +54,9 @@ export function createListingPublishRouter(dependencies: Readonly<{
   preflightArgv?: readonly string[] | null;
   dispatchArgv?: readonly string[] | null;
   refreshCatalog?: () => Promise<unknown>;
+  reconcileArgv?: readonly string[] | null;
+  recoverArgv?: readonly string[] | null;
+  recoverReconcileArgv?: readonly string[] | null;
 }> = {}): Router {
   const runStep = dependencies.runStep ?? createProcessStepRunner();
   const refreshCatalog = dependencies.refreshCatalog
@@ -63,6 +66,69 @@ export function createListingPublishRouter(dependencies: Readonly<{
     ? dependencies.preflightArgv : parseArgvEnv('PUBLISH_PREFLIGHT_ARGV');
   const dispatchArgv = dependencies.dispatchArgv !== undefined
     ? dependencies.dispatchArgv : parseArgvEnv('PUBLISH_DISPATCH_ARGV');
+  const reconcileArgv = dependencies.reconcileArgv !== undefined
+    ? dependencies.reconcileArgv : parseArgvEnv('PUBLISH_RECONCILE_ARGV');
+  const recoverArgv = dependencies.recoverArgv !== undefined
+    ? dependencies.recoverArgv : parseArgvEnv('PUBLISH_RECOVER_ARGV');
+  const recoverReconcileArgv = dependencies.recoverReconcileArgv !== undefined
+    ? dependencies.recoverReconcileArgv : parseArgvEnv('PUBLISH_RECOVER_RECONCILE_ARGV');
+
+  /**
+   * Automatic residue cleanup after a failed publish (operator ask,
+   * 2026-09-11: "we should just automatically fix this"). Runs the exact
+   * ceremony chain an operator would (reconcile -> recover-create ->
+   * recover-reconcile), spawned from operator-armed argv templates like
+   * preflight/dispatch. Best-effort: any refusal leaves the ledger
+   * truthful and reports 'failed' so the operator knows manual recovery
+   * is still owed. This server process performs zero provider writes.
+   */
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+  async function cleanUpFailedCreate(input: Readonly<{
+    catalogId: string; sku: string; revisionDigest: string; manifestDigest: string;
+    dispatchJson: Record<string, unknown>;
+  }>): Promise<'removed' | 'skipped' | 'failed'> {
+    if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv) return 'skipped';
+    const jobId = input.dispatchJson.jobId;
+    const attemptId = input.dispatchJson.attemptId;
+    const intentKey = input.dispatchJson.intentKey;
+    const offerId = input.dispatchJson.offerId;
+    if (typeof jobId !== 'string' || !SAFE_ID.test(jobId)
+      || typeof attemptId !== 'string' || !SAFE_ID.test(attemptId)
+      || typeof intentKey !== 'string' || !DIGEST.test(intentKey)
+      || typeof offerId !== 'string' || !/^[0-9]{1,19}$/.test(offerId)) return 'skipped';
+    const values: Record<string, string> = {
+      catalogId: input.catalogId,
+      sku: input.sku,
+      revisionDigest: input.revisionDigest,
+      manifestDigest: input.manifestDigest,
+      jobId,
+      attemptId,
+      intentKey,
+      evidenceDigest: input.manifestDigest,
+      offerId,
+    };
+    try {
+      const reconciled = await runStep(substituteArgv(reconcileArgv, values));
+      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') {
+        // Anything else (already resolved, listing actually live, …) is not
+        // the residue shape this cleanup handles.
+        return 'skipped';
+      }
+      const recovered = await runStep(substituteArgv(recoverArgv, values));
+      const recoveryJobId = recovered.json?.recoveryJobId;
+      const recoveryAttemptId = recovered.json?.recoveryAttemptId;
+      if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
+        || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId)) {
+        return 'failed';
+      }
+      const closed = await runStep(substituteArgv(recoverReconcileArgv, {
+        ...values, recoveryJobId, recoveryAttemptId,
+      }));
+      return closed.json?.status === 'recovered-and-reconciled' ? 'removed' : 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
   const router = Router();
 
   router.post(EXACT_ROUTE, async (req: Request, res: Response) => {
@@ -130,12 +196,32 @@ export function createListingPublishRouter(dependencies: Readonly<{
         // UNPUBLISHED. Only a reconciled create with a listing id may report
         // success; anything else is surfaced as unresolved for recovery.
         if (status !== 'created-and-reconciled' || listingId === null) {
-          warn(`[Listing Publish] ${sku}: unresolved dispatch (${status})`);
+          const rawMessages = dispatched.json?.dispatchFailureEbayErrorMessages;
+          const providerMessages = Array.isArray(rawMessages)
+            ? rawMessages.filter((entry): entry is string => typeof entry === 'string').slice(0, 2)
+            : [];
+          warn(`[Listing Publish] ${sku}: unresolved dispatch (${status})`
+            + (providerMessages.length ? ` — ${providerMessages.join(' / ')}` : ''));
+          const cleanup = dispatched.json === null
+            ? 'skipped' as const
+            : await cleanUpFailedCreate({
+              catalogId, sku, revisionDigest, manifestDigest,
+              dispatchJson: dispatched.json,
+            });
+          info(`[Listing Publish] ${sku}: residue cleanup ${cleanup}`);
+          const cleanupNote = cleanup === 'removed'
+            ? ' Leftover eBay data from this attempt was cleaned up automatically.'
+            : ' Leftover eBay draft data may remain; the item can show Fix needed until it is cleared.';
           res.status(502).json({
-            error: 'eBay accepted the upload but the listing could not be confirmed live',
+            error: (providerMessages.length
+              ? `eBay refused the listing: ${providerMessages.join(' ')}`
+              : 'eBay accepted the upload but the listing could not be confirmed live')
+              + cleanupNote,
             code: 'PUBLISH_UNRESOLVED',
             stage: 'dispatch',
             status,
+            providerMessages,
+            cleanup,
           });
           return;
         }

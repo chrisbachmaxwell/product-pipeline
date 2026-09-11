@@ -378,6 +378,31 @@ export const useEbayQuota = () =>
     retry: false,
   });
 
+export interface EbayCategoryAspect {
+  name: string;
+  required: boolean;
+  mode: 'FREE_TEXT' | 'SELECTION_ONLY';
+  values: string[];
+}
+
+export interface EbayCategoryAspectsResponse {
+  available: boolean;
+  categoryId: string;
+  aspects: EbayCategoryAspect[];
+}
+
+/** The category's item specifics (required first); cached a day per id. */
+export const useEbayCategoryAspects = (categoryId: string | null) =>
+  useQuery({
+    queryKey: ['ebay-category-aspects', categoryId ?? ''],
+    queryFn: () => apiClient.get<EbayCategoryAspectsResponse>(
+      `/ebay-category-aspects?id=${encodeURIComponent(categoryId ?? '')}`,
+    ),
+    enabled: categoryId !== null && /^\d+$/.test(categoryId),
+    staleTime: 24 * 60 * 60_000,
+    retry: false,
+  });
+
 export interface PriceCheckResponse {
   schemaVersion: 1;
   query: string;

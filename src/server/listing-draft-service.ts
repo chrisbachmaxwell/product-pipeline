@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
+import { deriveLensAspects } from './camera-aspect-derivation.js';
 import {
   ListingControlStoreError,
   deriveListingBaseDigests,
@@ -308,11 +309,19 @@ function canonicalJson(value: unknown): string {
  * visibly empty for the operator rather than shipping a wrong aspect.
  * Deliberately omits Model — see the note at the source values.
  */
-function shopifyAspects(content: ShopifyProductContent | null | undefined): string | null {
-  if (!content) return null;
-  const aspects: Record<string, string[]> = {};
-  if (content.brand !== null) aspects.Brand = [content.brand];
-  if (content.mpn !== null) aspects.MPN = [content.mpn];
+function shopifyAspects(
+  content: ShopifyProductContent | null | undefined,
+  title?: string | null,
+): string | null {
+  // Title-derived lens aspects (Focal Length, Type, Focus Type, Maximum
+  // Aperture, Mount) fill eBay's REQUIRED item specifics for lens
+  // categories; Brand/MPN from Shopify always win on key collision. All of
+  // this is the SOURCE layer — the operator's editor override replaces the
+  // whole set.
+  const aspects: Record<string, string[]> = { ...deriveLensAspects(title) };
+  if (!content && Object.keys(aspects).length === 0) return null;
+  if (content?.brand != null) aspects.Brand = [content.brand];
+  if (content?.mpn != null) aspects.MPN = [content.mpn];
   return Object.keys(aspects).length === 0 ? null : canonicalJson(aspects);
 }
 
@@ -489,7 +498,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     // "ST-E2" or "a7 III". It stays an operator field until a Shopify
     // metafield carries it. canonicalJson sorts keys, which the create
     // manifest requires.
-    item_specifics: shopifyAspects(workspace.shopifyContent),
+    item_specifics: shopifyAspects(workspace.shopifyContent, shopify.title),
     identifiers: shopifyIdentifiers(workspace.shopifyContent),
     fulfillment_policy: defaults?.fulfillmentPolicyId ?? null,
     payment_policy: defaults?.paymentPolicyId ?? null,

@@ -5,6 +5,9 @@ export declare function createListingPublishRouter(dependencies?: Readonly<{
     preflightArgv?: readonly string[] | null;
     dispatchArgv?: readonly string[] | null;
     refreshCatalog?: () => Promise<unknown>;
+    reconcileArgv?: readonly string[] | null;
+    recoverArgv?: readonly string[] | null;
+    recoverReconcileArgv?: readonly string[] | null;
 }>): Router;
 declare const _default: Router;
 export default _default;

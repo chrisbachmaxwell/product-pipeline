@@ -16,6 +16,7 @@ import listingDraftRoutes, { listingDraftJsonErrorHandler, listingDraftJsonParse
 import listingPublishRoutes from './routes/listing-publish.js';
 import activityRoutes from './routes/activity.js';
 import ebayQuotaRoutes from './routes/ebay-quota.js';
+import ebayCategoryAspectsRoutes from './routes/ebay-category-aspects.js';
 import { createPriceCheckRouter } from './routes/price-check.js';
 import { apiKeyAuth, rateLimit } from './middleware/auth.js';
 import { testModeMiddleware, testModeRoute, isTestMode } from './middleware/test-mode.js';
@@ -106,6 +107,7 @@ app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
 app.use(activityRoutes);
 app.use(ebayQuotaRoutes);
+app.use(ebayCategoryAspectsRoutes);
 app.use(createPriceCheckRouter());
 app.use(shadowApiRoutes);
 app.use(ebayNotificationRoutes);
