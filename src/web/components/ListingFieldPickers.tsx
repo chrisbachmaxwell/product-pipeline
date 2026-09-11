@@ -16,7 +16,7 @@ import {
   useEbayCategorySearch,
   type EbayCategorySearchResult,
 } from '../hooks/useEbayCategorySearch';
-import { useEbayCategoryBrowse } from '../hooks/useEbayCategoryBrowse';
+import { useEbayCategoryBrowse, useEbayCategoryPath } from '../hooks/useEbayCategoryBrowse';
 
 /**
  * Listbox option values are a single string, so drill-down navigation is
@@ -131,13 +131,32 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
   // committed value rendering as "Name (id)" even though the id is not in
   // the used-category metadata.
   const [pickedLabels, setPickedLabels] = useState<Record<string, string>>({});
+  // Name resolution from the cached category tree: with the per-listing
+  // facet sweep gone (2026-09-11), metadata often carries ids with no
+  // names, and a bare "3323" is meaningless to the operator.
+  const resolvedValuePath = useEbayCategoryPath(value);
+  const summaryId = /^(?:Shopify|eBay|Draft): (\d+)$/u.exec(currentSummary)?.[1] ?? null;
+  const resolvedSummaryPath = useEbayCategoryPath(summaryId);
   const displayLabel = (id: string): string => {
     const fromMetadata = categories.find((category) => category.id === id);
     if (fromMetadata) return categoryName(fromMetadata);
-    return pickedLabels[id] ?? id;
+    if (pickedLabels[id]) return pickedLabels[id]!;
+    if (id === value && resolvedValuePath !== null) return resolvedValuePath;
+    return id;
   };
+  const shownSummary = summaryId !== null && resolvedSummaryPath !== null
+    ? currentSummary.replace(summaryId, resolvedSummaryPath)
+    : currentSummary;
 
   const [text, setText] = useState(() => (value === null ? '' : displayLabel(value)));
+  // When the tree resolves a name for the committed bare id, upgrade the
+  // visible text unless the merchant has started typing something else.
+  useEffect(() => {
+    if (value !== null && text === value && resolvedValuePath !== null) {
+      setText(resolvedValuePath);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedValuePath, value]);
   const trimmed = text.trim();
   const numeric = /^\d+$/u.test(trimmed);
   const committedLabel = value === null ? null : displayLabel(value);
@@ -226,7 +245,7 @@ export const CategoryPicker: React.FC<CategoryPickerProps> = ({
 
   const helpText = helpStack([
     ...(value !== null ? [`Draft: ${committedLabel ?? value}`] : []),
-    currentSummary,
+    shownSummary,
   ]);
 
   if (degraded) {

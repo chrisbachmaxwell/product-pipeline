@@ -723,17 +723,42 @@ async function captureInventory(accessToken) {
     }
     return { items, offers, itemPages, offerPages };
 }
+/**
+ * The seller's enabled merchant location keys (Inventory API `location`).
+ * One bounded GET per census. Needed because the bulk getOffers bodies do
+ * not carry `merchantLocationKey` in practice, which left the editor's
+ * location metadata — and therefore the auto-default every create requires —
+ * empty (found by the 2026-09-11 46-draft publish audit).
+ */
+const MERCHANT_LOCATION_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,35}$/;
+async function captureMerchantLocationKeys(accessToken) {
+    const body = await inventoryGet(accessToken, '/sell/inventory/v1/location?limit=100');
+    const keys = [];
+    for (const raw of asArray(body.locations)) {
+        const location = asRecord(raw);
+        const key = optionalText(location.merchantLocationKey, 36);
+        if (key !== null && location.merchantLocationStatus === 'ENABLED'
+            && MERCHANT_LOCATION_KEY_PATTERN.test(key) && !keys.includes(key)) {
+            keys.push(key);
+        }
+        if (keys.length >= 50)
+            break;
+    }
+    return Object.freeze(keys);
+}
 export async function captureLiveListingCatalog() {
     const auth = await catalogPhase('AUTH_READ_FAILED', readRuntimeAuthMaterial);
     const accessToken = await catalogPhase('TOKEN_REFRESH_FAILED', runtimeEbayToken);
-    const [shopify, trading, inventory] = await Promise.all([
+    const [shopify, trading, inventory, merchantLocationKeys] = await Promise.all([
         catalogPhase('SHOPIFY_CAPTURE_FAILED', () => captureShopify(auth.shopifyAccessToken)),
         catalogPhase('TRADING_CAPTURE_FAILED', () => captureTrading(accessToken)),
         catalogPhase('INVENTORY_CAPTURE_FAILED', () => captureInventory(accessToken)),
+        // Best-effort: an empty list only degrades the location auto-default.
+        captureMerchantLocationKeys(accessToken).catch(() => Object.freeze([])),
     ]);
     const ebayObservedAtUtc = new Date().toISOString();
     const observedAtUtc = new Date().toISOString();
-    return catalogProjection('PROJECTION_FAILED', () => buildLiveListingCatalogSnapshot({
+    const snapshot = catalogProjection('PROJECTION_FAILED', () => buildLiveListingCatalogSnapshot({
         observedAtUtc,
         shopifyVariants: shopify.variants,
         ebayActiveListings: trading.listings,
@@ -763,6 +788,9 @@ export async function captureLiveListingCatalog() {
             }),
         }),
     }));
+    // Additive, like editorFacets: absent on hand-built snapshots, never
+    // served through row projections; feeds only editor metadata/defaults.
+    return Object.freeze({ ...snapshot, merchantLocationKeys });
 }
 export function createLiveListingCatalogCache(capture, options = {}) {
     const now = options.now ?? Date.now;

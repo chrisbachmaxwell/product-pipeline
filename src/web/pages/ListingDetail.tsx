@@ -17,6 +17,7 @@ import ListingDraftEditor from '../components/ListingDraftEditor';
 import { apiClient, usePriceCheck } from '../hooks/useApi';
 import ListingDescriptionPreviewModal from '../components/ListingDescriptionPreviewModal';
 import {
+  buildListingDraftRebaseInput,
   isListingDraftBoundToWorkspace,
   isListingDraftResponse,
   useListingDraft,
@@ -62,6 +63,23 @@ const MappingNode: React.FC<{ label: string; value: string }> = ({ label, value 
 const Difference: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Text as="p" variant="bodySm" tone="subdued">Shopify: {children}</Text>
 );
+
+const FIELD_LABELS: Record<string, string> = {
+  title: 'a title',
+  category: 'an eBay category',
+  condition: 'a condition',
+  condition_description: 'condition notes',
+  description: 'a description',
+  images: 'at least one photo',
+  price: 'a price',
+  quantity: 'a quantity',
+  item_specifics: 'item specifics (Brand/MPN)',
+  identifiers: 'product identifiers',
+  fulfillment_policy: 'a shipping (fulfillment) policy',
+  payment_policy: 'a payment policy',
+  return_policy: 'a return policy',
+  merchant_location: 'a merchant location',
+};
 
 const ListingDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -134,7 +152,7 @@ const ListingDetail: React.FC = () => {
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<
     | { ok: true; listingId: string | null }
-    | { ok: false; message: string }
+    | { ok: false; message: string; canRebase: boolean }
     | null
   >(null);
 
@@ -146,8 +164,9 @@ const ListingDetail: React.FC = () => {
     && currentCatalog?.shopify,
   );
 
-  const runPublish = async () => {
-    if (!currentCatalog?.shopify || !draftRevision || !id) return;
+  const runPublish = async (revisionDigestOverride?: string) => {
+    const digestToPublish = revisionDigestOverride ?? draftRevision?.revisionDigest;
+    if (!currentCatalog?.shopify || !digestToPublish || !id) return;
     setPublishing(true);
     setPublishResult(null);
     try {
@@ -156,24 +175,65 @@ const ListingDetail: React.FC = () => {
         {
           catalogId: id,
           sku: currentCatalog.shopify.sku,
-          revisionDigest: draftRevision.revisionDigest,
+          revisionDigest: digestToPublish,
         },
       );
       setPublishResult({ ok: true, listingId: result.listingId ?? null });
       void workspace.refetch();
     } catch (error) {
       const raw = error instanceof Error ? error.message : 'Publish failed';
-      const friendly = /REQUIRED_FIELD|PREREQUISITE/i.test(raw)
-        ? 'The draft is missing something eBay requires — category, condition, description, or photos. Add it, save, and publish again.'
-        : /NOT_ARMED/i.test(raw)
+      // apiClient appends "(CODE: field)" when the server names the refusal.
+      const detail = /\(([A-Z_]+)(?::\s*([a-z_]+))?\)\s*$/.exec(raw);
+      const code = detail?.[1] ?? null;
+      const fieldLabel = detail?.[2] ? (FIELD_LABELS[detail[2]] ?? detail[2]) : null;
+      const missingField = code !== null && /REQUIRED_FIELD|PREREQUISITE|PREVALIDATION/.test(code);
+      const friendly = missingField
+        ? `eBay requires ${fieldLabel ?? 'a field'} and the saved draft does not have it yet.`
+          + ' Your draft was saved before this value auto-filled — use'
+          + ' “Update draft & publish again” below to re-save with the values'
+          + ' shown on this page and retry in one step.'
+        : /NOT_ARMED/.test(raw)
           ? 'Publishing is not switched on for the server yet.'
-          : /BUSY/i.test(raw)
+          : /BUSY/.test(raw)
             ? 'Another publish is still running — give it a moment.'
             : raw;
-      setPublishResult({ ok: false, message: friendly });
+      setPublishResult({ ok: false, message: friendly, canRebase: missingField });
     } finally {
       setPublishing(false);
       setPublishConfirmOpen(false);
+    }
+  };
+
+  // One-click recovery for a stale saved draft: re-save (keeping every
+  // operator override, re-inheriting today's source values and defaults),
+  // then publish the fresh revision immediately.
+  const [rebasing, setRebasing] = useState(false);
+  const rebaseAndPublish = async () => {
+    if (!currentDraft || rebasing) return;
+    setRebasing(true);
+    try {
+      await saveDraft.mutateAsync(buildListingDraftRebaseInput(currentDraft));
+      const refreshed = await localDraft.refetch();
+      const freshDigest = isListingDraftResponse(refreshed.data, id)
+        ? refreshed.data.revision?.revisionDigest
+        : undefined;
+      if (freshDigest) {
+        await runPublish(freshDigest);
+      } else {
+        setPublishResult({
+          ok: false,
+          message: 'The draft was re-saved but its new revision could not be read back. Reload and publish again.',
+          canRebase: false,
+        });
+      }
+    } catch {
+      setPublishResult({
+        ok: false,
+        message: 'Re-saving the draft failed. Reload this listing and try again.',
+        canRebase: false,
+      });
+    } finally {
+      setRebasing(false);
     }
   };
 
@@ -330,6 +390,11 @@ const ListingDetail: React.FC = () => {
           <Banner
             tone={publishResult.ok ? 'success' : 'critical'}
             onDismiss={() => setPublishResult(null)}
+            action={!publishResult.ok && publishResult.canRebase ? {
+              content: rebasing ? 'Updating…' : 'Update draft & publish again',
+              loading: rebasing,
+              onAction: () => { void rebaseAndPublish(); },
+            } : undefined}
           >
             {publishResult.ok ? (
               <Text as="p">

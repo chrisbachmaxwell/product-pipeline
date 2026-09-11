@@ -22,13 +22,17 @@ class ApiClient {
     }
 
     if (!response.ok) {
-      const message =
-        typeof payload === 'object' && payload !== null && 'error' in payload
-          ? String((payload as { error?: string }).error)
-          : typeof payload === 'string'
-            ? payload
-            : `Request failed with status ${response.status}`;
-      throw new Error(message);
+      const body = typeof payload === 'object' && payload !== null
+        ? payload as { error?: string; code?: string; field?: string }
+        : null;
+      const base = body?.error
+        ?? (typeof payload === 'string' ? payload : `Request failed with status ${response.status}`);
+      // Machine-readable suffix so callers can map precise guidance:
+      // "... (CREATE_REQUIRED_FIELD_MISSING: return_policy)".
+      const detail = typeof body?.code === 'string'
+        ? ` (${body.code}${typeof body.field === 'string' ? `: ${body.field}` : ''})`
+        : '';
+      throw new Error(`${base}${detail}`);
     }
 
     return payload as T;
