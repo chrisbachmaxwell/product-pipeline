@@ -748,8 +748,18 @@ export function createListingDraftService(dependencies: ListingDraftServiceDepen
           const fields = fieldsForRevision(basis, draft);
           const noOverrides = draftComparisonMap(fields)
             === draftComparisonMap(fieldsForRevision(basis, {}));
+          // Duplicate-revision guard. Identical OVERRIDES alone are NOT a
+          // duplicate: a rebase save deliberately keeps the operator's
+          // overrides and re-inherits a MOVED source layer (brand fixes,
+          // new defaults). Comparing only the override map rejected exactly
+          // the save that repairs CREATE_BASE_STALE, looping the operator
+          // (live, 2026-09-11). A save is a true no-op only when overrides
+          // AND both base digests match the latest revision.
+          const sameBases = previous !== null
+            && previous.baseSourceDigest === basis.sourceDigest
+            && previous.baseEbayObservationDigest === basis.ebayDigest;
           if ((previous === null && noOverrides)
-            || (previous !== null
+            || (previous !== null && sameBases
               && draftComparisonMap(fields) === draftComparisonMap(previous.fields))) {
             throw new ListingDraftServiceError('LISTING_DRAFT_INVALID');
           }
