@@ -87,7 +87,45 @@ function httpDiagnostic(statusCode, text) {
         statusFamily,
         statusCode,
         ebayErrorIds: parseEbayErrorIds(text),
+        ebayErrorMessages: parseEbayErrorMessages(text),
     });
+}
+/**
+ * Bounded, SANITIZED provider error text, operator-output only — never
+ * persisted, never digested into evidence. The prior invariant redacted
+ * provider messages entirely; that protected against token echo but made
+ * eBay's only actionable signal invisible (the operator sees these same
+ * messages in eBay's own seller UI). The compromise: strip anything
+ * token-shaped (runs of 20+ base64ish characters), hard-cap length and
+ * count. Credentials/PII stay out of every persisted or logged surface.
+ */
+function sanitizeProviderText(value) {
+    return value
+        .replace(/[A-Za-z0-9+/=_-]{20,}/gu, '[redacted]')
+        .replace(/\s+/gu, ' ')
+        .trim()
+        .slice(0, 300);
+}
+function parseEbayErrorMessages(text) {
+    try {
+        const parsed = JSON.parse(text);
+        if (!isRecord(parsed) || !Array.isArray(parsed.errors))
+            return null;
+        const messages = [];
+        for (const error of parsed.errors.slice(0, 2)) {
+            if (!isRecord(error))
+                continue;
+            const parts = [error.message, error.longMessage]
+                .filter((part) => typeof part === 'string' && part.trim() !== '')
+                .map(sanitizeProviderText);
+            if (parts.length > 0)
+                messages.push(parts.join(' | ').slice(0, 300));
+        }
+        return messages.length > 0 ? Object.freeze(messages) : null;
+    }
+    catch {
+        return null;
+    }
 }
 export function createListingCreateDispatchAdapter(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;

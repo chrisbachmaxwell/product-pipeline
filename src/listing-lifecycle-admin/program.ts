@@ -1155,6 +1155,12 @@ export function buildListingLifecycleAdminProgram(
                               dispatchFailureEbayErrorIds:
                                 dispatchFailureHttpDiagnostic.ebayErrorIds,
                             }),
+                        ...(dispatchFailureHttpDiagnostic.ebayErrorMessages == null
+                          ? {}
+                          : {
+                              dispatchFailureEbayErrorMessages:
+                                dispatchFailureHttpDiagnostic.ebayErrorMessages,
+                            }),
                       }),
                 }
               : {}),

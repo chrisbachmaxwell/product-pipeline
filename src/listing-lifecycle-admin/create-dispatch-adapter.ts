@@ -33,6 +33,13 @@ export type ListingCreateDispatchHttpDiagnostic = Readonly<{
   statusCode: number;
   /** Present only when the bounded body matches eBay's REST errors shape. */
   ebayErrorIds: readonly number[] | null;
+  /**
+   * Bounded provider error text for the OPERATOR's ceremony output only —
+   * never persisted to any store. Added 2026-09-11 after eBay refused a
+   * publish with only the generic id 25002, which names nothing; the
+   * message is what eBay's own seller UI would have shown.
+   */
+  ebayErrorMessages: readonly string[] | null;
 }>;
 
 const EBAY_API_HOST = 'https://api.ebay.com';
@@ -114,7 +121,43 @@ function httpDiagnostic(
     statusFamily,
     statusCode,
     ebayErrorIds: parseEbayErrorIds(text),
+    ebayErrorMessages: parseEbayErrorMessages(text),
   });
+}
+
+/**
+ * Bounded, SANITIZED provider error text, operator-output only — never
+ * persisted, never digested into evidence. The prior invariant redacted
+ * provider messages entirely; that protected against token echo but made
+ * eBay's only actionable signal invisible (the operator sees these same
+ * messages in eBay's own seller UI). The compromise: strip anything
+ * token-shaped (runs of 20+ base64ish characters), hard-cap length and
+ * count. Credentials/PII stay out of every persisted or logged surface.
+ */
+function sanitizeProviderText(value: string): string {
+  return value
+    .replace(/[A-Za-z0-9+/=_-]{20,}/gu, '[redacted]')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 300);
+}
+
+function parseEbayErrorMessages(text: string): readonly string[] | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isRecord(parsed) || !Array.isArray(parsed.errors)) return null;
+    const messages: string[] = [];
+    for (const error of parsed.errors.slice(0, 2)) {
+      if (!isRecord(error)) continue;
+      const parts = [error.message, error.longMessage]
+        .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+        .map(sanitizeProviderText);
+      if (parts.length > 0) messages.push(parts.join(' | ').slice(0, 300));
+    }
+    return messages.length > 0 ? Object.freeze(messages) : null;
+  } catch {
+    return null;
+  }
 }
 
 type FetchLike = typeof fetch;

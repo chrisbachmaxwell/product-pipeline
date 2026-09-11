@@ -256,6 +256,7 @@ async function createWorld(draftOverrides = {}) {
                     statusFamily: 'http_4xx',
                     statusCode: 400,
                     ebayErrorIds: Object.freeze([25002]),
+                    ebayErrorMessages: Object.freeze(['A user error has occurred']),
                 }));
             }
             if (itemPutFailure === 'outcome_unknown') {
