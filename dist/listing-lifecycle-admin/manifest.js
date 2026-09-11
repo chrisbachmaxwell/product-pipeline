@@ -434,6 +434,12 @@ export function buildListingCreatePayloads(manifest) {
         },
         merchantLocationKey: proposed.merchantLocationKey,
         listingDuration: proposed.listingDuration,
+        // Defaults to TRUE when omitted, which makes eBay inject its own
+        // catalog blurb ("About this product") above the seller description —
+        // unformatted, and observed live matching the WRONG product (an FD
+        // lens's text on an EF listing, 2026-09-11). The branded description is
+        // the only product text we publish.
+        includeCatalogProductDetails: false,
     };
     offerPayload.listingDescription = proposed.description;
     return Object.freeze({ inventoryItemPayload, offerPayload });

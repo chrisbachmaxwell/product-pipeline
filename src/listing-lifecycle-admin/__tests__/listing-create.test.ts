@@ -498,6 +498,7 @@ describe('listing-lifecycle operator CLI — create', () => {
       pricingSummary: { price: { value: '149.95', currency: 'USD' } },
       merchantLocationKey: 'warehouse-1',
       listingDuration: 'GTC',
+      includeCatalogProductDetails: false,
       listingDescription: 'Clean plain text description',
     });
     expect(world.publishCalls).toEqual([OFFER_ID]);
