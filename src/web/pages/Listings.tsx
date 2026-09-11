@@ -204,6 +204,9 @@ const Listings: React.FC = () => {
                                 <Badge tone={listingStatusTone(row.lifecycleStatus, row.readyToList)}>
                                   {listingStatusLabel(row.lifecycleStatus, row.readyToList)}
                                 </Badge>
+                                {row.readyToListGaps?.includes('condition') && (
+                                  <Badge tone="warning">Add condition tag in Shopify</Badge>
+                                )}
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>
                             </IndexTable.Cell>
@@ -255,6 +258,9 @@ const Listings: React.FC = () => {
                                   {formatListingPrice(row.shopify?.price ?? null)}
                                 </Text>
                               </InlineStack>
+                              {row.readyToListGaps?.includes('condition') && (
+                                <Badge tone="warning">Add condition tag in Shopify</Badge>
+                              )}
                               {attention && <Text as="p" variant="bodySm" tone="critical">{attention}</Text>}
                               <InlineStack align="space-between" blockAlign="center">
                                 <Text as="span" variant="bodySm" tone="subdued">
