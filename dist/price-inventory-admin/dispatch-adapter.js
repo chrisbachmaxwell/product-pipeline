@@ -130,12 +130,12 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
             'Content-Language': 'en-US',
         };
     }
-    async function boundedPost(body) {
+    async function boundedPostTo(url, body) {
         const headers = await authorizedHeaders();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
         try {
-            const response = await fetchImpl(EBAY_BULK_UPDATE_URL, {
+            const response = await fetchImpl(url, {
                 method: 'POST',
                 headers,
                 body,
@@ -168,7 +168,7 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
      */
     async function dispatch(field, input) {
         const body = buildBulkUpdateBody(field, input);
-        const response = await boundedPost(body);
+        const response = await boundedPostTo(EBAY_BULK_UPDATE_URL, body);
         if (response.status !== 200)
             deny('ALIGN_DISPATCH_REJECTED');
         let parsed;
@@ -191,8 +191,19 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
         if (statusCode !== 200)
             deny('ALIGN_DISPATCH_REJECTED');
     }
+    async function withdrawOffer(input) {
+        if (!SAFE_SKU.test(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
+            deny('ALIGN_DISPATCH_TARGET_INVALID');
+        }
+        const response = await boundedPostTo('https://api.ebay.com/sell/inventory/v1/offer/'
+            + encodeURIComponent(input.offerId) + '/withdraw', '{}');
+        // Withdraw returns 200 with the ended listingId.
+        if (response.status !== 200)
+            deny('ALIGN_DISPATCH_REJECTED');
+    }
     return Object.freeze({
         updateOfferPrice: (input) => dispatch('price', input),
         updateOfferQuantity: (input) => dispatch('quantity', input),
+        withdrawOffer,
     });
 }

@@ -261,6 +261,7 @@ function createTradingWorld(): TradingWorld {
   const inventoryAdapter: PriceInventoryDispatchAdapter = Object.freeze({
     updateOfferPrice: unexpected('updateOfferPrice'),
     updateOfferQuantity: unexpected('updateOfferQuantity'),
+    withdrawOffer: unexpected('withdrawOffer'),
   });
 
   const stdout: string[] = [];
@@ -650,6 +651,78 @@ describe('trading-model price/inventory alignment dispatch', () => {
     expect(world.requests[0]!.body).not.toContain('<Quantity>');
     expect(world.requests[0]!.body).not.toContain('<StartPrice');
     expect(world.exitCodes).not.toContain(1);
+  });
+
+  it('withdraws an Inventory-model offer at quantity zero under --end-at-zero (L64)', async () => {
+    // The 2026-09-13 oversell: end-at-zero routed inventory-model targets
+    // into a quantity-0 offer update this account cannot honor, so the
+    // sold-out listing stayed buyable. The Inventory-model END is a
+    // withdraw; the quantity updater must NOT be called.
+    const world = createTradingWorld();
+    await world.run(establishArguments('inventory', world.migrationDatabasePath));
+    const OFFER = '263799001011';
+    const base = tradingWorkspace({ shopifyAvailable: 0, ebayQuantity: 1 });
+    const workspace = JSON.parse(JSON.stringify(base)) as typeof base;
+    (workspace.mapping as Record<string, unknown>).managementModel = 'inventory_offer';
+    (workspace.mapping as Record<string, unknown>).offerId = OFFER;
+    (workspace.catalog.ebay as Record<string, unknown>).offerId = OFFER;
+    (workspace.catalog.ebay as Record<string, unknown>).offerCount = 1;
+    (workspace.catalog.ebay as Record<string, unknown>).inventoryItemCount = 1;
+    ((workspace.ebayDetail as Record<string, unknown>).identity as Record<string, unknown>)
+      .offerId = OFFER;
+    (workspace.ebayDetail as Record<string, unknown>).management = {
+      model: 'inventory_offer',
+      controlApi: 'inventory',
+      inventoryItem: { sku: SKU },
+      offer: {
+        offerId: OFFER, sku: SKU, marketplaceId: 'EBAY_US',
+        merchantLocationKey: 'warehouse-1',
+      },
+      exactBindings: {
+        seller: true, listing: true, sku: true,
+        inventoryItem: true, offer: true, offerToListing: true,
+      },
+      lifecycleAligned: true,
+    };
+
+    const inventoryCalls: string[] = [];
+    const stdout: string[] = [];
+    const io: PriceInventoryAdminIo = {
+      stdout: (m) => stdout.push(m),
+      stderr: () => undefined,
+      setExitCode: () => undefined,
+    };
+    await buildPriceInventoryAdminProgram({
+      readWorkspace: async () => workspace as never,
+      getSnapshot: async () => ({
+        schemaVersion: 3,
+        observedAtUtc: '2026-08-19T16:00:00.000Z',
+        rows: [workspace.catalog],
+        summary: {},
+        coverage: {},
+      }) as never,
+      createAdapter: () => ({
+        updateOfferPrice: async () => { inventoryCalls.push('price'); },
+        updateOfferQuantity: async () => { inventoryCalls.push('quantity'); },
+        withdrawOffer: async (input: { offerId: string }) => {
+          inventoryCalls.push('withdraw:' + input.offerId);
+        },
+      }) as never,
+      createTradingAdapter: () => ({
+        reviseInventoryStatus: async () => { inventoryCalls.push('trading'); },
+        endFixedPriceItem: async () => { inventoryCalls.push('trading-end'); },
+      }) as never,
+      io,
+    }).parseAsync(['align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'quantity',
+      '--confirm-sweep',
+      '--end-at-zero',
+    ], { from: 'user' });
+    const summary = lastJson(stdout);
+    expect(summary).toMatchObject({ status: 'swept', aligned: 1, failed: 0 });
+    expect(inventoryCalls).toEqual(['withdraw:' + OFFER]);
   });
 
   it('refuses --end-at-zero for a price sweep', async () => {

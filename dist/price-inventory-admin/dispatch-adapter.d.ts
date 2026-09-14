@@ -39,6 +39,17 @@ export type AlignQuantityInput = Readonly<{
 export type PriceInventoryDispatchAdapter = Readonly<{
     updateOfferPrice: (input: AlignPriceInput) => Promise<void>;
     updateOfferQuantity: (input: AlignQuantityInput) => Promise<void>;
+    /**
+     * The Inventory-model END: withdraw the published offer, which ends the
+     * live listing. Added 2026-09-14 after the L64 oversell — end-at-zero
+     * routed inventory-model listings into a quantity-0 update this account
+     * cannot honor (out-of-stock option off), so a sold-out item stayed
+     * buyable on eBay and oversold.
+     */
+    withdrawOffer: (input: Readonly<{
+        sku: string;
+        offerId: string;
+    }>) => Promise<void>;
 }>;
 /**
  * Serialize the one bounded bulk_update_price_quantity body and assert its
