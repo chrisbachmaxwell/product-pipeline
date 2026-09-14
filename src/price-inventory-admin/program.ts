@@ -497,11 +497,17 @@ export function buildPriceInventoryAdminProgram(
     // eBay refuses an available-quantity-0 revision while this account's
     // out-of-stock option is off (every zero-write on 2026-09-08 bounced
     // TRADING_ALIGN_REJECTED), which also identifies ending as what the
-    // Marketplace Connect incumbent did on a sell-out. Inventory-API offers
-    // keep the revise path: availableQuantity 0 is an ordinary value there.
+    // Marketplace Connect incumbent did on a sell-out.
+    //
+    // L64 (2026-09-13 oversell): the assumption that Inventory-API offers
+    // could keep the revise path ("availableQuantity 0 is an ordinary
+    // value there") was FALSE in production — four quantity-0 dispatches
+    // on the sold-out EF-S 10-22 reported success and changed nothing,
+    // and the listing sold on eBay two hours after Shopify hit zero. The
+    // sell-out policy is END for every management model; inventory-model
+    // targets end by withdrawing the offer.
     const endListing = input.endAtZero === true
       && target.field === 'quantity'
-      && target.basis.identity.managementModel !== 'inventory_api'
       && parseAlignmentQuantity(target.derived.manifest.after) === 0;
     const responsibility = FIELD_RESPONSIBILITY[target.field];
     const action = FIELD_ACTION[target.field];
@@ -625,7 +631,16 @@ export function buildPriceInventoryAdminProgram(
     try {
       if (identity.managementModel === 'inventory_api') {
         const adapter = createAdapter();
-        if (target.field === 'price') {
+        if (endListing) {
+          // L64 (2026-09-14 oversell): end-at-zero previously fell through
+          // to a quantity-0 offer update here, which this account cannot
+          // honor (out-of-stock option off) — the sold-out listing stayed
+          // buyable. The Inventory-model END is withdrawing the offer.
+          await adapter.withdrawOffer({
+            sku: identity.ebayInventorySku as string,
+            offerId: identity.ebayOfferId as string,
+          });
+        } else if (target.field === 'price') {
           await adapter.updateOfferPrice({
             sku: identity.ebayInventorySku as string,
             offerId: identity.ebayOfferId as string,

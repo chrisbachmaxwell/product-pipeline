@@ -63,6 +63,14 @@ export type AlignQuantityInput = Readonly<{
 export type PriceInventoryDispatchAdapter = Readonly<{
   updateOfferPrice: (input: AlignPriceInput) => Promise<void>;
   updateOfferQuantity: (input: AlignQuantityInput) => Promise<void>;
+  /**
+   * The Inventory-model END: withdraw the published offer, which ends the
+   * live listing. Added 2026-09-14 after the L64 oversell — end-at-zero
+   * routed inventory-model listings into a quantity-0 update this account
+   * cannot honor (out-of-stock option off), so a sold-out item stayed
+   * buyable on eBay and oversold.
+   */
+  withdrawOffer: (input: Readonly<{ sku: string; offerId: string }>) => Promise<void>;
 }>;
 
 function collectKeys(value: unknown, keys: string[]): void {
@@ -166,12 +174,12 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
     };
   }
 
-  async function boundedPost(body: string): Promise<{ status: number; text: string }> {
+  async function boundedPostTo(url: string, body: string): Promise<{ status: number; text: string }> {
     const headers = await authorizedHeaders();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(EBAY_BULK_UPDATE_URL, {
+      const response = await fetchImpl(url, {
         method: 'POST',
         headers,
         body,
@@ -205,7 +213,7 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
     input: AlignPriceInput | AlignQuantityInput,
   ): Promise<void> {
     const body = buildBulkUpdateBody(field, input);
-    const response = await boundedPost(body);
+    const response = await boundedPostTo(EBAY_BULK_UPDATE_URL, body);
     if (response.status !== 200) deny('ALIGN_DISPATCH_REJECTED');
     let parsed: unknown;
     try {
@@ -226,8 +234,22 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
     if (statusCode !== 200) deny('ALIGN_DISPATCH_REJECTED');
   }
 
+  async function withdrawOffer(input: Readonly<{ sku: string; offerId: string }>): Promise<void> {
+    if (!SAFE_SKU.test(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
+      deny('ALIGN_DISPATCH_TARGET_INVALID');
+    }
+    const response = await boundedPostTo(
+      'https://api.ebay.com/sell/inventory/v1/offer/'
+      + encodeURIComponent(input.offerId) + '/withdraw',
+      '{}',
+    );
+    // Withdraw returns 200 with the ended listingId.
+    if (response.status !== 200) deny('ALIGN_DISPATCH_REJECTED');
+  }
+
   return Object.freeze({
     updateOfferPrice: (input: AlignPriceInput) => dispatch('price', input),
     updateOfferQuantity: (input: AlignQuantityInput) => dispatch('quantity', input),
+    withdrawOffer,
   });
 }
