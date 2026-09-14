@@ -216,6 +216,14 @@ export type LiveListingCatalogPage = Readonly<{
 export declare class LiveListingCatalogError extends Error {
     constructor();
 }
+declare function duplicateExactSkus(values: readonly {
+    sku: string;
+    productStatus?: string;
+}[]): Set<string>;
+declare function nearCollisionSkus(values: readonly {
+    sku: string;
+    productStatus?: string;
+}[]): Set<string>;
 export declare function buildLiveListingCatalogSnapshot(input: Readonly<{
     observedAtUtc: string;
     shopifyVariants: readonly CapturedShopifyVariant[];
@@ -236,3 +244,8 @@ export declare function projectLiveListingCatalogPage(snapshot: LiveListingCatal
     maxAgeMs?: number;
     refreshFailed?: boolean;
 }>): LiveListingCatalogPage;
+export declare const LIVE_LISTING_CATALOG_TESTING: Readonly<{
+    duplicateExactSkus: typeof duplicateExactSkus;
+    nearCollisionSkus: typeof nearCollisionSkus;
+}>;
+export {};
