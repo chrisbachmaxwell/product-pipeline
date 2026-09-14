@@ -6,6 +6,7 @@ import {
   type CapturedEbayInventoryItem,
   type CapturedEbayOffer,
   type CapturedShopifyVariant,
+  LIVE_LISTING_CATALOG_TESTING,
 } from './live-listing-catalog.js';
 import {
   createLiveListingCatalogCache,
@@ -415,6 +416,25 @@ describe('live listing catalog truth reducer', () => {
         audit: { attentionReasons: ['source_refresh_failed'] },
       }],
     });
+  });
+});
+
+describe('archived duplicate-SKU holders (2026-09-14)', () => {
+  it('does not flag a sellable variant whose only SKU twin is ARCHIVED', () => {
+    const { duplicateExactSkus } = LIVE_LISTING_CATALOG_TESTING;
+    expect(duplicateExactSkus([
+      { sku: 'A-1', productStatus: 'ACTIVE' },
+      { sku: 'A-1', productStatus: 'ARCHIVED' },
+    ])).toEqual(new Set());
+    expect(duplicateExactSkus([
+      { sku: 'A-1', productStatus: 'ACTIVE' },
+      { sku: 'A-1', productStatus: 'ACTIVE' },
+    ])).toEqual(new Set(['A-1']));
+    // DRAFT products can be activated any moment: they still count.
+    expect(duplicateExactSkus([
+      { sku: 'A-1', productStatus: 'ACTIVE' },
+      { sku: 'A-1', productStatus: 'DRAFT' },
+    ])).toEqual(new Set(['A-1']));
   });
 });
 

@@ -254,13 +254,26 @@ function groupBy<T>(values: readonly T[], key: (value: T) => string): Map<string
   return groups;
 }
 
-function duplicateExactSkus(values: readonly { sku: string }[]): Set<string> {
-  const groups = groupBy(values.filter((value) => value.sku !== ''), (value) => value.sku);
+function duplicateExactSkus(
+  values: readonly { sku: string; productStatus?: string }[],
+): Set<string> {
+  // An ARCHIVED product's variant can never list or sell, so it cannot
+  // create writer ambiguity — only sellable (non-archived) holders count
+  // toward a duplicate. Operator case 2026-09-14: the GFX100RF shared its
+  // SKU with an archived predecessor and was invisible to every sweep,
+  // including end-at-zero, because of the flag.
+  const sellable = values.filter((value) => value.sku !== ''
+    && (value.productStatus ?? 'ACTIVE').toUpperCase() !== 'ARCHIVED');
+  const groups = groupBy(sellable, (value) => value.sku);
   return new Set([...groups].filter(([, group]) => group.length > 1).map(([sku]) => sku));
 }
 
-function nearCollisionSkus(values: readonly { sku: string }[]): Set<string> {
-  const groups = groupBy(values.filter((value) => value.sku !== ''), (value) => normalizedSku(value.sku));
+function nearCollisionSkus(
+  values: readonly { sku: string; productStatus?: string }[],
+): Set<string> {
+  const sellable = values.filter((value) => value.sku !== ''
+    && (value.productStatus ?? 'ACTIVE').toUpperCase() !== 'ARCHIVED');
+  const groups = groupBy(sellable, (value) => normalizedSku(value.sku));
   const collisions = new Set<string>();
   for (const group of groups.values()) {
     if (new Set(group.map((value) => value.sku)).size > 1) {
@@ -715,3 +728,8 @@ export function projectLiveListingCatalogPage(
     coverage: snapshot.coverage,
   });
 }
+
+export const LIVE_LISTING_CATALOG_TESTING = Object.freeze({
+  duplicateExactSkus,
+  nearCollisionSkus,
+});

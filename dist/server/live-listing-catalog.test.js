@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildLiveListingCatalogSnapshot, projectLiveListingCatalogPage, } from './live-listing-catalog.js';
+import { buildLiveListingCatalogSnapshot, projectLiveListingCatalogPage, LIVE_LISTING_CATALOG_TESTING, } from './live-listing-catalog.js';
 import { createLiveListingCatalogCache, createTransientEbayTokenProvider, exchangeRuntimeEbayToken, hasUnresolvedLiveListingRefreshFailure, LIVE_LISTING_CATALOG_SOURCE_TESTING, LISTING_CATALOG_FAILURE_CODES, } from './live-listing-catalog-source.js';
 const observedAtUtc = '2026-08-13T20:00:00.000Z';
 function variant(overrides = {}) {
@@ -363,6 +363,24 @@ describe('live listing catalog truth reducer', () => {
                     audit: { attentionReasons: ['source_refresh_failed'] },
                 }],
         });
+    });
+});
+describe('archived duplicate-SKU holders (2026-09-14)', () => {
+    it('does not flag a sellable variant whose only SKU twin is ARCHIVED', () => {
+        const { duplicateExactSkus } = LIVE_LISTING_CATALOG_TESTING;
+        expect(duplicateExactSkus([
+            { sku: 'A-1', productStatus: 'ACTIVE' },
+            { sku: 'A-1', productStatus: 'ARCHIVED' },
+        ])).toEqual(new Set());
+        expect(duplicateExactSkus([
+            { sku: 'A-1', productStatus: 'ACTIVE' },
+            { sku: 'A-1', productStatus: 'ACTIVE' },
+        ])).toEqual(new Set(['A-1']));
+        // DRAFT products can be activated any moment: they still count.
+        expect(duplicateExactSkus([
+            { sku: 'A-1', productStatus: 'ACTIVE' },
+            { sku: 'A-1', productStatus: 'DRAFT' },
+        ])).toEqual(new Set(['A-1']));
     });
 });
 describe('live catalog caching boundaries', () => {
