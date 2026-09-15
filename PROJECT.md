@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-10. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-14. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-11 → 2026-09-14: Bulk Publish, the Oversell, and the Self-Running Queue (L59-L65)
+
+Category-specific item specifics landed end-to-end: a Taxonomy-backed `GET /api/ebay-category-aspects` endpoint + editor panel showing eBay's required aspects with one-click add, and deterministic lens-aspect derivation from titles into the source layer (L59-L62 territory: eBay reveals missing lens aspects one 25002 refusal at a time; the taxonomy list kills that loop). The whole prepared queue — ~45 items — was then published live over Sept 11-14 under the L63 pacing laws (40s preflight→dispatch, 60s between items, patient reconcile for eBay read-lag), with the eBay catalog "About this product" blob structurally disabled on all new creates (`includeCatalogProductDetails: false` in create + revise manifests). Saturday's oversell of the EF-S 10-22 was root-caused and fixed the same day (L64): `endListing` had excluded Inventory-model targets, whose quantity-0 offer updates are silent provider no-ops on this account — sell-out is now END for every management model (`withdrawOffer` for Inventory-model), with a regression test. The archived-twin duplicate-SKU fix (PR #120) put the $5k GFX100RF back under automation, and the sweep's relist-on-restock proved itself by relisting its dead MC-era listing within hours. Publishing is now self-running: `scripts/publish-ready.mjs` (+`.sh`) drains the ready queue through the ceremony CLIs on a 5-hour operator-scheduled cadence, skipping known-benign blockers and halting loudly on unknown shapes (L65). Outstanding operator-side: condition tags for ~7 items, one slash-SKU rename, eBay order #52752 buyer resolution.
 
 ### 2026-09-10: Publish From the UI, MC-Parity Template v2, and the Trading-Quota Outage (L55-L58)
 
