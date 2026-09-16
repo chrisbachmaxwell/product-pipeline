@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-14. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-17. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,11 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-16 → 2026-09-17: The Self-Publishing Queue and Schema v6 (L69-L70)
+
+The operator converted the last publish bottleneck into app behavior: condition now derives from title markers when tags are missing (*USED*/*FOR PARTS*/*NEW OLD STOCK*), FOR PARTS outranks any tag, and graded condition ids clamp to eBay-safe 3000 with the chart grade preserved in the description (PRs #125-#127). The publisher runner gained auto-rebase on stale bases, failure-path pacing, and a wider retry budget. ~37 items published across the day — the 600mm f/4, both 70-200Ls, the Leica pair and M11, the retitled TAP-in console (eBay policy filter vs doubled title decorations), and the whole overnight Canon queue. Schema v6 shipped the orphaned-artifact recovery ceremony (PR #128): a structurally guarded intent action for cleaning inventory-item/offer pairs orphaned by external Seller Hub relists of RESOLVED creates, proven live by healing the Canon SL3 kit row on first invocation after a verified 5→6 store upgrade. An employee-facing recovery retry route and button (PR #123), proactive title-length warnings, and camera-kit lens-aspect gating landed the day before (L68).
+
 
 ### 2026-09-11 → 2026-09-14: Bulk Publish, the Oversell, and the Self-Running Queue (L59-L65)
 
