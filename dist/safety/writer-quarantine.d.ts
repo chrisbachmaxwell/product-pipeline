@@ -109,6 +109,16 @@ export declare function isExactLocalDraftAppend(method: string, originalUrl: str
  * operator required publishing from the UI.
  */
 export declare function isExactListingPublish(method: string, originalUrl: string): boolean;
+/**
+ * The publish-recovery exception, held to the same bar as publish: the
+ * handler spawns only the operator-armed recovery ceremonies (reconcile →
+ * recover-create → recover-reconcile) that automatic post-publish cleanup
+ * already runs, requires the exact store session, and performs no provider
+ * write in this process. It exists so a failed publish whose automatic
+ * cleanup also failed can be retried by the operator from the UI instead of
+ * requiring an engineer at a terminal. Added 2026-09-16.
+ */
+export declare function isExactListingRecovery(method: string, originalUrl: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {

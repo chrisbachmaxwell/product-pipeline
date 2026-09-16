@@ -74,3 +74,20 @@ export declare function inspectMigrationStoreReadOnly(input: {
     expectedScope: IntegrationScope;
     nowUtc?: string;
 }): MigrationStoreProjection;
+export type UnresolvedListingCreateProjection = Readonly<{
+    jobId: string;
+    attemptId: string;
+    intentKey: string;
+    evidenceDigest: string;
+}>;
+/**
+ * READ-ONLY lookup for the operator's publish-recovery retry: the most
+ * recent listing-create job targeting the SKU whose attempt has no recorded
+ * resolution. Same database-path discipline as inspectMigrationStoreReadOnly;
+ * opens read-only, runs one SELECT, writes nothing. The identifiers returned
+ * are re-verified by the recovery ceremonies before any provider action.
+ */
+export declare function findUnresolvedListingCreateReadOnly(input: {
+    databasePath: string;
+    sku: string;
+}): UnresolvedListingCreateProjection | null;

@@ -156,6 +156,33 @@ describe('live listing catalog truth reducer', () => {
             audit: { attentionReasons: [] },
         });
     });
+    it('gives the sellable twin sole ownership of the listing when an ARCHIVED twin shares the SKU', () => {
+        // With both twins joined to the one listing, the archived twin's zero
+        // ends it while the sellable twin's stock relists it — an end/relist
+        // tug-of-war observed in production 2026-09-15 on SKU 16938039-U024
+        // (three listing ids in 24 hours). The archived twin must lose its
+        // eBay join whenever a sellable variant holds the same SKU; the
+        // just-sold zeroing role (2026-09-08) applies only to a lone holder.
+        const built = snapshot({
+            variants: [
+                variant({ variantId: 'gid://shopify/ProductVariant/1', available: 1 }),
+                variant({
+                    variantId: 'gid://shopify/ProductVariant/2',
+                    productId: 'gid://shopify/Product/2',
+                    available: 0,
+                    productStatus: 'ARCHIVED',
+                }),
+            ],
+            active: [active()],
+        });
+        expect(built.rows).toHaveLength(1);
+        expect(built.rows[0]).toMatchObject({
+            lifecycleStatus: 'active',
+            shopify: { available: 1, productStatus: 'ACTIVE' },
+            ebay: { listingId: '100' },
+            audit: { attentionReasons: [] },
+        });
+    });
     it('still flags a non-active product that has no live eBay listing', () => {
         // Without a listing there is nothing to maintain, and the flag keeps
         // draft/archived products out of the not-listed create-candidate bucket.

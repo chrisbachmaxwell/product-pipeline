@@ -151,6 +151,7 @@ const ListingDetail: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handler);
   }, [draftState.dirty]);
   const [publishing, setPublishing] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [publishResult, setPublishResult] = useState<
     | { ok: true; listingId: string | null }
     | { ok: false; message: string; canRebase: boolean }
@@ -164,6 +165,43 @@ const ListingDetail: React.FC = () => {
     && draftRevision
     && currentCatalog?.shopify,
   );
+
+  // Failed publishes can leave draft data on eBay (an unpublished offer +
+  // inventory item). Automatic cleanup runs after every failed publish, but
+  // when IT fails (a throttled capture, provider lag) the leftover blocks
+  // editing and republishing. This button retries the same safe server-side
+  // recovery so nobody needs an engineer at a terminal.
+  const runRecovery = async () => {
+    if (!currentCatalog?.shopify || !id) return;
+    setRecovering(true);
+    setPublishResult(null);
+    setToast('Clearing leftover eBay data…');
+    try {
+      await apiClient.post<{ status: string }>(
+        '/listing-recovery',
+        { catalogId: id, sku: currentCatalog.shopify.sku },
+      );
+      setToast('Leftover eBay data cleared — this item can publish again.');
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const refreshed = await workspace.refetch();
+        const cleared = isListingWorkspaceResponse(refreshed.data, id)
+          && refreshed.data.catalog.ebay.unpublishedArtifactCount === 0;
+        if (cleared) break;
+        await new Promise((resolve) => { setTimeout(resolve, 4000); });
+      }
+      await localDraft.refetch();
+    } catch (error) {
+      setToast(null);
+      const raw = error instanceof Error ? error.message : 'Recovery failed';
+      setPublishResult({
+        ok: false,
+        message: raw.replace(/\s*\((RECOVERY_[A-Z_]+|PUBLISH_BUSY)\)\s*$/, ''),
+        canRebase: false,
+      });
+    } finally {
+      setRecovering(false);
+    }
+  };
 
   const runPublish = async (revisionDigestOverride?: string) => {
     const digestToPublish = revisionDigestOverride ?? draftRevision?.revisionDigest;
@@ -460,6 +498,25 @@ const ListingDetail: React.FC = () => {
             {formatVerifiedAt(observedAt)} · refreshes every few minutes
           </Text>
         </InlineStack>
+
+        {catalog.ebay.unpublishedArtifactCount > 0 && catalog.shopify && (
+          <Banner
+            tone="warning"
+            title="Leftover eBay data is blocking this item"
+            action={{
+              content: recovering ? 'Clearing…' : 'Clear leftover eBay data',
+              loading: recovering,
+              onAction: () => { void runRecovery(); },
+            }}
+          >
+            <Text as="p">
+              A previous publish attempt left unfinished draft data on eBay.
+              Until it is cleared, this item cannot be edited or published.
+              Clearing runs the same safe recovery the server performs
+              automatically — it never touches a live listing.
+            </Text>
+          </Banner>
+        )}
 
         {publishResult && (
           <Banner

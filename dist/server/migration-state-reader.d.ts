@@ -1,4 +1,4 @@
-import { inspectMigrationStoreReadOnly } from '../migration-store/projection.js';
+import { inspectMigrationStoreReadOnly, type UnresolvedListingCreateProjection } from '../migration-store/projection.js';
 import { loadMigrationAdminConfig } from '../migration-admin/config.js';
 export type UnavailableMigrationStateProjection = {
     status: 'not-configured' | 'unavailable' | 'invalid';
@@ -111,4 +111,12 @@ export declare function readConfiguredMigrationState(options?: {
     inspectStore?: StoreInspector;
     now?: () => Date;
 }): Promise<MigrationStateApiProjection>;
+/**
+ * READ-ONLY unresolved-create lookup for the publish-recovery retry route.
+ * The store path is taken from the operator-armed ceremony argv template
+ * (the value after its --migration-store flag), so this reads exactly the
+ * store the recovery ceremonies themselves will re-verify against — the
+ * server never holds a second, separately configured store path.
+ */
+export declare function findUnresolvedListingCreateFromArgv(argv: readonly string[] | null | undefined, sku: string): UnresolvedListingCreateProjection | null;
 export {};

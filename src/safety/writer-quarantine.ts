@@ -190,6 +190,19 @@ export function isExactListingPublish(method: string, originalUrl: string): bool
   return method === 'POST' && originalUrl === '/api/listing-publish';
 }
 
+/**
+ * The publish-recovery exception, held to the same bar as publish: the
+ * handler spawns only the operator-armed recovery ceremonies (reconcile →
+ * recover-create → recover-reconcile) that automatic post-publish cleanup
+ * already runs, requires the exact store session, and performs no provider
+ * write in this process. It exists so a failed publish whose automatic
+ * cleanup also failed can be retried by the operator from the UI instead of
+ * requiring an engineer at a terminal. Added 2026-09-16.
+ */
+export function isExactListingRecovery(method: string, originalUrl: string): boolean {
+  return method === 'POST' && originalUrl === '/api/listing-recovery';
+}
+
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(
   req: Request,
@@ -207,6 +220,11 @@ export function writerQuarantineMiddleware(
   }
 
   if (isExactListingPublish(req.method, req.originalUrl || '')) {
+    next();
+    return;
+  }
+
+  if (isExactListingRecovery(req.method, req.originalUrl || '')) {
     next();
     return;
   }

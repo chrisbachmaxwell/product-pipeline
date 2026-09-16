@@ -135,6 +135,16 @@ export function buildLiveListingCatalogSnapshot(input) {
     requireUnique(input.ebayInventoryItems, (value) => value.sku);
     requireUnique(input.ebayOffers, (value) => value.offerId);
     const duplicateShopify = duplicateExactSkus(input.shopifyVariants);
+    // SKUs held by at least one variant that can actually sell. An ARCHIVED
+    // variant may keep its eBay join (the just-sold zeroing role below) ONLY
+    // when no sellable twin holds the same SKU: with both twins joined to the
+    // one listing, the archived twin's 0 ends it while the sellable twin's
+    // stock relists it — an end/relist tug-of-war observed in production
+    // 2026-09-15 on SKU 16938039-U024 (three listing ids in 24h).
+    const sellableSkuHolders = new Set(input.shopifyVariants
+        .filter((variant) => variant.sku !== ''
+        && variant.productStatus.toUpperCase() !== 'ARCHIVED')
+        .map((variant) => variant.sku));
     const nearShopify = nearCollisionSkus(input.shopifyVariants);
     const ebaySkuValues = [
         ...input.ebayActiveListings,
@@ -163,7 +173,9 @@ export function buildLiveListingCatalogSnapshot(input) {
         if (nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku)) {
             reasons.add('ebay_sku_near_collision');
         }
-        const skuCanJoin = variant.sku !== '';
+        const skuCanJoin = variant.sku !== ''
+            && !(variant.productStatus.toUpperCase() === 'ARCHIVED'
+                && sellableSkuHolders.has(variant.sku));
         const activeMatches = skuCanJoin ? activeBySku.get(variant.sku) ?? [] : [];
         const inventoryItems = skuCanJoin ? inventoryBySku.get(variant.sku) ?? [] : [];
         const offers = skuCanJoin ? offersBySku.get(variant.sku) ?? [] : [];
