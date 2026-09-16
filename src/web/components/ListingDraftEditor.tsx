@@ -499,11 +499,21 @@ const ListingDraftEditor: React.FC<Props> = ({
     }
   };
 
+  // Effective title = what publish will actually send. A Shopify title over
+  // eBay's cap fails at publish time with an unhelpful refusal (learned live
+  // 2026-09-14: a 91-character flash-kit title), so warn HERE, before any
+  // publish, even when the operator has not touched the field.
+  const effectiveTitle = values.title ?? titleField.draft ?? titleField.shopify;
   const titleError = values.title !== null && (
     values.title.trim() !== values.title
     || values.title.length === 0
     || values.title.length > TITLE_MAX_LENGTH
-  ) ? `Use 1–${TITLE_MAX_LENGTH} characters with no leading or trailing spaces` : undefined;
+  ) ? `Use 1–${TITLE_MAX_LENGTH} characters with no leading or trailing spaces`
+    : values.title === null && effectiveTitle !== null
+      && effectiveTitle.length > TITLE_MAX_LENGTH
+      ? `The Shopify title is ${effectiveTitle.length} characters — eBay allows`
+        + ` ${TITLE_MAX_LENGTH}. Shorten it here before publishing.`
+      : undefined;
   const categoryError = values.category !== null && !POSITIVE_ID_PATTERN.test(values.category)
     ? 'Use a positive eBay category ID' : undefined;
   const conditionError = values.condition !== null && !POSITIVE_ID_PATTERN.test(values.condition)

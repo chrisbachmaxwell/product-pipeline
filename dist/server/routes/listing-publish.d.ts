@@ -8,6 +8,13 @@ export declare function createListingPublishRouter(dependencies?: Readonly<{
     reconcileArgv?: readonly string[] | null;
     recoverArgv?: readonly string[] | null;
     recoverReconcileArgv?: readonly string[] | null;
+    lookupUnresolvedCreate?: (sku: string) => Readonly<{
+        jobId: string;
+        attemptId: string;
+        intentKey: string;
+        evidenceDigest: string;
+    }> | null;
+    latestRevisionDigest?: (catalogId: string) => string | null;
 }>): Router;
 declare const _default: Router;
 export default _default;

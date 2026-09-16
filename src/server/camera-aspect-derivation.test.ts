@@ -34,3 +34,19 @@ describe('deriveLensAspects', () => {
     expect(deriveLensAspects('Mystery Lens')).toEqual({});
   });
 });
+
+describe('camera-kit titles never grow lens aspects (2026-09-16)', () => {
+  it('derives nothing for a camera kit whose title mentions a lens', () => {
+    expect(deriveLensAspects(
+      'Canon EOS Rebel SL3 DSLR w/ EF-S 18-55mm f/4-5.6 IS STM Lens (#978) *USED*',
+    )).toEqual({});
+    expect(deriveLensAspects(
+      'Sony NEX 6 Mirrorless Camera w/16-50mm & 55-210mm OSS Lenses *USED*',
+    )).toEqual({});
+    expect(deriveLensAspects('Nikon D50 DSLR Camera Body (#392) *USED*')).toEqual({});
+  });
+  it('still derives for a plain lens title', () => {
+    expect(deriveLensAspects('Sony 70-200mm f/2.8 GM Lens (#608) *USED*'))
+      .toMatchObject({ 'Focal Length': ['70-200mm'] });
+  });
+});

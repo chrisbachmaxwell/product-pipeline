@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import { openListingControlStoreReadOnly } from '../../listing-control-store/index.js';
 import { info, warn } from '../../utils/logger.js';
+import { LISTING_DRAFT_SCOPE } from '../listing-draft-service.js';
+import { findUnresolvedListingCreateFromArgv } from '../migration-state-reader.js';
 import { apiPrincipal } from '../middleware/auth.js';
 import { createProcessStepRunner, substituteArgv } from '../order-import-trigger.js';
 /**
@@ -24,10 +27,12 @@ import { createProcessStepRunner, substituteArgv } from '../order-import-trigger
  * strict grammars, so nothing request-supplied can smuggle an argument.
  */
 const EXACT_ROUTE = '/api/listing-publish';
+const RECOVERY_ROUTE = '/api/listing-recovery';
 const EXACT_STORE = 'usedcameragear.myshopify.com';
 const CATALOG_ID = /^shopify-variant:gid:\/\/shopify\/ProductVariant\/[0-9]+$/u;
 const SKU = /^[\x21-\x7e]{1,128}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 /** One publish at a time; a second click while one runs is refused, not queued. */
 let publishing = false;
 function parseArgvEnv(name) {
@@ -61,6 +66,30 @@ export function createListingPublishRouter(dependencies = {}) {
         ? dependencies.recoverArgv : parseArgvEnv('PUBLISH_RECOVER_ARGV');
     const recoverReconcileArgv = dependencies.recoverReconcileArgv !== undefined
         ? dependencies.recoverReconcileArgv : parseArgvEnv('PUBLISH_RECOVER_RECONCILE_ARGV');
+    // READ-ONLY ledger lookup for the operator's recovery retry, via the one
+    // approved reader (server/migration-state-reader.ts): find the unresolved
+    // create job for a SKU. Not a provider write and mounts no writer; every
+    // write in the retry still happens inside the armed ceremony CLIs above.
+    const lookupUnresolvedCreate = dependencies.lookupUnresolvedCreate
+        ?? ((sku) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+    const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId) => {
+        const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
+        if (typeof databasePath !== 'string' || databasePath.length === 0)
+            return null;
+        try {
+            const store = openListingControlStoreReadOnly({ databasePath, expectedScope: LISTING_DRAFT_SCOPE });
+            try {
+                const revision = store.getLatestRevision(catalogId.replace(/^shopify-variant:/, ''));
+                return revision?.revisionDigest ?? null;
+            }
+            finally {
+                store.close();
+            }
+        }
+        catch {
+            return null;
+        }
+    });
     /**
      * Automatic residue cleanup after a failed publish (operator ask,
      * 2026-09-11: "we should just automatically fix this"). Runs the exact
@@ -70,7 +99,6 @@ export function createListingPublishRouter(dependencies = {}) {
      * truthful and reports 'failed' so the operator knows manual recovery
      * is still owed. This server process performs zero provider writes.
      */
-    const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
     async function cleanUpFailedCreate(input) {
         if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv)
             return 'skipped';
@@ -83,16 +111,36 @@ export function createListingPublishRouter(dependencies = {}) {
             || typeof intentKey !== 'string' || !DIGEST.test(intentKey)
             || typeof offerId !== 'string' || !/^[0-9]{1,19}$/.test(offerId))
             return 'skipped';
-        const values = {
+        return runResidueRecovery({
             catalogId: input.catalogId,
             sku: input.sku,
             revisionDigest: input.revisionDigest,
-            manifestDigest: input.manifestDigest,
             jobId,
             attemptId,
             intentKey,
             evidenceDigest: input.manifestDigest,
             offerId,
+        });
+    }
+    /**
+     * The one ceremony chain (reconcile -> recover-create -> recover-reconcile)
+     * shared by automatic post-publish cleanup and the operator's manual
+     * "clear leftover eBay data" retry. When the caller does not know the
+     * residue's offer id (a retry long after the failed dispatch), the
+     * reconcile step's own observed offer id is used — the recover ceremony
+     * still re-verifies it against the recorded evidence before any DELETE.
+     */
+    async function runResidueRecovery(input) {
+        if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv)
+            return 'skipped';
+        const values = {
+            catalogId: input.catalogId,
+            sku: input.sku,
+            revisionDigest: input.revisionDigest,
+            jobId: input.jobId,
+            attemptId: input.attemptId,
+            intentKey: input.intentKey,
+            evidenceDigest: input.evidenceDigest,
         };
         try {
             const reconciled = await runStep(substituteArgv(reconcileArgv, values));
@@ -101,7 +149,12 @@ export function createListingPublishRouter(dependencies = {}) {
                 // the residue shape this cleanup handles.
                 return 'skipped';
             }
-            const recovered = await runStep(substituteArgv(recoverArgv, values));
+            const observed = reconciled.json?.offerId;
+            const offerId = input.offerId
+                ?? (typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed) ? observed : null);
+            if (offerId === null)
+                return 'failed';
+            const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
             const recoveryJobId = recovered.json?.recoveryJobId;
             const recoveryAttemptId = recovered.json?.recoveryAttemptId;
             if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
@@ -109,7 +162,7 @@ export function createListingPublishRouter(dependencies = {}) {
                 return 'failed';
             }
             const closed = await runStep(substituteArgv(recoverReconcileArgv, {
-                ...values, recoveryJobId, recoveryAttemptId,
+                ...values, offerId, recoveryJobId, recoveryAttemptId,
             }));
             return closed.json?.status === 'recovered-and-reconciled' ? 'removed' : 'failed';
         }
@@ -229,6 +282,85 @@ export function createListingPublishRouter(dependencies = {}) {
         catch {
             publishing = false;
             res.status(500).json({ error: 'Publish failed unexpectedly' });
+        }
+    });
+    // Operator retry for a failed publish's leftover eBay data. The automatic
+    // cleanup above is best-effort; when it fails (a throttled capture, a
+    // provider read lag) the item shows "Fix needed", the draft stays locked
+    // behind the residue guard, and before this route the only way out was an
+    // engineer running the ceremonies by hand. Same session bar as publishing;
+    // all provider writes still happen inside the armed ceremony CLIs.
+    router.post(RECOVERY_ROUTE, async (req, res) => {
+        try {
+            if (req.originalUrl !== RECOVERY_ROUTE) {
+                res.status(403).json({ error: 'Recovery is scoped to the exact route' });
+                return;
+            }
+            const principal = apiPrincipal(req);
+            if (principal?.kind !== 'shopify_session' || principal.shopifyStoreDomain !== EXACT_STORE
+                || principal.subject === null || principal.actorId !== `shopify-user:${principal.subject}`) {
+                res.status(403).json({ error: 'Recovery requires a signed-in Shopify session' });
+                return;
+            }
+            if (reconcileArgv === null || recoverArgv === null || recoverReconcileArgv === null) {
+                res.status(409).json({
+                    error: 'Recovery is not armed on the server',
+                    code: 'RECOVERY_NOT_ARMED',
+                });
+                return;
+            }
+            const body = req.body;
+            const catalogId = typeof body?.catalogId === 'string' ? body.catalogId : '';
+            const sku = typeof body?.sku === 'string' ? body.sku : '';
+            if (!CATALOG_ID.test(catalogId) || !SKU.test(sku)) {
+                res.status(400).json({ error: 'catalogId and sku are required', code: 'RECOVERY_TARGET_INVALID' });
+                return;
+            }
+            if (publishing) {
+                res.status(409).json({ error: 'Another publish is already running', code: 'PUBLISH_BUSY' });
+                return;
+            }
+            publishing = true;
+            try {
+                const source = lookupUnresolvedCreate(sku);
+                if (source === null) {
+                    res.status(404).json({
+                        error: 'No unresolved eBay create found for this item — nothing to recover.',
+                        code: 'RECOVERY_NOTHING_UNRESOLVED',
+                    });
+                    return;
+                }
+                const revisionDigest = latestRevisionDigest(catalogId);
+                if (revisionDigest === null) {
+                    res.status(409).json({
+                        error: 'The saved draft for this item could not be read.',
+                        code: 'RECOVERY_DRAFT_UNAVAILABLE',
+                    });
+                    return;
+                }
+                info(`[Listing Publish] operator ${principal.actorId} recovering ${sku} (${source.jobId})`);
+                const status = await runResidueRecovery({ catalogId, sku, revisionDigest, ...source });
+                info(`[Listing Publish] ${sku}: operator recovery ${status}`);
+                if (status === 'removed')
+                    void refreshCatalog().catch(() => undefined);
+                res.status(status === 'removed' ? 200 : 502).json({
+                    schemaVersion: 1,
+                    status,
+                    ...(status === 'removed' ? {} : {
+                        error: status === 'skipped'
+                            ? 'The leftover data is not in the expected state — it may already be cleared, or the listing is actually live. Refresh and check again.'
+                            : 'Recovery could not complete this time (often a temporary provider limit). Wait a minute and try again.',
+                        code: 'RECOVERY_UNRESOLVED',
+                    }),
+                });
+            }
+            finally {
+                publishing = false;
+            }
+        }
+        catch (error) {
+            warn(`[Listing Publish] recovery failed: ${error instanceof Error ? error.message : 'unknown'}`);
+            res.status(500).json({ error: 'Recovery failed unexpectedly' });
         }
     });
     return router;

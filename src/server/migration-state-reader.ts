@@ -1,8 +1,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  findUnresolvedListingCreateReadOnly,
   inspectMigrationStoreReadOnly,
   type MigrationStoreProjection,
+  type UnresolvedListingCreateProjection,
 } from '../migration-store/projection.js';
 import { loadMigrationAdminConfig } from '../migration-admin/config.js';
 import { MIGRATION_RESPONSIBILITIES } from '../safety/responsibilities.js';
@@ -438,4 +440,22 @@ export async function readConfiguredMigrationState(options: {
   } catch {
     return unavailableProjection('invalid', 'MIGRATION_STATE_STORE_INVALID');
   }
+}
+
+/**
+ * READ-ONLY unresolved-create lookup for the publish-recovery retry route.
+ * The store path is taken from the operator-armed ceremony argv template
+ * (the value after its --migration-store flag), so this reads exactly the
+ * store the recovery ceremonies themselves will re-verify against — the
+ * server never holds a second, separately configured store path.
+ */
+export function findUnresolvedListingCreateFromArgv(
+  argv: readonly string[] | null | undefined,
+  sku: string,
+): UnresolvedListingCreateProjection | null {
+  const entries = argv ?? [];
+  const index = entries.indexOf('--migration-store');
+  const databasePath = index >= 0 ? entries[index + 1] : undefined;
+  if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
+  return findUnresolvedListingCreateReadOnly({ databasePath, sku });
 }

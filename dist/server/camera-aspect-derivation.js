@@ -33,6 +33,13 @@ export function deriveLensAspects(rawTitle) {
     const title = rawTitle.slice(0, 200);
     if (!/\blens\b/i.test(title))
         return {};
+    // A camera KIT title also says "Lens" ("EOS Rebel SL3 DSLR w/ 18-55mm
+    // Lens") but the listing is a CAMERA: lens aspects (Mount, Maximum
+    // Aperture, Type=Zoom) are wrong for it and camera categories want Model/
+    // Type instead (learned live 2026-09-16). When the title names a camera,
+    // derive nothing rather than derive wrongly.
+    if (/\b(camera|dslr|slr|mirrorless|camcorder|body)\b/i.test(title))
+        return {};
     const aspects = {};
     const focal = /(\d{1,4}(?:\.\d)?)\s*(?:-\s*(\d{1,4}(?:\.\d)?)\s*)?mm\b/i.exec(title);
     if (focal) {

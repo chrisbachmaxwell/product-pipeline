@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CURRENT_SCHEMA_VERSION } from './schema.js';
@@ -313,5 +314,69 @@ export function inspectMigrationStoreReadOnly(input: {
     }
   } catch {
     return deniedProjection('invalid');
+  }
+}
+
+export type UnresolvedListingCreateProjection = Readonly<{
+  jobId: string;
+  attemptId: string;
+  intentKey: string;
+  evidenceDigest: string;
+}>;
+
+/**
+ * READ-ONLY lookup for the operator's publish-recovery retry: the most
+ * recent listing-create job targeting the SKU whose attempt has no recorded
+ * resolution. Same database-path discipline as inspectMigrationStoreReadOnly;
+ * opens read-only, runs one SELECT, writes nothing. The identifiers returned
+ * are re-verified by the recovery ceremonies before any provider action.
+ */
+export function findUnresolvedListingCreateReadOnly(input: {
+  databasePath: string;
+  sku: string;
+}): UnresolvedListingCreateProjection | null {
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+  const SHA256 = /^sha256:[0-9a-f]{64}$/;
+  if (
+    typeof input.databasePath !== 'string'
+    || input.databasePath.length === 0
+    || input.databasePath.startsWith('file:')
+    || input.databasePath === ':memory:'
+    || !path.isAbsolute(input.databasePath)
+    || path.resolve(input.databasePath) !== input.databasePath
+    || typeof input.sku !== 'string'
+    || input.sku.length === 0
+    || input.sku.length > 128
+  ) {
+    return null;
+  }
+  try {
+    const database = new Database(input.databasePath, { readonly: true, fileMustExist: true });
+    try {
+      const row = database.prepare(
+        'SELECT j.job_id AS jobId, a.attempt_id AS attemptId, j.intent_key AS intentKey, '
+        + 'j.approval_evidence_digest AS evidenceDigest '
+        + 'FROM execution_jobs j '
+        + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+        + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+        + 'LEFT JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+        + "WHERE e.binding_key = ? AND j.job_id LIKE 'listing-create-job:%' "
+        + 'AND r.resolution_id IS NULL '
+        + 'ORDER BY j.reserved_at_utc DESC LIMIT 1',
+      ).get(`ebay-inventory-sku:${input.sku}`) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const { jobId, attemptId, intentKey, evidenceDigest } = row;
+      if (typeof jobId !== 'string' || !SAFE_ID.test(jobId)
+        || typeof attemptId !== 'string' || !SAFE_ID.test(attemptId)
+        || typeof intentKey !== 'string' || !SHA256.test(intentKey)
+        || typeof evidenceDigest !== 'string' || !SHA256.test(evidenceDigest)) {
+        return null;
+      }
+      return Object.freeze({ jobId, attemptId, intentKey, evidenceDigest });
+    } finally {
+      database.close();
+    }
+  } catch {
+    return null;
   }
 }

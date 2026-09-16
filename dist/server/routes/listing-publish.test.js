@@ -11,6 +11,24 @@ const PREFLIGHT = ['dist/listing-lifecycle-admin/index.js', 'preflight-create',
 const DISPATCH = ['dist/listing-lifecycle-admin/index.js', 'dispatch-create',
     '--catalog-id', '{catalogId}', '--sku', '{sku}', '--revision-digest', '{revisionDigest}',
     '--manifest-digest', '{manifestDigest}', '--migration-store', '/data/x'];
+const RECONCILE = ['dist/listing-lifecycle-admin/index.js', 'reconcile', '--action', 'create',
+    '--catalog-id', '{catalogId}', '--sku', '{sku}', '--revision-digest', '{revisionDigest}',
+    '--migration-store', '/data/x', '--job-id', '{jobId}', '--attempt-id', '{attemptId}'];
+const RECOVER = ['dist/listing-lifecycle-admin/index.js', 'recover-create',
+    '--catalog-id', '{catalogId}', '--sku', '{sku}', '--job-id', '{jobId}',
+    '--attempt-id', '{attemptId}', '--intent-key', '{intentKey}',
+    '--evidence-digest', '{evidenceDigest}', '--offer-id', '{offerId}'];
+const RECOVER_RECONCILE = ['dist/listing-lifecycle-admin/index.js', 'recover-reconcile',
+    '--catalog-id', '{catalogId}', '--sku', '{sku}', '--job-id', '{jobId}',
+    '--attempt-id', '{attemptId}', '--intent-key', '{intentKey}',
+    '--evidence-digest', '{evidenceDigest}', '--offer-id', '{offerId}',
+    '--recovery-job-id', '{recoveryJobId}', '--recovery-attempt-id', '{recoveryAttemptId}'];
+const UNRESOLVED_CREATE = {
+    jobId: 'listing-create-job:11111111-1111-1111-1111-111111111111',
+    attemptId: 'listing-create-attempt:22222222-2222-2222-2222-222222222222',
+    intentKey: `sha256:${'d'.repeat(64)}`,
+    evidenceDigest: `sha256:${'e'.repeat(64)}`,
+};
 const servers = [];
 afterEach(() => { for (const server of servers.splice(0))
     server.close(); });
@@ -44,14 +62,27 @@ function harness(options) {
     });
     app.use('/api', writerQuarantineMiddleware);
     app.post('/api/listing-publish', listingDraftJsonParser);
+    app.post('/api/listing-recovery', listingDraftJsonParser);
     app.use(listingDraftJsonErrorHandler);
     app.use(createListingPublishRouter({
         preflightArgv: options.armed === false ? null : PREFLIGHT,
         dispatchArgv: options.armed === false ? null : DISPATCH,
+        reconcileArgv: options.armed === false ? null : RECONCILE,
+        recoverArgv: options.armed === false ? null : RECOVER,
+        recoverReconcileArgv: options.armed === false ? null : RECOVER_RECONCILE,
+        refreshCatalog: async () => undefined,
+        lookupUnresolvedCreate: () => options.unresolvedCreate ?? null,
+        latestRevisionDigest: () => options.revisionDigest ?? REVISION,
         runStep: async (argv) => {
             calls.push([...argv]);
             if (argv[1] === 'preflight-create')
                 return { json: options.preflightJson ?? null };
+            if (argv[1] === 'reconcile')
+                return { json: options.reconcileJson ?? null };
+            if (argv[1] === 'recover-create')
+                return { json: options.recoverJson ?? null };
+            if (argv[1] === 'recover-reconcile')
+                return { json: options.recoverReconcileJson ?? null };
             return { json: options.dispatchJson ?? null };
         },
     }));
@@ -109,6 +140,50 @@ describe('listing publish route', () => {
         expect(response.status).toBe(422);
         expect(response.body).toMatchObject({ code: 'CREATE_REQUIRED_FIELD_MISSING', stage: 'preflight' });
         expect(h.calls).toHaveLength(1);
+    });
+    it('recovery retry: ledger lookup feeds the chain, offer id comes from reconcile', async () => {
+        const h = harness({
+            kind: 'shopify_session',
+            unresolvedCreate: UNRESOLVED_CREATE,
+            reconcileJson: { status: 'unresolved', unresolvedCode: 'CREATE_OFFER_UNPUBLISHED', offerId: '267000000011' },
+            recoverJson: {
+                status: 'recovery-unresolved',
+                recoveryJobId: 'listing-create-recovery-job:33333333-3333-3333-3333-333333333333',
+                recoveryAttemptId: 'listing-create-recovery-attempt:44444444-4444-4444-4444-444444444444',
+            },
+            recoverReconcileJson: { status: 'recovered-and-reconciled' },
+        });
+        const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ status: 'removed' });
+        expect(h.calls.map((call) => call[1]))
+            .toEqual(['reconcile', 'recover-create', 'recover-reconcile']);
+        expect(h.calls[1]).toContain('267000000011');
+        expect(h.calls[2].join(' ')).not.toContain('{');
+    });
+    it('recovery retry: nothing unresolved in the ledger is a 404, no ceremony spawns', async () => {
+        const h = harness({ kind: 'shopify_session', unresolvedCreate: null });
+        const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+        expect(response.status).toBe(404);
+        expect(response.body.code).toBe('RECOVERY_NOTHING_UNRESOLVED');
+        expect(h.calls).toHaveLength(0);
+    });
+    it('recovery retry: a non-residue reconcile outcome stops the chain before any delete', async () => {
+        const h = harness({
+            kind: 'shopify_session',
+            unresolvedCreate: UNRESOLVED_CREATE,
+            reconcileJson: { status: 'reconciled', resolution: 'resolved_existing' },
+        });
+        const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+        expect(response.status).toBe(502);
+        expect(response.body).toMatchObject({ status: 'skipped', code: 'RECOVERY_UNRESOLVED' });
+        expect(h.calls.map((call) => call[1])).toEqual(['reconcile']);
+    });
+    it('recovery retry requires the same session bar as publishing', async () => {
+        const h = harness({ kind: 'operator_api_key', unresolvedCreate: UNRESOLVED_CREATE });
+        const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+        expect(response.status).toBe(403);
+        expect(h.calls).toHaveLength(0);
     });
     it('other POST /api routes stay quarantined', async () => {
         const h = harness({ kind: 'shopify_session' });
