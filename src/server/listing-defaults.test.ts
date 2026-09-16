@@ -104,11 +104,22 @@ describe('title-marker condition fallback (2026-09-17)', () => {
     expect(deriveCondition([], 'Canon 70-300mm *FOR PARTS* (#144) *USED*'))
       .toMatchObject({ id: '7000' });
   });
-  it('never overrides an operator tag and never invents a grade', () => {
-    expect(deriveCondition(['condition-good'], 'Something (#1) *USED*'))
-      .toMatchObject({ id: '5000' });
-    expect(deriveCondition(['condition-good'], 'Something *FOR PARTS*'))
-      .toMatchObject({ id: '5000' });
+  it('clamps graded ids to the eBay-safe Used id, keeping the chart language', () => {
+    // eBay refuses graded used ids per category (5000 in 30086, 6000 in
+    // 3323/31388) — the grade survives in the description instead.
+    const good = deriveCondition(['condition-good'], 'Something (#1) *USED*');
+    expect(good).toMatchObject({ id: '3000' });
+    expect(good?.description).toMatch(/^Good:/);
+    expect(deriveCondition(['condition-like-new'], 'Something (#1) *USED*'))
+      .toMatchObject({ id: '3000' });
+    expect(deriveCondition(['condition-excellent'], 'Something (#1) *USED*'))
+      .toMatchObject({ id: '3000' });
+  });
+  it('a FOR PARTS title outranks any tag — never sell parts as functional', () => {
+    expect(deriveCondition(['condition-good'], 'Something *FOR PARTS* (#1) *USED*'))
+      .toMatchObject({ id: '7000' });
+  });
+  it('returns null with no tag and no title marker', () => {
     expect(deriveCondition([], 'Pipeline Test')).toBeNull();
     expect(deriveCondition([], null)).toBeNull();
   });

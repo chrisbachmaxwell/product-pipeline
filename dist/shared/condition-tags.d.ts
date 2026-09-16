@@ -35,8 +35,13 @@ export declare function conditionFromTitle(title: string | null | undefined): {
     id: string;
     description: string;
 } | null;
-/** Tag first, title-marker fallback second. The one derivation both the
- * draft auto-defaults and the ready-queue completeness flag must share. */
+/**
+ * Tag first, title-marker fallback second — with two safety rules on top:
+ * a *FOR PARTS* title outranks any tag (never sell a parts item as
+ * functional), and graded ids clamp to their eBay-safe equivalent while the
+ * grade language stays in the description. The one derivation both the
+ * draft auto-defaults and the ready-queue completeness flag must share.
+ */
 export declare function deriveCondition(productTags: readonly string[] | undefined, title: string | null | undefined): {
     id: string;
     description: string;
