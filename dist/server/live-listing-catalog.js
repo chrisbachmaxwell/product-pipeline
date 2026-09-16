@@ -1,4 +1,4 @@
-import { conditionFromTags } from '../shared/condition-tags.js';
+import { deriveCondition } from '../shared/condition-tags.js';
 export const MAX_LIVE_LISTING_SNAPSHOT_AGE_MS = 5 * 60_000;
 export class LiveListingCatalogError extends Error {
     constructor() {
@@ -255,7 +255,7 @@ export function buildLiveListingCatalogSnapshot(input) {
             && offers.length === 0
             && variant.sku.trim() !== ''
             && reasons.size === 0;
-        const readyToListGaps = readyToList && conditionFromTags(variant.productTags) === null
+        const readyToListGaps = readyToList && deriveCondition(variant.productTags, variant.title) === null
             ? Object.freeze(['condition'])
             : null;
         return [Object.freeze({

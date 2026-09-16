@@ -1,4 +1,4 @@
-import { conditionFromTags } from '../shared/condition-tags.js';
+import { deriveCondition } from '../shared/condition-tags.js';
 
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
@@ -517,7 +517,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       && variant.sku.trim() !== ''
       && reasons.size === 0;
 
-    const readyToListGaps = readyToList && conditionFromTags(variant.productTags) === null
+    const readyToListGaps = readyToList && deriveCondition(variant.productTags, variant.title) === null
       ? Object.freeze(['condition' as const])
       : null;
 
