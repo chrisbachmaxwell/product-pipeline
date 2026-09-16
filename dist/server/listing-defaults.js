@@ -1,5 +1,5 @@
 import { buildListingEditorMetadata } from './listing-editor-metadata.js';
-import { conditionFromTags } from '../shared/condition-tags.js';
+import { deriveCondition } from '../shared/condition-tags.js';
 export { conditionFromTags } from '../shared/condition-tags.js';
 /**
  * The store's grading scale (usedcameragear.com Item Condition Chart) mapped
@@ -32,7 +32,7 @@ export function createListingDefaultsReader(dependencies = {}) {
     const now = dependencies.now ?? Date.now;
     return async ({ title, productTags }) => {
         // Condition: purely local, from the store's own tag.
-        const condition = conditionFromTags(productTags);
+        const condition = deriveCondition(productTags, title);
         // Policies: the most-used option for each slot, from the same facet data
         // the editor's dropdowns already show ("used on 115 listings").
         let fulfillmentPolicyId = null;

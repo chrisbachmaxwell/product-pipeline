@@ -1,5 +1,5 @@
 import { buildListingEditorMetadata } from './listing-editor-metadata.js';
-import { conditionFromTags } from '../shared/condition-tags.js';
+import { conditionFromTags, deriveCondition } from '../shared/condition-tags.js';
 
 export { conditionFromTags } from '../shared/condition-tags.js';
 import type { EbayCategorySearch } from './ebay-category-search.js';
@@ -66,7 +66,7 @@ export function createListingDefaultsReader(dependencies: Readonly<{
 
   return async ({ title, productTags }) => {
     // Condition: purely local, from the store's own tag.
-    const condition = conditionFromTags(productTags);
+    const condition = deriveCondition(productTags, title);
 
     // Policies: the most-used option for each slot, from the same facet data
     // the editor's dropdowns already show ("used on 115 listings").

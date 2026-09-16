@@ -1,3 +1,4 @@
+import { deriveCondition } from '../shared/condition-tags.js';
 import { describe, expect, it } from 'vitest';
 import {
   categoryQueryFromTitle,
@@ -89,5 +90,31 @@ describe('assembled defaults', () => {
     expect(defaults).toMatchObject({
       conditionId: null, categoryId: null, fulfillmentPolicyId: null,
     });
+  });
+});
+
+describe('title-marker condition fallback (2026-09-17)', () => {
+  it('derives generic Used from the store title marker when no tag exists', () => {
+    expect(deriveCondition([], 'Canon EF 24-70mm f/2.8L II USM (#136) *USED*'))
+      .toMatchObject({ id: '3000' });
+    expect(deriveCondition(undefined, 'Canon ST-E2 Speedlite Transmitter (#809) *USED*'))
+      .toMatchObject({ id: '3000' });
+  });
+  it('derives parts condition from FOR PARTS ahead of the USED marker', () => {
+    expect(deriveCondition([], 'Canon 70-300mm *FOR PARTS* (#144) *USED*'))
+      .toMatchObject({ id: '7000' });
+  });
+  it('never overrides an operator tag and never invents a grade', () => {
+    expect(deriveCondition(['condition-good'], 'Something (#1) *USED*'))
+      .toMatchObject({ id: '5000' });
+    expect(deriveCondition(['condition-good'], 'Something *FOR PARTS*'))
+      .toMatchObject({ id: '5000' });
+    expect(deriveCondition([], 'Pipeline Test')).toBeNull();
+    expect(deriveCondition([], null)).toBeNull();
+  });
+  it('keeps the fallback description generic, not a chart grade', () => {
+    const derived = deriveCondition([], 'Leica M11 Digital Camera (Silver) (#263) *USED*');
+    expect(derived?.description).toMatch(/^Used: fully functional/);
+    expect(derived?.description).not.toMatch(/Excellent|75–90/);
   });
 });
