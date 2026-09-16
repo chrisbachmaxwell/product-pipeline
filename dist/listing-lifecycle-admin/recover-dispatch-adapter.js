@@ -108,7 +108,7 @@ export function createListingRecoverDispatchAdapter(dependencies) {
         const headers = await authorizedHeaders();
         const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, { method: 'GET', headers }, 'RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
         if (response.status === 404) {
-            return Object.freeze({ found: false, sku: null, status: null });
+            return Object.freeze({ found: false, sku: null, status: null, listingId: null });
         }
         if (response.status !== 200) {
             deny('RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
@@ -122,7 +122,17 @@ export function createListingRecoverDispatchAdapter(dependencies) {
             || (typeof parsed.offerId === 'string' && parsed.offerId !== offerId)) {
             return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
         }
-        return Object.freeze({ found: true, sku, status: status });
+        const listingRaw = parsed.listing?.listingId;
+        if (listingRaw !== undefined && (typeof listingRaw !== 'string'
+            || !/^[0-9]{1,19}$/.test(listingRaw))) {
+            return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
+        }
+        return Object.freeze({
+            found: true,
+            sku,
+            status: status,
+            listingId: listingRaw ?? null,
+        });
     }
     async function deleteOffer(offerId) {
         if (!SAFE_SEGMENT.test(offerId)) {

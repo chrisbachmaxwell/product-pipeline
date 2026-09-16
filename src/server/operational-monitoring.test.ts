@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 const migration = (): MigrationStateApiProjection => ({
-  status: 'verified', schemaVersion: 5,
+  status: 'verified', schemaVersion: 6,
   scope: { scopeKey: `sha256:${'1'.repeat(64)}`, shopifyStoreDomain: 'usedcameragear.myshopify.com',
     ebayEnvironment: 'production', ebayMarketplaceId: 'EBAY_US' },
   access: { writable: false, readOnly: true, externallyWired: false,

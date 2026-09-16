@@ -60,6 +60,12 @@ export type RecoveredOfferState = Readonly<{
   /** Present only when found. */
   sku: string | null;
   status: RecoveredOfferStatus | null;
+  /**
+   * The listing the offer is bound to, when eBay reports one. An orphaned
+   * offer (Brain L66) stays bound to its DEAD listing id — the supersession
+   * proof the orphan-recovery ceremony verifies before any DELETE.
+   */
+  listingId: string | null;
 }>;
 
 export type RecoveredInventoryItemState = Readonly<{
@@ -158,7 +164,7 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
       'definite_no_effect',
     );
     if (response.status === 404) {
-      return Object.freeze({ found: false, sku: null, status: null });
+      return Object.freeze({ found: false, sku: null, status: null, listingId: null });
     }
     if (response.status !== 200) {
       deny('RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
@@ -172,7 +178,17 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
       || (typeof parsed.offerId === 'string' && parsed.offerId !== offerId)) {
       return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
     }
-    return Object.freeze({ found: true, sku, status: status as RecoveredOfferStatus });
+    const listingRaw = (parsed.listing as Record<string, unknown> | undefined)?.listingId;
+    if (listingRaw !== undefined && (typeof listingRaw !== 'string'
+      || !/^[0-9]{1,19}$/.test(listingRaw))) {
+      return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
+    }
+    return Object.freeze({
+      found: true,
+      sku,
+      status: status as RecoveredOfferStatus,
+      listingId: listingRaw ?? null,
+    });
   }
 
   async function deleteOffer(offerId: string): Promise<void> {

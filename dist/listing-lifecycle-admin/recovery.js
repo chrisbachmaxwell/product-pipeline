@@ -66,6 +66,38 @@ export function deriveListingCreateRecoveryManifest(input) {
     return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
 }
 /**
+ * Derive the deterministic recovery manifest for exactly one RESOLVED create
+ * job's orphaned inventory-item/offer pair (Brain L66/L68): the create
+ * succeeded, an external relist superseded its listing, and the original
+ * artifacts now dangle. Shape-validation only — binding against the durable
+ * store and the live provider state is the ceremony's job.
+ */
+export function deriveOrphanedArtifactRecoveryManifest(input) {
+    if (!IDENTIFIER_PATTERN.test(input.sourceJobId)
+        || !IDENTIFIER_PATTERN.test(input.sourceAttemptId)
+        || !DIGEST_PATTERN.test(input.sourceIntentKey)
+        || !DIGEST_PATTERN.test(input.sourceApprovalEvidenceDigest)
+        || !SAFE_SEGMENT.test(input.sku) || input.sku.length > 50
+        || !SAFE_SEGMENT.test(input.offerId)
+        || !/^[0-9]{1,19}$/.test(input.supersededByListingId)) {
+        deny('RECOVER_INPUT_INVALID');
+    }
+    const manifest = Object.freeze({
+        schemaVersion: 1,
+        scope: LISTING_DRAFT_SCOPE,
+        action: 'recover_orphaned_artifact_ebay_listing',
+        expectedResidue: 'offer_superseded',
+        sourceJobId: input.sourceJobId,
+        sourceAttemptId: input.sourceAttemptId,
+        sourceIntentKey: input.sourceIntentKey,
+        sourceApprovalEvidenceDigest: input.sourceApprovalEvidenceDigest,
+        sku: input.sku,
+        offerId: input.offerId,
+        supersededByListingId: input.supersededByListingId,
+    });
+    return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
+}
+/**
  * Recompute the exact reconciliation result digest that the lifecycle CLI
  * recorded for the created-offer-but-publish-failed (`artifact`) outcome.
  * This is the digest preimage used by `runLifecycleReconciliation` in
@@ -83,7 +115,7 @@ export function recomputeUnpublishedArtifactResultDigest(input) {
         responsibility: 'listingCreate',
         manifestDigest: input.sourceApprovalEvidenceDigest,
         kind: 'artifact',
-        observedListingId: null,
+        observedListingId: input.observedListingId ?? null,
         observedOfferId: input.offerId,
         observedDigest: input.targetSnapshotDigest,
     });
@@ -114,13 +146,17 @@ export function recomputeUnpublishedArtifactResultDigest(input) {
  * incidents without another change here.
  */
 export function requireRecordedUnpublishedOffer(input) {
+    const listingIds = input.observedListingId == null
+        ? [null]
+        : [null, input.observedListingId];
     const matched = input.evidenceRuns.some((run) => {
-        const binds = (offerId) => recomputeUnpublishedArtifactResultDigest({
+        const binds = (offerId, observedListingId) => recomputeUnpublishedArtifactResultDigest({
             sourceApprovalEvidenceDigest: input.sourceApprovalEvidenceDigest,
             offerId,
             targetSnapshotDigest: run.targetSnapshotDigest,
+            observedListingId,
         }) === run.resultDigest;
-        return binds(input.offerId) || binds(null);
+        return listingIds.some((listingId) => binds(input.offerId, listingId) || binds(null, listingId));
     });
     if (!matched)
         deny('RECOVER_ARTIFACT_EVIDENCE_MISMATCH');

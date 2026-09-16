@@ -273,8 +273,8 @@ async function createWorld(): Promise<World> {
     getOffer: async (offerId) => {
       recoverCalls.push(`getOffer:${offerId}`);
       return offerStatus === 'absent'
-        ? Object.freeze({ found: false, sku: null, status: null })
-        : Object.freeze({ found: true, sku: offerSku, status: offerStatus });
+        ? Object.freeze({ found: false, sku: null, status: null, listingId: null })
+        : Object.freeze({ found: true, sku: offerSku, status: offerStatus, listingId: null });
     },
     deleteOffer: async (offerId) => {
       recoverCalls.push(`deleteOffer:${offerId}`);

@@ -105,6 +105,72 @@ export function deriveListingCreateRecoveryManifest(input: {
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
 }
 
+export type OrphanedArtifactRecoveryManifest = Readonly<{
+  schemaVersion: 1;
+  scope: typeof LISTING_DRAFT_SCOPE;
+  action: 'recover_orphaned_artifact_ebay_listing';
+  expectedResidue: 'offer_superseded';
+  sourceJobId: string;
+  sourceAttemptId: string;
+  sourceIntentKey: Digest;
+  sourceApprovalEvidenceDigest: Digest;
+  sku: string;
+  offerId: string;
+  /**
+   * The externally relisted Trading listing that superseded the source
+   * create's published listing. Binding it into the manifest makes the
+   * intent specific to this exact supersession: a later, different relist
+   * derives a different digest and can never replay this intent.
+   */
+  supersededByListingId: string;
+}>;
+
+export type DerivedOrphanedArtifactRecoveryManifest = Readonly<{
+  manifest: OrphanedArtifactRecoveryManifest;
+  manifestDigest: Digest;
+}>;
+
+/**
+ * Derive the deterministic recovery manifest for exactly one RESOLVED create
+ * job's orphaned inventory-item/offer pair (Brain L66/L68): the create
+ * succeeded, an external relist superseded its listing, and the original
+ * artifacts now dangle. Shape-validation only — binding against the durable
+ * store and the live provider state is the ceremony's job.
+ */
+export function deriveOrphanedArtifactRecoveryManifest(input: {
+  sourceJobId: string;
+  sourceAttemptId: string;
+  sourceIntentKey: string;
+  sourceApprovalEvidenceDigest: string;
+  sku: string;
+  offerId: string;
+  supersededByListingId: string;
+}): DerivedOrphanedArtifactRecoveryManifest {
+  if (!IDENTIFIER_PATTERN.test(input.sourceJobId)
+    || !IDENTIFIER_PATTERN.test(input.sourceAttemptId)
+    || !DIGEST_PATTERN.test(input.sourceIntentKey)
+    || !DIGEST_PATTERN.test(input.sourceApprovalEvidenceDigest)
+    || !SAFE_SEGMENT.test(input.sku) || input.sku.length > 50
+    || !SAFE_SEGMENT.test(input.offerId)
+    || !/^[0-9]{1,19}$/.test(input.supersededByListingId)) {
+    deny('RECOVER_INPUT_INVALID');
+  }
+  const manifest: OrphanedArtifactRecoveryManifest = Object.freeze({
+    schemaVersion: 1 as const,
+    scope: LISTING_DRAFT_SCOPE,
+    action: 'recover_orphaned_artifact_ebay_listing' as const,
+    expectedResidue: 'offer_superseded' as const,
+    sourceJobId: input.sourceJobId,
+    sourceAttemptId: input.sourceAttemptId,
+    sourceIntentKey: input.sourceIntentKey as Digest,
+    sourceApprovalEvidenceDigest: input.sourceApprovalEvidenceDigest as Digest,
+    sku: input.sku,
+    offerId: input.offerId,
+    supersededByListingId: input.supersededByListingId,
+  });
+  return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
+}
+
 /**
  * Recompute the exact reconciliation result digest that the lifecycle CLI
  * recorded for the created-offer-but-publish-failed (`artifact`) outcome.
@@ -121,13 +187,21 @@ export function recomputeUnpublishedArtifactResultDigest(input: {
   sourceApprovalEvidenceDigest: Digest;
   offerId: string | null;
   targetSnapshotDigest: Digest;
+  /**
+   * The classic residue capture observes no listing (null). An ORPHANED
+   * artifact's capture observes the live SUPERSEDING listing (L66) — the
+   * reconciliation run truthfully binds that id, so recovery re-derivation
+   * must be able to recompute with it. Defaults to null: every pre-orphan
+   * caller and recorded run stays byte-compatible.
+   */
+  observedListingId?: string | null;
 }): Digest {
   return sha256Digest({
     schemaVersion: 1,
     responsibility: 'listingCreate',
     manifestDigest: input.sourceApprovalEvidenceDigest,
     kind: 'artifact',
-    observedListingId: null,
+    observedListingId: input.observedListingId ?? null,
     observedOfferId: input.offerId,
     observedDigest: input.targetSnapshotDigest,
   });
@@ -162,15 +236,26 @@ export function requireRecordedUnpublishedOffer(input: {
   sourceApprovalEvidenceDigest: Digest;
   offerId: string;
   evidenceRuns: ReadonlyArray<{ resultDigest: Digest; targetSnapshotDigest: Digest }>;
+  /**
+   * Orphan recovery only (L66): also accept runs whose capture observed the
+   * live superseding listing. A run bound to any OTHER listing id remains a
+   * hard denial.
+   */
+  observedListingId?: string | null;
 }): void {
+  const listingIds: Array<string | null> = input.observedListingId == null
+    ? [null]
+    : [null, input.observedListingId];
   const matched = input.evidenceRuns.some((run) => {
-    const binds = (offerId: string | null): boolean =>
+    const binds = (offerId: string | null, observedListingId: string | null): boolean =>
       recomputeUnpublishedArtifactResultDigest({
         sourceApprovalEvidenceDigest: input.sourceApprovalEvidenceDigest,
         offerId,
         targetSnapshotDigest: run.targetSnapshotDigest,
+        observedListingId,
       }) === run.resultDigest;
-    return binds(input.offerId) || binds(null);
+    return listingIds.some((listingId) =>
+      binds(input.offerId, listingId) || binds(null, listingId));
   });
   if (!matched) deny('RECOVER_ARTIFACT_EVIDENCE_MISMATCH');
 }

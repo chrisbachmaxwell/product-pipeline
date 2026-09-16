@@ -36,6 +36,12 @@ export type RecoveredOfferState = Readonly<{
     /** Present only when found. */
     sku: string | null;
     status: RecoveredOfferStatus | null;
+    /**
+     * The listing the offer is bound to, when eBay reports one. An orphaned
+     * offer (Brain L66) stays bound to its DEAD listing id — the supersession
+     * proof the orphan-recovery ceremony verifies before any DELETE.
+     */
+    listingId: string | null;
 }>;
 export type RecoveredInventoryItemState = Readonly<{
     found: boolean;

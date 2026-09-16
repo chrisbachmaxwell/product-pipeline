@@ -20,8 +20,22 @@ export declare const INTENT_ACTIONS: readonly ["create_ebay_listing", "revise_eb
  * unresolved create job on the identical target.
  */
 export declare const RECOVERY_INTENT_ACTIONS: readonly ["recover_create_ebay_listing"];
+/** Schema-v5 list — interpolated into immutable v5 SQL; never change it. */
 export declare const ALL_INTENT_ACTIONS: readonly ["create_ebay_listing", "revise_ebay_listing", "end_or_relist_ebay_listing", "update_mapping", "update_ebay_price", "update_ebay_inventory", "import_shopify_order", "sync_fulfillment", "sync_feedback", "recover_create_ebay_listing"];
-export type IntentAction = (typeof ALL_INTENT_ACTIONS)[number];
+/**
+ * Actions admitted by the schema-v6 rebuilt idempotency_intents table only.
+ * `recover_orphaned_artifact_ebay_listing` is the one-shot cleanup for the
+ * OTHER residue class (Brain L66/L68): a create job that RESOLVED
+ * successfully, whose published listing was later ended and superseded by an
+ * externally relisted Trading listing, leaving the original inventory-item/
+ * offer pair orphaned — bound to a dead listing, blocking the draft service,
+ * and hiding the row from the alignment sweep. It deletes exactly that
+ * orphaned pair, never touches the live superseding listing, and is
+ * structurally bound to a RESOLVED create job on the identical target.
+ */
+export declare const ORPHAN_RECOVERY_INTENT_ACTIONS: readonly ["recover_orphaned_artifact_ebay_listing"];
+export declare const ALL_INTENT_ACTIONS_V6: readonly ["create_ebay_listing", "revise_ebay_listing", "end_or_relist_ebay_listing", "update_mapping", "update_ebay_price", "update_ebay_inventory", "import_shopify_order", "sync_fulfillment", "sync_feedback", "recover_create_ebay_listing", "recover_orphaned_artifact_ebay_listing"];
+export type IntentAction = (typeof ALL_INTENT_ACTIONS_V6)[number];
 /** Schema-v1 map — interpolated into immutable v1 SQL; never change it. */
 export declare const INTENT_ACTION_RESPONSIBILITY: {
     readonly create_ebay_listing: "listingCreate";
@@ -34,8 +48,22 @@ export declare const INTENT_ACTION_RESPONSIBILITY: {
     readonly sync_fulfillment: "fulfillment";
     readonly sync_feedback: "feedback";
 };
-/** The complete runtime action→responsibility map (schema v5). */
+/** Schema-v5 map — interpolated into immutable v5 SQL; never change it. */
 export declare const ALL_INTENT_ACTION_RESPONSIBILITY: {
+    readonly recover_create_ebay_listing: "listingCreate";
+    readonly create_ebay_listing: "listingCreate";
+    readonly revise_ebay_listing: "listingRevise";
+    readonly end_or_relist_ebay_listing: "listingEndRelist";
+    readonly update_mapping: "mapping";
+    readonly update_ebay_price: "price";
+    readonly update_ebay_inventory: "inventory";
+    readonly import_shopify_order: "orderImport";
+    readonly sync_fulfillment: "fulfillment";
+    readonly sync_feedback: "feedback";
+};
+/** The complete runtime action→responsibility map (schema v6). */
+export declare const ALL_INTENT_ACTION_RESPONSIBILITY_V6: {
+    readonly recover_orphaned_artifact_ebay_listing: "listingCreate";
     readonly recover_create_ebay_listing: "listingCreate";
     readonly create_ebay_listing: "listingCreate";
     readonly revise_ebay_listing: "listingRevise";

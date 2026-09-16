@@ -496,12 +496,12 @@ describe('schema v5 listing-create recovery slice', () => {
         // An ordinary open of the v4 store fails closed until the explicit
         // operator upgrade runs.
         expect(() => openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE }))
-            .toThrow(/schema version 4 does not match required version 5/);
+            .toThrow(/schema version 4 does not match required version 6/);
         expect(upgradeMigrationStore({
             databasePath,
             expectedScope: PRODUCTION_SCOPE,
             appliedAtUtc: '2026-08-27T17:00:00.000Z',
-        })).toEqual({ fromVersion: 4, toVersion: 5 });
+        })).toEqual({ fromVersion: 4, toVersion: 6 });
         const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
         openStores.push(store);
         expect(store.verifyAuditChain()).toMatchObject({ valid: true, recordCount: 1 });
