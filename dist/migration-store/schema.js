@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { MIGRATION_RESPONSIBILITIES, WRITER_RESPONSIBILITIES, } from '../safety/responsibilities.js';
 import { ALL_INTENT_ACTIONS, ALL_INTENT_ACTION_RESPONSIBILITY, INTENT_ACTIONS, INTENT_ACTION_RESPONSIBILITY, } from './types.js';
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 export const MIGRATION_STORE_APPLICATION_ID = 0x50504d53;
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ');
 const migrationResponsibilitiesSql = sqlList(MIGRATION_RESPONSIBILITIES);
@@ -2503,6 +2503,244 @@ BEGIN
   SELECT RAISE(ABORT, 'target effect observation binding mismatch');
 END;
 `;
+/**
+ * Schema version 6 — the orphaned-artifact recovery slice (Brain L66/L68).
+ *
+ * An externally relisted Trading listing (Seller Hub "relist"/"sell similar",
+ * observed in production 2026-09-13 on SKU 3793C001-U215) supersedes a
+ * RESOLVED create job's published listing and orphans its inventory-item/
+ * offer pair: the offer stays bound to the dead listing, the draft service
+ * refuses the row (artifact guard), and the alignment sweep cannot see it —
+ * exactly the exposure class of the 2026-09-12 oversell. v5's recovery
+ * action is structurally bound to an UNRESOLVED create job, so it can never
+ * serve this shape. Version 6 widens exactly one narrow capability:
+ *
+ * - `recover_orphaned_artifact_ebay_listing` joins the intent-action
+ *   vocabulary and the production allowlist. It maps to `listingCreate`,
+ *   requires a RESOLVED (`resolved_existing`) create job on the identical
+ *   approval target, and its provider effect is deletion of the exact
+ *   orphaned pair — never a create, publish, end, or replay, and never a
+ *   write to the live superseding listing.
+ * - No new job states, resolutions, or effects: orphan recovery reuses the
+ *   v5 `resolved_residue_removed` / `effect_residue_removed` vocabulary.
+ *
+ * Only `idempotency_intents` is rebuilt (its action CHECK must admit the new
+ * string); every other table, trigger, and denial is untouched. All action
+ * and responsibility lists below are LITERAL so this migration's checksum
+ * can never drift when future vocabulary constants change (the v5 lesson is
+ * encoded in types.ts: interpolated constants are frozen forever).
+ */
+const migrationSixSql = `
+PRAGMA legacy_alter_table = ON;
+
+DROP TRIGGER idempotency_intents_deny_update;
+DROP TRIGGER idempotency_intents_deny_delete;
+DROP TRIGGER idempotency_intents_deny_conflicting_insert;
+DROP TRIGGER idempotency_intents_enforce_action_responsibility;
+DROP TRIGGER idempotency_intents_deny_production;
+DROP TRIGGER idempotency_intents_enforce_identity_scope;
+DROP TRIGGER idempotency_intents_enforce_order_eligibility;
+DROP TRIGGER fulfillment_intents_require_exact_order_link;
+DROP TRIGGER recovery_intents_require_unresolved_create;
+DROP INDEX unique_order_import_intent;
+DROP INDEX fulfillment_intents_one_per_order_pair;
+ALTER TABLE idempotency_intents RENAME TO idempotency_intents_v5;
+CREATE TABLE idempotency_intents (
+  intent_key TEXT PRIMARY KEY CHECK (${digestCheck('intent_key')}),
+  scope_key TEXT NOT NULL REFERENCES integration_scope(scope_key),
+  responsibility TEXT NOT NULL CHECK (responsibility IN (${writerResponsibilitiesSql})),
+  action TEXT NOT NULL CHECK (action IN (
+    'create_ebay_listing', 'revise_ebay_listing', 'end_or_relist_ebay_listing',
+    'update_mapping', 'update_ebay_price', 'update_ebay_inventory',
+    'import_shopify_order', 'sync_fulfillment', 'sync_feedback',
+    'recover_create_ebay_listing', 'recover_orphaned_artifact_ebay_listing'
+  )),
+  source_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  target_identity_key TEXT REFERENCES external_identities(identity_key),
+  approval_target_identity_key TEXT NOT NULL REFERENCES external_identities(identity_key),
+  desired_state_digest TEXT NOT NULL CHECK (${digestCheck('desired_state_digest')}),
+  created_at_utc TEXT NOT NULL,
+  created_epoch_ms INTEGER NOT NULL,
+  CHECK (
+    (action = 'import_shopify_order' AND target_identity_key IS NULL
+      AND approval_target_identity_key = source_identity_key)
+    OR
+    (action != 'import_shopify_order' AND target_identity_key IS NOT NULL
+      AND approval_target_identity_key = target_identity_key)
+  ),
+  UNIQUE (intent_key, scope_key, responsibility, approval_target_identity_key)
+);
+INSERT INTO idempotency_intents SELECT * FROM idempotency_intents_v5;
+DROP TABLE idempotency_intents_v5;
+
+PRAGMA legacy_alter_table = OFF;
+
+CREATE UNIQUE INDEX unique_order_import_intent
+ON idempotency_intents(scope_key, responsibility, action, source_identity_key)
+WHERE action = 'import_shopify_order';
+
+CREATE UNIQUE INDEX fulfillment_intents_one_per_order_pair
+ON idempotency_intents (
+  scope_key, action, source_identity_key, target_identity_key
+)
+WHERE action = 'sync_fulfillment';
+
+CREATE TRIGGER idempotency_intents_deny_update
+BEFORE UPDATE ON idempotency_intents
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents is append-only');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_delete
+BEFORE DELETE ON idempotency_intents
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents is append-only');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_conflicting_insert
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (SELECT 1 FROM idempotency_intents WHERE intent_key = NEW.intent_key OR (
+    NEW.action = 'import_shopify_order' AND scope_key = NEW.scope_key
+    AND responsibility = NEW.responsibility AND action = NEW.action
+    AND source_identity_key = NEW.source_identity_key
+  ))
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_intents replay or replacement denied');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_action_responsibility
+BEFORE INSERT ON idempotency_intents
+WHEN NOT (
+    (NEW.action = 'create_ebay_listing' AND NEW.responsibility = 'listingCreate')
+    OR (NEW.action = 'revise_ebay_listing' AND NEW.responsibility = 'listingRevise')
+    OR (NEW.action = 'end_or_relist_ebay_listing' AND NEW.responsibility = 'listingEndRelist')
+    OR (NEW.action = 'update_mapping' AND NEW.responsibility = 'mapping')
+    OR (NEW.action = 'update_ebay_price' AND NEW.responsibility = 'price')
+    OR (NEW.action = 'update_ebay_inventory' AND NEW.responsibility = 'inventory')
+    OR (NEW.action = 'import_shopify_order' AND NEW.responsibility = 'orderImport')
+    OR (NEW.action = 'sync_fulfillment' AND NEW.responsibility = 'fulfillment')
+    OR (NEW.action = 'sync_feedback' AND NEW.responsibility = 'feedback')
+    OR (NEW.action = 'recover_create_ebay_listing' AND NEW.responsibility = 'listingCreate')
+    OR (NEW.action = 'recover_orphaned_artifact_ebay_listing' AND NEW.responsibility = 'listingCreate')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'intent action and responsibility mismatch');
+END;
+
+CREATE TRIGGER idempotency_intents_deny_production
+BEFORE INSERT ON idempotency_intents
+WHEN EXISTS (
+  SELECT 1 FROM integration_scope scope
+  WHERE scope.scope_key = NEW.scope_key AND scope.ebay_environment = 'production'
+)
+AND NEW.action NOT IN (
+  'revise_ebay_listing', 'create_ebay_listing', 'end_or_relist_ebay_listing',
+  'update_ebay_price', 'update_ebay_inventory', 'import_shopify_order',
+  'sync_fulfillment', 'recover_create_ebay_listing',
+  'recover_orphaned_artifact_ebay_listing'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'production writer intents are disabled');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_identity_scope
+BEFORE INSERT ON idempotency_intents
+WHEN NOT EXISTS (
+  SELECT 1 FROM external_identities source
+  WHERE source.identity_key = NEW.source_identity_key AND source.scope_key = NEW.scope_key
+)
+OR (
+  NEW.target_identity_key IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM external_identities target
+    WHERE target.identity_key = NEW.target_identity_key AND target.scope_key = NEW.scope_key
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'intent identity scope mismatch');
+END;
+
+CREATE TRIGGER idempotency_intents_enforce_order_eligibility
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'import_shopify_order' AND NOT EXISTS (
+  SELECT 1
+  FROM order_observations observation
+  JOIN external_identities source
+    ON source.identity_key = observation.ebay_order_identity_key
+  LEFT JOIN order_observation_resolutions resolution
+    ON resolution.observation_id = observation.observation_id
+  WHERE observation.scope_key = NEW.scope_key
+    AND observation.ebay_order_identity_key = NEW.source_identity_key
+    AND source.scope_key = NEW.scope_key
+    AND source.platform = 'ebay'
+    AND source.resource_kind = 'order'
+    AND observation.eligible_after_watermark = 1
+    AND resolution.observation_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM order_links existing_link
+      WHERE existing_link.ebay_order_identity_key = NEW.source_identity_key
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'order import intent requires an eligible unresolved observation');
+END;
+
+CREATE TRIGGER fulfillment_intents_require_exact_order_link
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'sync_fulfillment' AND NOT EXISTS (
+  SELECT 1 FROM order_links link
+  WHERE link.scope_key = NEW.scope_key
+    AND link.shopify_order_identity_key = NEW.source_identity_key
+    AND link.ebay_order_identity_key = NEW.target_identity_key
+)
+BEGIN
+  SELECT RAISE(ABORT, 'fulfillment intent requires exact durable order link');
+END;
+
+CREATE TRIGGER recovery_intents_require_unresolved_create
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'recover_create_ebay_listing' AND NOT EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN idempotency_intents source_intent ON source_intent.intent_key = job.intent_key
+  JOIN job_events latest ON latest.job_id = job.job_id
+  WHERE job.scope_key = NEW.scope_key
+    AND job.responsibility = 'listingCreate'
+    AND source_intent.action = 'create_ebay_listing'
+    AND source_intent.approval_target_identity_key = NEW.approval_target_identity_key
+    AND latest.sequence = (
+      SELECT MAX(candidate.sequence) FROM job_events candidate WHERE candidate.job_id = job.job_id
+    )
+    AND latest.to_state = 'reconciliation_required'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'recovery intent requires an unresolved create job on the exact target');
+END;
+
+-- An orphan-recovery intent exists only in service of one RESOLVED
+-- (resolved_existing) create job on the identical approval target: the
+-- create verifiably succeeded, and only afterwards did an external relist
+-- orphan its artifacts. It can never be minted speculatively, against an
+-- unresolved create (that is recover_create_ebay_listing's job), or against
+-- a target no create job ever succeeded on.
+CREATE TRIGGER orphan_recovery_intents_require_resolved_create
+BEFORE INSERT ON idempotency_intents
+WHEN NEW.action = 'recover_orphaned_artifact_ebay_listing' AND NOT EXISTS (
+  SELECT 1
+  FROM execution_jobs job
+  JOIN idempotency_intents source_intent ON source_intent.intent_key = job.intent_key
+  JOIN intent_attempts attempt ON attempt.job_id = job.job_id
+  JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+  WHERE job.scope_key = NEW.scope_key
+    AND job.responsibility = 'listingCreate'
+    AND source_intent.action = 'create_ebay_listing'
+    AND source_intent.approval_target_identity_key = NEW.approval_target_identity_key
+    AND resolution.resolution = 'resolved_existing'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'orphan recovery intent requires a resolved create job on the exact target');
+END;
+`;
 export const SCHEMA_MIGRATIONS = [
     {
         version: 1,
@@ -2533,6 +2771,12 @@ export const SCHEMA_MIGRATIONS = [
         name: 'listing_create_recovery_slice_v5',
         sql: migrationFiveSql,
         checksum: sqlChecksum(migrationFiveSql),
+    },
+    {
+        version: 6,
+        name: 'orphaned_artifact_recovery_slice_v6',
+        sql: migrationSixSql,
+        checksum: sqlChecksum(migrationSixSql),
     },
 ];
 const bootstrapSql = `

@@ -27,7 +27,7 @@ const SCOPE = {
 
 const VERIFIED: MigrationStoreProjection = {
   status: 'verified',
-  schemaVersion: 5,
+  schemaVersion: 6,
   scope: { ...SCOPE, scopeKey: `sha256:${'1'.repeat(64)}` },
   access: {
     writable: false,
@@ -294,7 +294,7 @@ describe('request-time durable migration-state reader', () => {
 
     expect(result).toMatchObject({
       status: 'verified',
-      schemaVersion: 5,
+      schemaVersion: 6,
       orders: { watermarkUtc: null, watermarkEstablished: false },
       audit: { valid: true },
       counts: {

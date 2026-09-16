@@ -10,8 +10,8 @@ import {
   verifySchema,
 } from './schema.js';
 import {
-  ALL_INTENT_ACTIONS,
-  ALL_INTENT_ACTION_RESPONSIBILITY,
+  ALL_INTENT_ACTIONS_V6,
+  ALL_INTENT_ACTION_RESPONSIBILITY_V6,
   MIGRATION_RESPONSIBILITIES,
   WRITER_RESPONSIBILITIES,
   type AttemptResolution,
@@ -60,6 +60,7 @@ const PRODUCTION_INTENT_ACTIONS: readonly IntentAction[] = [
   'import_shopify_order',
   'sync_fulfillment',
   'recover_create_ebay_listing',
+  'recover_orphaned_artifact_ebay_listing',
 ];
 
 /**
@@ -786,7 +787,7 @@ export function deriveIdempotencyKey(input: {
 }): Digest {
   const scopeKey = assertDigest(input.scopeKey, 'scopeKey');
   const sourceIdentityKey = assertDigest(input.sourceIdentityKey, 'sourceIdentityKey');
-  if (!ALL_INTENT_ACTIONS.includes(input.action)) {
+  if (!ALL_INTENT_ACTIONS_V6.includes(input.action)) {
     throw new MigrationStoreError('INVALID_INPUT', 'action is invalid');
   }
 
@@ -1312,10 +1313,10 @@ class MigrationStoreImpl {
         'Production writer intents are disabled in this unwired foundation',
       );
     }
-    if (!ALL_INTENT_ACTIONS.includes(input.action)) {
+    if (!ALL_INTENT_ACTIONS_V6.includes(input.action)) {
       throw new MigrationStoreError('INVALID_INPUT', 'action is invalid');
     }
-    const responsibility = ALL_INTENT_ACTION_RESPONSIBILITY[input.action];
+    const responsibility = ALL_INTENT_ACTION_RESPONSIBILITY_V6[input.action];
     const source = this.requireIdentity(input.sourceIdentityKey, 'source identity');
     const target = input.targetIdentityKey
       ? this.requireIdentity(input.targetIdentityKey, 'target identity')
@@ -1366,6 +1367,30 @@ class MigrationStoreImpl {
       throw new MigrationStoreError(
         'OWNERSHIP_DENIED',
         'Recovery intent requires an unresolved create job on the exact target',
+      );
+    }
+    // Mirror of the schema-v6 orphan_recovery_intents_require_resolved_create
+    // trigger: an orphan-recovery intent exists only in service of one
+    // RESOLVED (resolved_existing) create job on the identical target.
+    if (
+      input.action === 'recover_orphaned_artifact_ebay_listing'
+      && this.database.prepare(
+        `SELECT 1
+         FROM execution_jobs job
+         JOIN idempotency_intents source_intent ON source_intent.intent_key = job.intent_key
+         JOIN intent_attempts attempt ON attempt.job_id = job.job_id
+         JOIN attempt_resolutions resolution ON resolution.attempt_id = attempt.attempt_id
+         WHERE job.scope_key = ?
+           AND job.responsibility = 'listingCreate'
+           AND source_intent.action = 'create_ebay_listing'
+           AND source_intent.approval_target_identity_key = ?
+           AND resolution.resolution = 'resolved_existing'
+         LIMIT 1`,
+      ).get(this.scopeKey, target?.identity_key ?? '') === undefined
+    ) {
+      throw new MigrationStoreError(
+        'OWNERSHIP_DENIED',
+        'Orphan recovery intent requires a resolved create job on the exact target',
       );
     }
     const intentKey = deriveIdempotencyKey({

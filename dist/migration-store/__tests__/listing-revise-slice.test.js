@@ -513,13 +513,13 @@ describe('migration store schema upgrade', () => {
             databasePath,
             expectedScope: PRODUCTION_SCOPE,
             appliedAtUtc: '2026-08-14T20:00:00.000Z',
-        })).toEqual({ fromVersion: 1, toVersion: 5 });
+        })).toEqual({ fromVersion: 1, toVersion: 6 });
         // Upgrading again is an explicit no-op.
         expect(upgradeMigrationStore({
             databasePath,
             expectedScope: PRODUCTION_SCOPE,
             appliedAtUtc: '2026-08-14T20:01:00.000Z',
-        })).toEqual({ fromVersion: 5, toVersion: 5 });
+        })).toEqual({ fromVersion: 6, toVersion: 6 });
         const store = openMigrationStore({ databasePath, expectedScope: PRODUCTION_SCOPE });
         openStores.push(store);
         expect(store.getCounts()).toMatchObject({

@@ -98,6 +98,9 @@ for (const row of ready) {
       console.log('SKIP', sku, 'DRAFT_SAVE_FAILED',
         String((error && error.code) || error).slice(0, 50));
       skipped += 1;
+      // A failed draft save is usually a throttled capture; without this
+      // pause the next item's capture piles on and the whole tail fails.
+      await sleep(45000);
       continue;
     }
   }
@@ -108,10 +111,51 @@ for (const row of ready) {
 
   let dispatched = null;
   let benignSkip = null;
-  for (let attempt = 0; attempt < 2 && !dispatched && !benignSkip; attempt += 1) {
+  for (let attempt = 0; attempt < 3 && !dispatched && !benignSkip; attempt += 1) {
     if (attempt > 0) await sleep(90000);
     const preflight = await run([CLI, 'preflight-create', ...target]);
     if (!preflight || preflight.status !== 'preview') {
+      console.log('PREFLIGHT_DENIED', sku, preflight ? preflight.code : 'null-json', 'attempt', attempt);
+      if (preflight && preflight.code === 'CREATE_BASE_STALE' && attempt === 0) {
+        // Shopify (or a deploy's derivation change) moved under the saved
+        // draft. Same remedy as the UI's "Update draft & publish again":
+        // re-save preserving every draft leaf, then retry with the fresh
+        // revision. Specifics keys re-sorted — the manifest demands it.
+        try {
+          const dto = await service.get(row.id);
+          let specifics = null;
+          if (dto.sections.content.itemSpecifics.draft) {
+            const parsed = JSON.parse(dto.sections.content.itemSpecifics.draft);
+            const sorted = {};
+            for (const key of Object.keys(parsed).sort()) sorted[key] = parsed[key];
+            specifics = JSON.stringify(sorted);
+          }
+          const saved = await service.save({
+            schemaVersion: 1,
+            action: 'save_local_draft',
+            catalogId: row.id,
+            expectedRevisionDigest: dto.revision ? dto.revision.revisionDigest : null,
+            base: { sourceDigest: dto.base.sourceDigest, ebayDigest: dto.base.ebayDigest },
+            draft: {
+              title: dto.sections.listing.title.draft,
+              category: null, condition: null,
+              conditionDescription: dto.sections.listing.conditionDescription.draft,
+              description: null, images: null,
+              itemSpecifics: specifics,
+              fulfillmentPolicyId: null, paymentPolicyId: null,
+              returnPolicyId: null, merchantLocation: null,
+            },
+          }, 'auto-publish-rebase');
+          console.log('REBASED', sku, 'rev', saved.revision.revisionNumber);
+          target[5] = saved.revision.revisionDigest;
+          continue;
+        } catch (error) {
+          console.log('SKIP', sku, 'REBASE_FAILED',
+            String((error && error.code) || error).slice(0, 50));
+          benignSkip = 'REBASE_FAILED';
+          break;
+        }
+      }
       if (preflight && preflight.code === 'CREATE_REQUIRED_FIELD_MISSING') {
         benignSkip = 'MISSING_' + String(preflight.field || 'field').toUpperCase();
         break;
@@ -120,7 +164,7 @@ for (const row of ready) {
         benignSkip = 'ALREADY_LISTED';
         break;
       }
-      if (transient(preflight) && attempt === 0) continue;
+      if (transient(preflight) && attempt < 2) continue;
       console.log('HALT', sku, 'PREFLIGHT', JSON.stringify(preflight).slice(0, 250));
       process.exit(1);
     }
@@ -128,7 +172,7 @@ for (const row of ready) {
     const result = await run([CLI, 'dispatch-create', ...target,
       '--manifest-digest', preflight.manifestDigest, '--migration-store', STORE]);
     if (!result || result.status === 'denied') {
-      if (transient(result) && attempt === 0) continue;
+      if (transient(result) && attempt < 2) continue;
       if (result && result.code === 'CREATE_INTENT_ALREADY_RECORDED') {
         benignSkip = 'INTENT_ALREADY_RECORDED';
         break;
