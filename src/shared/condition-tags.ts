@@ -86,6 +86,13 @@ export function conditionFromTitle(
 ): { id: string; description: string } | null {
   if (typeof title !== 'string') return null;
   if (/\bFOR PARTS\b/i.test(title)) return CONDITION_BY_TAG.ugly!;
+  if (/\bNEW OLD STOCK\b/i.test(title)) {
+    return {
+      id: '1500',
+      description: 'New old stock: new and unused; original packaging may show '
+        + 'storage or shelf wear. The photographs show the exact item for sale.',
+    };
+  }
   if (/\bUSED\b/.test(title)) {
     return {
       id: '3000',

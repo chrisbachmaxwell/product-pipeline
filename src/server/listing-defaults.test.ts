@@ -129,3 +129,15 @@ describe('title-marker condition fallback (2026-09-17)', () => {
     expect(derived?.description).not.toMatch(/Excellent|75–90/);
   });
 });
+
+describe('new-old-stock title fallback (2026-09-16)', () => {
+  it('maps NEW OLD STOCK to eBay New other with truthful language', () => {
+    const derived = deriveCondition([], 'Atlas Athlete Large Backpack (Yellow) *NEW OLD STOCK*');
+    expect(derived).toMatchObject({ id: '1500' });
+    expect(derived?.description).toMatch(/^New old stock/);
+  });
+  it('still lets a tag win over the marker', () => {
+    expect(deriveCondition(['condition-excellent'], 'Thing *NEW OLD STOCK*'))
+      .toMatchObject({ id: '3000' });
+  });
+});
