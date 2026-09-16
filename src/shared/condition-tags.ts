@@ -96,12 +96,40 @@ export function conditionFromTitle(
   return null;
 }
 
-/** Tag first, title-marker fallback second. The one derivation both the
- * draft auto-defaults and the ready-queue completeness flag must share. */
+/**
+ * eBay refuses graded used ids in category after category (learned live:
+ * 5000 in 30086, 6000 in 31388 AND in the lens category 3323 — L63/L69).
+ * The store's grade survives verbatim in the condition DESCRIPTION, so
+ * clamping the id to the universally-accepted 3000 loses no buyer-facing
+ * information while making every category publishable. 1000/1500/2000/3000/
+ * 7000 pass everywhere this store lists; everything else clamps.
+ */
+const EBAY_SAFE_CONDITION_ID: Readonly<Record<string, string>> = Object.freeze({
+  '2750': '3000',
+  '4000': '3000',
+  '5000': '3000',
+  '6000': '3000',
+});
+
+/**
+ * Tag first, title-marker fallback second — with two safety rules on top:
+ * a *FOR PARTS* title outranks any tag (never sell a parts item as
+ * functional), and graded ids clamp to their eBay-safe equivalent while the
+ * grade language stays in the description. The one derivation both the
+ * draft auto-defaults and the ready-queue completeness flag must share.
+ */
 export function deriveCondition(
   productTags: readonly string[] | undefined,
   title: string | null | undefined,
 ): { id: string; description: string } | null {
-  return conditionFromTags(productTags) ?? conditionFromTitle(title);
+  if (typeof title === 'string' && /\bFOR PARTS\b/i.test(title)) {
+    return CONDITION_BY_TAG.ugly!;
+  }
+  const derived = conditionFromTags(productTags) ?? conditionFromTitle(title);
+  if (derived === null) return null;
+  return {
+    id: EBAY_SAFE_CONDITION_ID[derived.id] ?? derived.id,
+    description: derived.description,
+  };
 }
 
