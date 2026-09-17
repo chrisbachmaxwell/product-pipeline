@@ -51,6 +51,13 @@ export type RecoveredInventoryItemState = Readonly<{
 export type ListingRecoverDispatchAdapter = Readonly<{
     /** GET the one exact offer; 404 reports found: false. */
     getOffer: (offerId: string) => Promise<RecoveredOfferState>;
+    /**
+     * GET the offers bound to one exact SKU (item-only residue proof: a
+     * mid-create crash between the inventory-item PUT and the offer POST
+     * leaves an item with NO offer; deleting the item is safe only when the
+     * provider positively reports zero offers for the SKU).
+     */
+    countOffersForSku: (sku: string) => Promise<number>;
     /** DELETE the one exact offer; only 204 is success. */
     deleteOffer: (offerId: string) => Promise<void>;
     /** GET the one exact inventory item; 404 reports found: false. */

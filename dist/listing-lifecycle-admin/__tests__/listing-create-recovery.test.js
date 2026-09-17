@@ -143,6 +143,30 @@ function inventoryOnlyWorkspace() {
         mapping: { ...base.mapping, state: 'attention' },
     };
 }
+/** Item-only residue exactly as the live catalog reports it: the offer POST
+ * never landed, the item counts as one unpublished artifact. */
+function itemOnlyResidueWorkspace() {
+    const base = notListedWorkspace();
+    return {
+        ...base,
+        catalog: {
+            ...base.catalog,
+            ebay: {
+                ...base.catalog.ebay,
+                state: 'attention', listingId: null, offerId: null,
+                activeMatchCount: 0, inventoryItemCount: 1,
+                offerCount: 0, unpublishedArtifactCount: 1,
+            },
+            lifecycleStatus: 'attention',
+            audit: {
+                ...base.catalog.audit,
+                unresolvedCount: 1,
+                attentionReasons: ['ebay_unpublished_artifact'],
+            },
+        },
+        mapping: { ...base.mapping, state: 'attention' },
+    };
+}
 const DEFAULT_DRAFT = {
     title: null,
     category: '3323',
@@ -222,6 +246,10 @@ async function createWorld() {
             return offerStatus === 'absent'
                 ? Object.freeze({ found: false, sku: null, status: null, listingId: null })
                 : Object.freeze({ found: true, sku: offerSku, status: offerStatus, listingId: null });
+        },
+        countOffersForSku: async (sku) => {
+            recoverCalls.push(`countOffersForSku:${sku}`);
+            return offerStatus === 'absent' ? 0 : 1;
         },
         deleteOffer: async (offerId) => {
             recoverCalls.push(`deleteOffer:${offerId}`);
@@ -789,5 +817,46 @@ describe('recorded unpublished-offer evidence (L40 second layer)', () => {
             offerId: '247267392011',
             evidenceRuns: [foreign],
         })).toThrow(expect.objectContaining({ code: 'RECOVER_ARTIFACT_EVIDENCE_MISMATCH' }));
+    });
+});
+describe('item-only residue: --offer-id none (2026-09-17)', () => {
+    it('removes an inventory item with no offer when the provider proves zero offers', async () => {
+        const world = await createWorld();
+        world.useProductionCaptureShape(true);
+        const source = await dispatchUnpublishedCreate(world);
+        // The crash shape: the offer never landed — only the item remains.
+        world.setWorkspace(itemOnlyResidueWorkspace());
+        await world.run(['reconcile', '--action', 'create',
+            '--catalog-id', CATALOG_ID, '--sku', SKU,
+            '--revision-digest', world.revision.revisionDigest,
+            '--migration-store', world.migrationDatabasePath,
+            '--job-id', source.jobId, '--attempt-id', source.attemptId,
+        ]);
+        world.setOfferStatus('absent');
+        await world.run(recoverArguments(world, source, { offerId: 'none' }));
+        const recovered = lastJson(world.stdout);
+        expect(recovered).toMatchObject({
+            command: 'recover-create',
+            externalCommerceWritesAttempted: 1,
+        });
+        expect(world.recoverCalls).toContain(`countOffersForSku:${SKU}`);
+        expect(world.recoverCalls).toContain(`deleteInventoryItem:${SKU}`);
+        expect(world.recoverCalls).not.toContain('deleteOffer:none');
+    });
+    it('refuses item-only recovery while any offer still exists for the SKU', async () => {
+        const world = await createWorld();
+        world.useProductionCaptureShape(true);
+        const source = await dispatchUnpublishedCreate(world);
+        await world.run(['reconcile', '--action', 'create',
+            '--catalog-id', CATALOG_ID, '--sku', SKU,
+            '--revision-digest', world.revision.revisionDigest,
+            '--migration-store', world.migrationDatabasePath,
+            '--job-id', source.jobId, '--attempt-id', source.attemptId,
+        ]);
+        await world.run(recoverArguments(world, source, { offerId: 'none' }));
+        expect(lastJson(world.stderr)).toMatchObject({
+            status: 'denied', code: 'RECOVER_OFFER_PRESENT_FOR_ITEM_ONLY',
+        });
+        expect(world.recoverCalls).not.toContain(`deleteInventoryItem:${SKU}`);
     });
 });

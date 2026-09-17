@@ -265,6 +265,10 @@ async function createWorld() {
                     listingId: offer.listingId ?? null })
                 : Object.freeze({ found: false, sku: null, status: null, listingId: null });
         },
+        countOffersForSku: async (sku) => {
+            recoverCalls.push(`countOffersForSku:${sku}`);
+            return offer.present ? 1 : 0;
+        },
         deleteOffer: async (offerId) => {
             recoverCalls.push(`deleteOffer:${offerId}`);
             offer = { ...offer, present: false };
