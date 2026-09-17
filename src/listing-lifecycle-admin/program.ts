@@ -1660,12 +1660,26 @@ export function buildListingLifecycleAdminProgram(
           // Provider verification read BEFORE any store write: the offer must
           // exist, bind the exact SKU, and be UNPUBLISHED. A published offer
           // means a listing exists and this ceremony must refuse.
+          //
+          // `--offer-id none` (L71): a mid-create crash between the
+          // inventory-item PUT and the offer POST leaves ITEM-ONLY residue.
+          // Deleting the item is safe only when the provider positively
+          // reports zero offers for the SKU; the recorded artifact evidence
+          // still binds (a capture of item-only residue records a null
+          // observed offer id, the binds(null) path).
           const adapter = createRecoverAdapter();
-          const offerState = await adapter.getOffer(options.offerId);
-          if (!offerState.found) deny('RECOVER_OFFER_NOT_FOUND');
-          if (offerState.sku !== options.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
-          if (offerState.status === 'PUBLISHED') deny('RECOVER_OFFER_PUBLISHED');
-          if (offerState.status !== 'UNPUBLISHED') deny('RECOVER_OFFER_STATE_MISMATCH');
+          const itemOnly = options.offerId === 'none';
+          if (itemOnly) {
+            if (await adapter.countOffersForSku(options.sku) !== 0) {
+              deny('RECOVER_OFFER_PRESENT_FOR_ITEM_ONLY');
+            }
+          } else {
+            const offerState = await adapter.getOffer(options.offerId);
+            if (!offerState.found) deny('RECOVER_OFFER_NOT_FOUND');
+            if (offerState.sku !== options.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
+            if (offerState.status === 'PUBLISHED') deny('RECOVER_OFFER_PUBLISHED');
+            if (offerState.status !== 'UNPUBLISHED') deny('RECOVER_OFFER_STATE_MISMATCH');
+          }
 
           const ceremony = reserveLifecycleJob({
             store,
@@ -1692,16 +1706,18 @@ export function buildListingLifecycleAdminProgram(
           let dispatchFailureCode: string | null = null;
           let externalCommerceWritesAttempted = 0;
           try {
-            dispatchFailureStage = 'delete_offer';
-            externalCommerceWritesAttempted = 1;
-            await adapter.deleteOffer(options.offerId);
-            dispatchFailureStage = 'verify_offer_absent';
-            const offerAfter = await adapter.getOffer(options.offerId);
-            if (offerAfter.found) {
-              throw new ListingLifecycleAdminError('RECOVER_OFFER_STILL_PRESENT');
+            if (!itemOnly) {
+              dispatchFailureStage = 'delete_offer';
+              externalCommerceWritesAttempted = 1;
+              await adapter.deleteOffer(options.offerId);
+              dispatchFailureStage = 'verify_offer_absent';
+              const offerAfter = await adapter.getOffer(options.offerId);
+              if (offerAfter.found) {
+                throw new ListingLifecycleAdminError('RECOVER_OFFER_STILL_PRESENT');
+              }
             }
             dispatchFailureStage = 'delete_inventory_item';
-            externalCommerceWritesAttempted = 2;
+            externalCommerceWritesAttempted = itemOnly ? 1 : 2;
             await adapter.deleteInventoryItem(options.sku);
             dispatchFailureStage = 'verify_inventory_absent';
             const itemAfter = await adapter.getInventoryItem(options.sku);
@@ -1907,9 +1923,11 @@ export function buildListingLifecycleAdminProgram(
           // inventory item proven gone at the provider, plus the fresh
           // capture's clean not-listed state.
           const adapter = createRecoverAdapter();
-          const offerState = await adapter.getOffer(options.offerId);
+          const offerGone = options.offerId === 'none'
+            ? await adapter.countOffersForSku(options.sku) === 0
+            : !(await adapter.getOffer(options.offerId)).found;
           const itemState = await adapter.getInventoryItem(options.sku);
-          const providerRemovalVerified = !offerState.found && !itemState.found;
+          const providerRemovalVerified = offerGone && !itemState.found;
 
           const startedAtUtc = clock();
           const freshDto = await readWorkspace(options.catalogId);

@@ -134,6 +134,26 @@ export function createListingRecoverDispatchAdapter(dependencies) {
             listingId: listingRaw ?? null,
         });
     }
+    async function countOffersForSku(sku) {
+        if (!SAFE_SEGMENT.test(sku)) {
+            deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
+        }
+        const headers = await authorizedHeaders();
+        const response = await boundedRequest(`${EBAY_API_HOST}/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`, { method: 'GET', headers }, 'RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
+        if (response.status === 404)
+            return 0;
+        if (response.status !== 200) {
+            deny('RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
+        }
+        const parsed = parseJsonObject(response.text);
+        const offers = parsed.offers;
+        if (offers === undefined)
+            return 0;
+        if (!Array.isArray(offers)) {
+            return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
+        }
+        return offers.length;
+    }
     async function deleteOffer(offerId) {
         if (!SAFE_SEGMENT.test(offerId)) {
             deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
@@ -173,5 +193,5 @@ export function createListingRecoverDispatchAdapter(dependencies) {
             deny('RECOVER_DISPATCH_WRITE_FAILED', 'outcome_unknown');
         }
     }
-    return Object.freeze({ getOffer, deleteOffer, getInventoryItem, deleteInventoryItem });
+    return Object.freeze({ getOffer, countOffersForSku, deleteOffer, getInventoryItem, deleteInventoryItem });
 }

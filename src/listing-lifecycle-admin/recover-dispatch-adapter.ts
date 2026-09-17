@@ -77,6 +77,13 @@ export type RecoveredInventoryItemState = Readonly<{
 export type ListingRecoverDispatchAdapter = Readonly<{
   /** GET the one exact offer; 404 reports found: false. */
   getOffer: (offerId: string) => Promise<RecoveredOfferState>;
+  /**
+   * GET the offers bound to one exact SKU (item-only residue proof: a
+   * mid-create crash between the inventory-item PUT and the offer POST
+   * leaves an item with NO offer; deleting the item is safe only when the
+   * provider positively reports zero offers for the SKU).
+   */
+  countOffersForSku: (sku: string) => Promise<number>;
   /** DELETE the one exact offer; only 204 is success. */
   deleteOffer: (offerId: string) => Promise<void>;
   /** GET the one exact inventory item; 404 reports found: false. */
@@ -191,6 +198,30 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
     });
   }
 
+  async function countOffersForSku(sku: string): Promise<number> {
+    if (!SAFE_SEGMENT.test(sku)) {
+      deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
+    }
+    const headers = await authorizedHeaders();
+    const response = await boundedRequest(
+      `${EBAY_API_HOST}/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`,
+      { method: 'GET', headers },
+      'RECOVER_DISPATCH_READ_FAILED',
+      'definite_no_effect',
+    );
+    if (response.status === 404) return 0;
+    if (response.status !== 200) {
+      deny('RECOVER_DISPATCH_READ_FAILED', 'definite_no_effect');
+    }
+    const parsed = parseJsonObject(response.text);
+    const offers = parsed.offers;
+    if (offers === undefined) return 0;
+    if (!Array.isArray(offers)) {
+      return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
+    }
+    return offers.length;
+  }
+
   async function deleteOffer(offerId: string): Promise<void> {
     if (!SAFE_SEGMENT.test(offerId)) {
       deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
@@ -248,5 +279,5 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  return Object.freeze({ getOffer, deleteOffer, getInventoryItem, deleteInventoryItem });
+  return Object.freeze({ getOffer, countOffersForSku, deleteOffer, getInventoryItem, deleteInventoryItem });
 }
