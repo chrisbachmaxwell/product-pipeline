@@ -18,6 +18,8 @@ import listingDraftRoutes, {
   listingDraftJsonParser,
 } from './routes/listing-drafts.js';
 import listingPublishRoutes from './routes/listing-publish.js';
+import listingPublishAllRoutes from './routes/listing-publish-all.js';
+import { initPublishAllSchedule } from './publish-all.js';
 import activityRoutes from './routes/activity.js';
 import ebayQuotaRoutes from './routes/ebay-quota.js';
 import ebayCategoryAspectsRoutes from './routes/ebay-category-aspects.js';
@@ -119,12 +121,14 @@ app.post('/api/listing-draft', listingDraftJsonParser);
 // same strict parser. The route itself re-verifies the exact Shopify
 // session and refuses unless the operator has armed the publish argv.
 app.post('/api/listing-publish', listingDraftJsonParser);
+app.post('/api/listing-publish-all', listingDraftJsonParser);
 app.use(listingDraftJsonErrorHandler);
 
 // --- Routes ---
 app.use(healthRoutes);
 app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
+app.use(listingPublishAllRoutes);
 app.use(activityRoutes);
 app.use(ebayQuotaRoutes);
 app.use(ebayCategoryAspectsRoutes);
@@ -198,6 +202,10 @@ app.get('/{*path}', (req, res) => {
 async function start() {
   try {
     startLiveListingCatalogRefresher();
+    // Scheduled publish-all. Inert unless the operator has armed
+    // PUBLISH_ALL_INTERVAL_MINUTES; every write still runs the per-item
+    // ceremony CLIs from the armed PUBLISH_*_ARGV templates.
+    initPublishAllSchedule();
     app.listen(PORT, () => {
       info(`[Server] ProductPipeline running on http://localhost:${PORT}`);
       info(`[Server] Health: http://localhost:${PORT}/health`);

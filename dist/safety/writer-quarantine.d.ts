@@ -119,6 +119,14 @@ export declare function isExactListingPublish(method: string, originalUrl: strin
  * requiring an engineer at a terminal. Added 2026-09-16.
  */
 export declare function isExactListingRecovery(method: string, originalUrl: string): boolean;
+/**
+ * The publish-all exception, same bar as publish: the handler only starts
+ * the background runner whose every provider write goes through the armed
+ * ceremony CLIs per item; the authenticated click is the operator's
+ * one-action batch approval (the G18 sweep precedent). Added 2026-09-18
+ * when the operator asked for a Publish-All button and schedule.
+ */
+export declare function isExactListingPublishAll(method: string, originalUrl: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {

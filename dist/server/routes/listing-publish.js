@@ -4,6 +4,7 @@ import { info, warn } from '../../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-draft-service.js';
 import { findUnresolvedListingCreateFromArgv } from '../migration-state-reader.js';
 import { apiPrincipal } from '../middleware/auth.js';
+import { releasePublishLock, tryAcquirePublishLock } from '../publish-all.js';
 import { createProcessStepRunner, substituteArgv } from '../order-import-trigger.js';
 /**
  * "Publish to eBay" from the operator UI.
@@ -33,8 +34,6 @@ const CATALOG_ID = /^shopify-variant:gid:\/\/shopify\/ProductVariant\/[0-9]+$/u;
 const SKU = /^[\x21-\x7e]{1,128}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
-/** One publish at a time; a second click while one runs is refused, not queued. */
-let publishing = false;
 function parseArgvEnv(name) {
     const raw = process.env[name];
     if (typeof raw !== 'string' || raw.trim() === '')
@@ -198,11 +197,10 @@ export function createListingPublishRouter(dependencies = {}) {
                 res.status(400).json({ error: 'catalogId, sku, and revisionDigest are required', code: 'PUBLISH_TARGET_INVALID' });
                 return;
             }
-            if (publishing) {
+            if (!tryAcquirePublishLock()) {
                 res.status(409).json({ error: 'Another publish is already running', code: 'PUBLISH_BUSY' });
                 return;
             }
-            publishing = true;
             try {
                 info(`[Listing Publish] operator ${principal.actorId} publishing ${sku}`);
                 const values = { catalogId, sku, revisionDigest };
@@ -276,11 +274,12 @@ export function createListingPublishRouter(dependencies = {}) {
                 });
             }
             finally {
-                publishing = false;
+                releasePublishLock();
             }
         }
         catch {
-            publishing = false;
+            // The lock is released by the inner finally; releasing here could drop
+            // a lock held by a concurrent batch run.
             res.status(500).json({ error: 'Publish failed unexpectedly' });
         }
     });
@@ -316,11 +315,10 @@ export function createListingPublishRouter(dependencies = {}) {
                 res.status(400).json({ error: 'catalogId and sku are required', code: 'RECOVERY_TARGET_INVALID' });
                 return;
             }
-            if (publishing) {
+            if (!tryAcquirePublishLock()) {
                 res.status(409).json({ error: 'Another publish is already running', code: 'PUBLISH_BUSY' });
                 return;
             }
-            publishing = true;
             try {
                 const source = lookupUnresolvedCreate(sku);
                 if (source === null) {
@@ -355,7 +353,7 @@ export function createListingPublishRouter(dependencies = {}) {
                 });
             }
             finally {
-                publishing = false;
+                releasePublishLock();
             }
         }
         catch (error) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Card,
@@ -18,6 +19,7 @@ import {
 import { ProductIcon, SearchIcon } from '@shopify/polaris-icons';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
+import { apiClient } from '../hooks/useApi';
 import {
   formatListingPrice,
   formatVerifiedAt,
@@ -61,6 +63,57 @@ const Listings: React.FC = () => {
     ready: filter === 'ready' || undefined,
     search: search || undefined,
   });
+  // Publish-all: one click publishes every ready item through the same
+  // per-item ceremonies as the single Publish button, with live progress.
+  type PublishAllStatus = {
+    state: 'idle' | 'running' | 'finished' | 'stopped';
+    totalReady: number;
+    currentSku: string | null;
+    stopReason: string | null;
+    items: Array<{ sku: string; title: string; status: string; listingId?: string; reason?: string }>;
+  };
+  const [publishAll, setPublishAll] = useState<PublishAllStatus | null>(null);
+  const [publishAllError, setPublishAllError] = useState<string | null>(null);
+  const publishAllRunning = publishAll?.state === 'running';
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const next = await apiClient.get<PublishAllStatus>('/listing-publish-all');
+        if (cancelled) return;
+        setPublishAll(next);
+        if (next.state === 'running') timer = setTimeout(() => { void poll(); }, 5000);
+        else void listings.refetch();
+      } catch {
+        if (!cancelled) timer = setTimeout(() => { void poll(); }, 15000);
+      }
+    };
+    void poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const startPublishAll = async () => {
+    setPublishAllError(null);
+    try {
+      const next = await apiClient.post<PublishAllStatus>('/listing-publish-all', {});
+      setPublishAll(next);
+      const tick = async () => {
+        try {
+          const polled = await apiClient.get<PublishAllStatus>('/listing-publish-all');
+          setPublishAll(polled);
+          if (polled.state === 'running') setTimeout(() => { void tick(); }, 5000);
+          else void listings.refetch();
+        } catch { setTimeout(() => { void tick(); }, 15000); }
+      };
+      setTimeout(() => { void tick(); }, 5000);
+    } catch (error) {
+      setPublishAllError(error instanceof Error
+        ? error.message.replace(/\s*\([A-Z_]+\)\s*$/, '')
+        : 'Publish-all could not start');
+    }
+  };
+
   const valid = isLiveCatalogResponse(listings.data);
   const rows = valid ? listings.data?.data ?? [] : [];
   const total = valid ? listings.data?.total ?? 0 : 0;
@@ -76,12 +129,47 @@ const Listings: React.FC = () => {
   return (
     <Page
       title="Listings"
-      primaryAction={nextReview ? {
+      primaryAction={{
+        content: publishAllRunning ? 'Publishing…' : 'Publish all ready',
+        loading: publishAllRunning,
+        disabled: publishAllRunning,
+        onAction: () => { void startPublishAll(); },
+      }}
+      secondaryActions={nextReview ? [{
         content: 'Review next',
         onAction: () => navigate(`/listings/${encodeURIComponent(nextReview.id)}`),
-      } : undefined}
+      }] : undefined}
     >
       <BlockStack gap="400">
+        {publishAllError && (
+          <Banner tone="critical" onDismiss={() => setPublishAllError(null)}>
+            <Text as="p">{publishAllError}</Text>
+          </Banner>
+        )}
+        {publishAll && publishAll.state !== 'idle'
+          && (publishAllRunning || publishAll.items.length > 0 || publishAll.stopReason) && (
+          <Banner
+            tone={publishAll.state === 'stopped' ? 'critical'
+              : publishAll.state === 'running' ? 'info' : 'success'}
+            title={publishAll.state === 'running'
+              ? `Publishing ${publishAll.items.length + 1} of ${publishAll.totalReady}`
+                + (publishAll.currentSku ? ` — ${publishAll.currentSku}` : '')
+              : publishAll.state === 'stopped'
+                ? 'Publish-all stopped'
+                : `Publish-all finished — ${publishAll.items.filter((item) => item.status === 'published').length} published`}
+          >
+            <BlockStack gap="100">
+              {publishAll.stopReason && <Text as="p">{publishAll.stopReason}</Text>}
+              {publishAll.items.slice(-8).map((item) => (
+                <Text as="p" variant="bodySm" key={item.sku}>
+                  {item.status === 'published'
+                    ? `✓ ${item.sku} — live as ${item.listingId}`
+                    : `${item.status === 'failed' ? '✗' : '⏭'} ${item.sku} — ${item.reason ?? item.status}`}
+                </Text>
+              ))}
+            </BlockStack>
+          </Banner>
+        )}
         <Card padding="0">
           <Box padding="400">
             <BlockStack gap="400">

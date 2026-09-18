@@ -366,7 +366,11 @@ describe('stocked listings operator UI', () => {
     }
   });
 
-  it('keeps desktop table and mobile card paths with no commerce mutation surface', () => {
+  it('keeps desktop table and mobile card paths; publish-all is the only mutation', () => {
+    // Until 2026-09-18 this page was read-only. The operator then asked for
+    // a Publish-All button; its ONLY mutation is the one exact
+    // /listing-publish-all route (whose handler starts the armed ceremony
+    // runner). Any other mutation surface here remains a violation.
     const listingsSource = readFileSync(
       fileURLToPath(new URL('./pages/Listings.tsx', import.meta.url)),
       'utf8',
@@ -377,7 +381,10 @@ describe('stocked listings operator UI', () => {
     expect(listingsSource).toContain('row.ebay.inventoryItemCount === 0');
     expect(listingsSource).toContain('row.ebay.offerCount === 0');
     expect(listingsSource).toContain('row.ebay.unpublishedArtifactCount === 0');
-    expect(listingsSource).not.toMatch(/\buseMutation\b|\bpublish\b|\bPOST\b|\bonPublish\b/i);
+    const posts = [...listingsSource.matchAll(/apiClient\.post[^(]*\(\s*'([^']+)'/g)]
+      .map((match) => match[1]);
+    expect(posts).toEqual(['/listing-publish-all']);
+    expect(listingsSource).not.toMatch(/\buseMutation\b|\bfetch\s*\(/);
     expect(listingsSource).not.toMatch(/>\s*Refresh\s*</);
   });
 

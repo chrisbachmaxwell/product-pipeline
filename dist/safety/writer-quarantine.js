@@ -177,6 +177,16 @@ export function isExactListingPublish(method, originalUrl) {
 export function isExactListingRecovery(method, originalUrl) {
     return method === 'POST' && originalUrl === '/api/listing-recovery';
 }
+/**
+ * The publish-all exception, same bar as publish: the handler only starts
+ * the background runner whose every provider write goes through the armed
+ * ceremony CLIs per item; the authenticated click is the operator's
+ * one-action batch approval (the G18 sweep precedent). Added 2026-09-18
+ * when the operator asked for a Publish-All button and schedule.
+ */
+export function isExactListingPublishAll(method, originalUrl) {
+    return method === 'POST' && originalUrl === '/api/listing-publish-all';
+}
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(req, res, next) {
     if (isReadOnlyHttpMethod(req.method)) {
@@ -192,6 +202,10 @@ export function writerQuarantineMiddleware(req, res, next) {
         return;
     }
     if (isExactListingRecovery(req.method, req.originalUrl || '')) {
+        next();
+        return;
+    }
+    if (isExactListingPublishAll(req.method, req.originalUrl || '')) {
         next();
         return;
     }
