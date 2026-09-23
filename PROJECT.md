@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-17. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-23. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,11 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-18 → 2026-09-23: Publish-All Product Feature and the Starvation Post-Mortem (L72-L73)
+
+Publishing became a product feature: a Publish All button on the Listings page with live per-item progress, and a server-side schedule (PUBLISH_ALL_INTERVAL_MINUTES=300) replacing the laptop cron — every write still per-item through the armed ceremony CLIs (PR #132). Five days later the operator reported 19 unpushed items: scheduled runs had starved behind publish-time aspect refusals whose failed dispatches stranded artifacts that blocked the draft service (and a Focus-Type deriver fix sat unmerged locally the whole time). PR #133 ended the class: a required-aspect gate checks the category's full taxonomy list before any ceremony (one skip message naming every gap), a startup residue sweep auto-recovers wedged rows, unknown failures no longer stop the queue, and derivation now covers camera Model/Type, marker-less Focus Type, and *OPEN BOX*. Ledger backlog closed: 4 residue recoveries, 6 accept-absent closures, one teleconverter recategorized (80390). The runner proved itself end-to-end on its first production drain.
+
 
 ### 2026-09-16 → 2026-09-17: The Self-Publishing Queue and Schema v6 (L69-L70)
 
