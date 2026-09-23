@@ -84,6 +84,13 @@ export function conditionFromTitle(title) {
         return null;
     if (/\bFOR PARTS\b/i.test(title))
         return CONDITION_BY_TAG.ugly;
+    if (/\bOPEN BOX\b/i.test(title)) {
+        return {
+            id: '1500',
+            description: 'Open box: unused and fully functional; the packaging was '
+                + 'opened. The photographs show the exact item for sale.',
+        };
+    }
     if (/\bNEW OLD STOCK\b/i.test(title)) {
         return {
             id: '1500',

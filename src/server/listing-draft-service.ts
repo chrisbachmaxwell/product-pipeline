@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
-import { deriveLensAspects } from './camera-aspect-derivation.js';
+import { deriveCameraAspects, deriveLensAspects } from './camera-aspect-derivation.js';
 import {
   ListingControlStoreError,
   deriveListingBaseDigests,
@@ -318,7 +318,10 @@ function shopifyAspects(
   // categories; Brand/MPN from Shopify always win on key collision. All of
   // this is the SOURCE layer — the operator's editor override replaces the
   // whole set.
-  const aspects: Record<string, string[]> = { ...deriveLensAspects(title) };
+  const aspects: Record<string, string[]> = {
+    ...deriveCameraAspects(title),
+    ...deriveLensAspects(title),
+  };
   if (!content && Object.keys(aspects).length === 0) return null;
   if (content?.brand != null) aspects.Brand = [content.brand];
   if (content?.mpn != null) aspects.MPN = [content.mpn];
