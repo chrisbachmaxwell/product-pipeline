@@ -257,7 +257,9 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                 .slice(0, maxItems);
             status.totalReady = ready.length;
             info(`[Publish All] ${startedBy}: ${ready.length} ready`
-                + (wedged.length > 0 ? ` (${wedged.length} residue recoveries attempted)` : ''));
+                + (wedged.length > 0
+                    ? ` (${Math.min(wedged.length, 10)} residue sweeps of ${wedged.length} flagged rows)`
+                    : ''));
             let consecutiveUnknown = 0;
             for (const row of ready) {
                 const sku = row.shopify.sku;
@@ -397,7 +399,24 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     ? dispatched.json.status : 'no-summary';
                 const listingId = typeof dispatched.json?.listingId === 'string'
                     ? dispatched.json.listingId : null;
-                if (dispatchStatus === 'created-and-reconciled' && listingId !== null) {
+                let published = dispatchStatus === 'created-and-reconciled' && listingId !== null;
+                // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
+                // capture. With a listing id in hand, reconcile patiently before
+                // declaring failure — the first proving run marked 11 LIVE listings
+                // failed for want of this loop (2026-09-23).
+                if (!published && listingId !== null && reconcileArgv
+                    && typeof dispatched.json?.jobId === 'string'
+                    && typeof dispatched.json?.attemptId === 'string') {
+                    for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
+                        await sleep(10_000 + attempt * 10_000);
+                        const reconciled = await runStep(substituteArgv(reconcileArgv, {
+                            catalogId: row.id, sku, revisionDigest,
+                            jobId: dispatched.json.jobId, attemptId: dispatched.json.attemptId,
+                        }));
+                        published = reconciled.json?.resolution === 'resolved_existing';
+                    }
+                }
+                if (published && listingId !== null) {
                     record({ sku, title, status: 'published', listingId });
                     info(`[Publish All] ${sku} live as ${listingId}`);
                 }
