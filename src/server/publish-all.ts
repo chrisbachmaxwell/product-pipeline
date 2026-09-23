@@ -26,7 +26,10 @@
  * - runs are bounded (MAX_ITEMS) and single-flight, sharing the same lock
  *   as the one-item publish route
  */
+import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
+import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
+import { findUnresolvedListingCreateFromArgv } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from './order-import-trigger.js';
 
 const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -103,6 +106,7 @@ type SnapshotRow = {
   readyToList?: boolean;
   readyToListGaps?: readonly string[];
   shopify: { sku: string; title: string } | null;
+  audit?: { attentionReasons?: readonly string[] };
 };
 
 type DraftServiceLike = {
@@ -110,9 +114,12 @@ type DraftServiceLike = {
     revision: null | { revisionDigest: string };
     base: { sourceDigest: string; ebayDigest: string };
     sections: {
-      listing: { title: { draft: string | null }; conditionDescription: {
-        draft: string | null; shopify: string | null } };
-      content: { itemSpecifics: { draft: string | null } };
+      listing: {
+        title: { draft: string | null };
+        category: { draft: string | null; shopify: string | null };
+        conditionDescription: { draft: string | null; shopify: string | null };
+      };
+      content: { itemSpecifics: { draft: string | null; shopify: string | null } };
     };
   }>;
   save: (request: unknown, actor: string) => Promise<{
@@ -127,6 +134,14 @@ export type PublishAllDependencies = Readonly<{
   sleep?: (ms: number) => Promise<void>;
   now?: () => string;
   maxItems?: number;
+  getCategoryAspects?: (categoryId: string) => Promise<{
+    available: boolean;
+    aspects: ReadonlyArray<{ name: string; required: boolean }>;
+  }>;
+  findUnresolvedCreate?: (sku: string) => Readonly<{
+    jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
+  }> | null;
+  latestRevisionDigest?: (catalogId: string) => string | null;
 }>;
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -196,6 +211,25 @@ export function startPublishAllRun(
     ? Promise.resolve(dependencies.draftService)
     : import('./listing-draft-service.js')
       .then((module) => module.createListingDraftService() as unknown as DraftServiceLike);
+  const getCategoryAspects = dependencies.getCategoryAspects
+    ?? (async (categoryId: string) => (await import('./ebay-category-aspects.js'))
+      .getEbayCategoryAspects(categoryId));
+  const findUnresolvedCreate = dependencies.findUnresolvedCreate
+    ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+  const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
+    const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
+    if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
+    try {
+      const store = openListingControlStoreReadOnly({ databasePath, expectedScope: LISTING_DRAFT_SCOPE });
+      try {
+        return store.getLatestRevision(catalogId.replace(/^shopify-variant:/, ''))?.revisionDigest ?? null;
+      } finally {
+        store.close();
+      }
+    } catch {
+      return null;
+    }
+  });
 
   status.state = 'running';
   status.startedAtUtc = now();
@@ -242,18 +276,70 @@ export function startPublishAllRun(
     }
   };
 
+  /**
+   * Startup residue sweep (L73): an unresolved create whose cleanup failed
+   * leaves an artifact that blocks the draft service and hides the row from
+   * every later run — the starvation that stalled the queue for five days.
+   * Reconcile re-verifies live state; only the recorded unpublished-offer
+   * shape proceeds to removal ('none' = item-only residue).
+   */
+  const sweepResidue = async (row: SnapshotRow & { shopify: { sku: string } }): Promise<void> => {
+    if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv) return;
+    const sku = row.shopify.sku;
+    const source = findUnresolvedCreate(sku);
+    if (source === null) return;
+    const revisionDigest = latestRevisionDigest(row.id);
+    if (revisionDigest === null) return;
+    const values: Record<string, string> = {
+      catalogId: row.id, sku, revisionDigest,
+      jobId: source.jobId, attemptId: source.attemptId,
+      intentKey: source.intentKey, evidenceDigest: source.evidenceDigest,
+    };
+    try {
+      const reconciled = await runStep(substituteArgv(reconcileArgv, values));
+      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') return;
+      const observed = reconciled.json?.offerId;
+      const offerId = typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed)
+        ? observed : 'none';
+      await sleep(10_000);
+      const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
+      const recoveryJobId = recovered.json?.recoveryJobId;
+      const recoveryAttemptId = recovered.json?.recoveryAttemptId;
+      if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
+        || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId)) return;
+      await runStep(substituteArgv(recoverReconcileArgv, {
+        ...values, offerId, recoveryJobId, recoveryAttemptId,
+      }));
+      info(`[Publish All] recovered leftover eBay data for ${sku}`);
+      await sleep(30_000);
+    } catch {
+      // Best-effort; the item stays visible as blocked in the UI.
+    }
+  };
+
   const run = (async (): Promise<void> => {
     try {
       const draftService = await draftServicePromise;
       const snapshot = await getSnapshot();
-      const ready = snapshot.rows
+      const wedged = snapshot.rows.filter(
+        (row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
+          row.shopify !== null
+          && row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true);
+      for (const row of wedged.slice(0, 10)) {
+        status.currentSku = row.shopify.sku;
+        await sweepResidue(row);
+      }
+      const freshSnapshot = wedged.length > 0 ? await getSnapshot() : snapshot;
+      const ready = freshSnapshot.rows
         .filter((row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.readyToList === true && row.shopify !== null
           && !row.shopify.sku.startsWith('PIPELINE-TEST'))
         .slice(0, maxItems);
       status.totalReady = ready.length;
-      info(`[Publish All] ${startedBy}: ${ready.length} ready`);
+      info(`[Publish All] ${startedBy}: ${ready.length} ready`
+        + (wedged.length > 0 ? ` (${wedged.length} residue recoveries attempted)` : ''));
 
+      let consecutiveUnknown = 0;
       for (const row of ready) {
         const sku = row.shopify.sku;
         const title = row.shopify.title;
@@ -286,6 +372,38 @@ export function startPublishAllRun(
           record({ sku, title, status: 'skipped', reason: `The draft could not be prepared (${error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : 'unavailable'}) — open the item and save it once.` });
           await sleep(45_000);
           continue;
+        }
+
+        // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
+        // 25002 refusal at a time, and each refusal burns an intent and
+        // strands an unpublished offer. Check the category's complete
+        // required list BEFORE any ceremony and skip with every missing
+        // name in ONE message an employee can act on.
+        try {
+          const dto = await draftService.get(row.id);
+          const categoryId = dto.sections.listing.category.draft
+            ?? dto.sections.listing.category.shopify;
+          const specificsRaw = dto.sections.content.itemSpecifics.draft
+            ?? dto.sections.content.itemSpecifics.shopify;
+          if (categoryId !== null) {
+            const taxonomy = await getCategoryAspects(categoryId);
+            if (taxonomy.available) {
+              const present = new Set(Object.keys(
+                specificsRaw ? JSON.parse(specificsRaw) as Record<string, unknown> : {},
+              ).map((name) => name.toLowerCase()));
+              const missing = taxonomy.aspects
+                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()))
+                .map((aspect) => aspect.name);
+              if (missing.length > 0) {
+                record({ sku, title, status: 'skipped',
+                  reason: `eBay requires ${missing.join(', ')} for this category — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
+                await sleep(15_000);
+                continue;
+              }
+            }
+          }
+        } catch {
+          // The gate is advisory; preflight remains the authority.
         }
 
         // Preflight with auto-rebase + transient retry (3 attempts).
@@ -336,11 +454,23 @@ export function startPublishAllRun(
           continue;
         }
         if (stop !== null || manifestDigest === null) {
-          status.stopReason = stop ?? `Preflight for ${sku} never produced a manifest`;
-          status.state = 'stopped';
-          warn(`[Publish All] stopped: ${status.stopReason}`);
-          return;
+          // One unknown refusal must not starve the queue behind it
+          // (2026-09-23: five days of runs stalled on repeat halts). The
+          // item records failed and the run continues; three consecutive
+          // unknowns signal something systemic and stop the run.
+          consecutiveUnknown += 1;
+          record({ sku, title, status: 'failed',
+            reason: stop ?? `Preflight for ${sku} never produced a manifest` });
+          if (consecutiveUnknown >= 3) {
+            status.stopReason = `Three consecutive preflight failures (last: ${stop ?? sku})`;
+            status.state = 'stopped';
+            warn(`[Publish All] stopped: ${status.stopReason}`);
+            return;
+          }
+          await sleep(45_000);
+          continue;
         }
+        consecutiveUnknown = 0;
 
         await sleep(40_000);
         const values = { catalogId: row.id, sku, revisionDigest, manifestDigest };

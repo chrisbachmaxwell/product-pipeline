@@ -56,12 +56,22 @@ function harness(options: {
         revision: { revisionDigest: REVISION },
         base: { sourceDigest: `sha256:${'d'.repeat(64)}`, ebayDigest: `sha256:${'e'.repeat(64)}` },
         sections: {
-          listing: { title: { draft: null }, conditionDescription: { draft: null, shopify: null } },
-          content: { itemSpecifics: { draft: null } },
+          listing: {
+            title: { draft: null },
+            category: { draft: null, shopify: '3323' },
+            conditionDescription: { draft: null, shopify: null },
+          },
+          content: { itemSpecifics: { draft: JSON.stringify({ Brand: ['Canon'] }), shopify: null } },
         },
       }),
       save: async () => ({ revision: { revisionDigest: REVISION } }),
     },
+    getCategoryAspects: async () => ({
+      available: true,
+      aspects: [{ name: 'Brand', required: true }],
+    }),
+    findUnresolvedCreate: () => null,
+    latestRevisionDigest: () => REVISION,
     runStep: async (argv) => {
       calls.push([...argv]);
       if (argv[1] === 'preflight-create') {

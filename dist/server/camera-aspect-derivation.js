@@ -77,12 +77,65 @@ export function deriveLensAspects(rawTitle) {
             aspects.Type = [length < 35 ? 'Wide Angle' : length < 85 ? 'Standard' : 'Telephoto'];
         }
     }
-    // Focus Type only when the title carries an autofocus or manual marker.
-    if (/\bmanual focus\b|\bMF\b/i.test(title)) {
+    // Focus Type: an explicit marker decides; otherwise default to
+    // Auto & Manual UNLESS the maker's glass is manual-focus by design.
+    // Three publish-time halts (L69: EF 75-300 III, EF-S 18-135 IS;
+    // 2026-09-18: 6846A004) were all autofocus lenses whose titles simply
+    // lack a motor acronym — eBay requires the aspect for every lens, so
+    // "derive nothing" just moved the failure to publish time. The
+    // manual-by-design brands stay Manual, and the editor can override.
+    const MANUAL_FOCUS_BRANDS = /\bLeica M\b|\bZeiss\b|\bVoigtl(?:a|ä)nder\b|\bSamyang\b|\bRokinon\b|\bLaowa\b|\bMitakon\b/i;
+    if (/\bmanual focus\b|\bMF\b/i.test(title) || MANUAL_FOCUS_BRANDS.test(title)) {
         aspects['Focus Type'] = ['Manual'];
     }
-    else if (/\bUSM\b|\bSTM\b|\bHSM\b|\bAF(?:-[SDP])?\b|\bXD\b|\bDDSSM\b|\bVR\b|\bOIS\b/i.test(title)) {
+    else {
         aspects['Focus Type'] = ['Auto & Manual'];
     }
+    return aspects;
+}
+/**
+ * Camera-body and camera-kit titles: derive the Model and Type eBay's
+ * camera categories ENFORCE at publish time without ever marking required
+ * in the taxonomy (L67), plus Brand when the title states it. Purely
+ * mechanical title parsing — the model IS the title minus the brand and
+ * the store's decorations; nothing is guessed. Five days of scheduled-run
+ * failures (2026-09-23) were hand-fillable Models the title stated plainly.
+ */
+const CAMERA_BRANDS = [
+    'Canon', 'Nikon', 'Sony', 'Fujifilm', 'Panasonic', 'Olympus', 'Leica',
+    'Hasselblad', 'Pentax', 'Sigma', 'Mamiya', 'Ricoh', 'GoPro', 'DJI',
+    'Kodak', 'Minolta', 'Blackmagic',
+];
+export function deriveCameraAspects(rawTitle) {
+    if (typeof rawTitle !== 'string')
+        return {};
+    const title = rawTitle.slice(0, 200);
+    if (!/\b(camera|dslr|slr|mirrorless|camcorder|body)\b/i.test(title))
+        return {};
+    const aspects = {};
+    const brand = CAMERA_BRANDS.find((name) => new RegExp('^' + name + '\\b', 'i').test(title.trim()));
+    if (brand)
+        aspects.Brand = [brand];
+    if (/\bDSLR\b|\bSLR\b/i.test(title)) {
+        aspects.Type = [/\bdigital\b|\bDSLR\b/i.test(title) ? 'Digital SLR' : 'SLR'];
+    }
+    else if (/\bmirrorless\b/i.test(title)) {
+        aspects.Type = ['Mirrorless Interchangeable Lens'];
+    }
+    // Model: the title minus brand, parentheticals, star markers, and the
+    // generic camera words / kit tails. "Canon EOS 5D Mark III Digital
+    // Camera Body (#022) *USED*" -> "EOS 5D Mark III".
+    let model = title
+        .replace(/\([^)]*\)/g, ' ')
+        .replace(/\*[^*]*\*/g, ' ')
+        .replace(/\b(?:w\/|with)\b[\s\S]*$/i, ' ');
+    if (brand)
+        model = model.replace(new RegExp('^\\s*' + brand + '\\b', 'i'), ' ');
+    model = model
+        .replace(/\b(digital|mirrorless|cinema|dslr|slr|camera|camcorder|body|kit)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (model.length >= 2 && model.length <= 65)
+        aspects.Model = [model];
     return aspects;
 }

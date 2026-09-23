@@ -28,6 +28,9 @@ type SnapshotRow = {
         sku: string;
         title: string;
     } | null;
+    audit?: {
+        attentionReasons?: readonly string[];
+    };
 };
 type DraftServiceLike = {
     get: (catalogId: string) => Promise<{
@@ -43,6 +46,10 @@ type DraftServiceLike = {
                 title: {
                     draft: string | null;
                 };
+                category: {
+                    draft: string | null;
+                    shopify: string | null;
+                };
                 conditionDescription: {
                     draft: string | null;
                     shopify: string | null;
@@ -51,6 +58,7 @@ type DraftServiceLike = {
             content: {
                 itemSpecifics: {
                     draft: string | null;
+                    shopify: string | null;
                 };
             };
         };
@@ -70,6 +78,20 @@ export type PublishAllDependencies = Readonly<{
     sleep?: (ms: number) => Promise<void>;
     now?: () => string;
     maxItems?: number;
+    getCategoryAspects?: (categoryId: string) => Promise<{
+        available: boolean;
+        aspects: ReadonlyArray<{
+            name: string;
+            required: boolean;
+        }>;
+    }>;
+    findUnresolvedCreate?: (sku: string) => Readonly<{
+        jobId: string;
+        attemptId: string;
+        intentKey: string;
+        evidenceDigest: string;
+    }> | null;
+    latestRevisionDigest?: (catalogId: string) => string | null;
 }>;
 /**
  * Start a publish-all run in the background. Returns false when another

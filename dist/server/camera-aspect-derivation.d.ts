@@ -11,3 +11,4 @@
  * "Focal Length".
  */
 export declare function deriveLensAspects(rawTitle: string | null | undefined): Record<string, string[]>;
+export declare function deriveCameraAspects(rawTitle: string | null | undefined): Record<string, string[]>;

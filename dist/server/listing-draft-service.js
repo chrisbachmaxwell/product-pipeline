@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
-import { deriveLensAspects } from './camera-aspect-derivation.js';
+import { deriveCameraAspects, deriveLensAspects } from './camera-aspect-derivation.js';
 import { ListingControlStoreError, deriveListingBaseDigests, openListingControlStore, openListingControlStoreReadOnly, sha256Digest, } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE, LISTING_DRAFT_SINGLE_WRITER_ACK, } from '../listing-control-config.js';
 import { ListingWorkspaceReaderError, readListingWorkspace, } from './listing-workspace-reader.js';
@@ -231,7 +231,10 @@ function shopifyAspects(content, title) {
     // categories; Brand/MPN from Shopify always win on key collision. All of
     // this is the SOURCE layer — the operator's editor override replaces the
     // whole set.
-    const aspects = { ...deriveLensAspects(title) };
+    const aspects = {
+        ...deriveCameraAspects(title),
+        ...deriveLensAspects(title),
+    };
     if (!content && Object.keys(aspects).length === 0)
         return null;
     if (content?.brand != null)
