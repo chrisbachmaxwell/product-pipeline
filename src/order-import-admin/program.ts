@@ -1086,7 +1086,16 @@ export function buildOrderImportAdminProgram(
               }),
             })),
             tags: ['eBay', tag],
-            note: `Imported from eBay order ${orderId} by ProductPipeline order-import-admin`,
+            // Traceability WITHOUT squatting on the Notes field (operator
+            // ask 2026-09-24: staff use Notes for their own annotations).
+            // The eBay order id already shows as Channel Information's
+            // Order ID via sourceIdentifier; this custom attribute keeps a
+            // labeled copy under Additional details, and the durable link
+            // lives in the migration store's order_links regardless.
+            customAttributes: [
+              { key: 'eBay order', value: orderId },
+              { key: 'Imported by', value: 'ProductPipeline order-import-admin' },
+            ],
             sourceName: 'ebay',
             sourceIdentifier: orderId,
             financialStatus,

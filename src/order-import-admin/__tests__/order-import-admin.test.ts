@@ -498,7 +498,13 @@ describe('order-import operator CLI', () => {
     expect(createInput.sourceIdentifier).toBe(ORDER_ID);
     expect(createInput.financialStatus).toBe('PAID');
     expect(createInput.sourceName).toBe('ebay');
-    expect(String(createInput.note)).toContain(ORDER_ID);
+    // Traceability moved off the Notes field (2026-09-24): the eBay order
+    // id rides sourceIdentifier + a labeled custom attribute instead.
+    expect(createInput.note).toBeUndefined();
+    expect(createInput.customAttributes).toEqual([
+      { key: 'eBay order', value: ORDER_ID },
+      { key: 'Imported by', value: 'ProductPipeline order-import-admin' },
+    ]);
     expect(createInput.lineItems).toEqual([{
       variantId: VARIANT_GID,
       quantity: 1,
