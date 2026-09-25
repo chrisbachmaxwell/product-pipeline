@@ -16,6 +16,8 @@ import listingDraftRoutes, { listingDraftJsonErrorHandler, listingDraftJsonParse
 import listingPublishRoutes from './routes/listing-publish.js';
 import listingPublishAllRoutes from './routes/listing-publish-all.js';
 import { initPublishAllSchedule } from './publish-all.js';
+import incidentsRoutes from './routes/incidents.js';
+import { initIncidentWatchdog } from './incident-watchdog.js';
 import activityRoutes from './routes/activity.js';
 import ebayQuotaRoutes from './routes/ebay-quota.js';
 import ebayCategoryAspectsRoutes from './routes/ebay-category-aspects.js';
@@ -109,6 +111,7 @@ app.use(healthRoutes);
 app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
 app.use(listingPublishAllRoutes);
+app.use(incidentsRoutes);
 app.use(activityRoutes);
 app.use(ebayQuotaRoutes);
 app.use(ebayCategoryAspectsRoutes);
@@ -178,6 +181,10 @@ async function start() {
         // PUBLISH_ALL_INTERVAL_MINUTES; every write still runs the per-item
         // ceremony CLIs from the armed PUBLISH_*_ARGV templates.
         initPublishAllSchedule();
+        // The alarm surface (L76): detects the known emergency shapes and
+        // feeds the UI banner; diagnosis/escalation arm via ANTHROPIC_API_KEY
+        // and INCIDENT_GITHUB_TOKEN. Read-only.
+        initIncidentWatchdog();
         app.listen(PORT, () => {
             info(`[Server] ProductPipeline running on http://localhost:${PORT}`);
             info(`[Server] Health: http://localhost:${PORT}/health`);

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findUnresolvedListingCreateReadOnly, inspectMigrationStoreReadOnly, } from '../migration-store/projection.js';
+import { findUnresolvedListingCreateReadOnly, inspectMigrationStoreReadOnly, readIncidentLedgerSignalsReadOnly, } from '../migration-store/projection.js';
 import { loadMigrationAdminConfig } from '../migration-admin/config.js';
 import { MIGRATION_RESPONSIBILITIES } from '../safety/responsibilities.js';
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -310,4 +310,17 @@ export function findUnresolvedListingCreateFromArgv(argv, sku) {
     if (typeof databasePath !== 'string' || databasePath.length === 0)
         return null;
     return findUnresolvedListingCreateReadOnly({ databasePath, sku });
+}
+/**
+ * READ-ONLY incident-signal read for the watchdog, taking the store path
+ * from an operator-armed ceremony argv template (the value after its
+ * --migration-store flag) — the server never holds a second store path.
+ */
+export function readIncidentLedgerSignalsFromArgv(argv, sinceUtc) {
+    const entries = argv ?? [];
+    const index = entries.indexOf('--migration-store');
+    const databasePath = index >= 0 ? entries[index + 1] : undefined;
+    if (typeof databasePath !== 'string' || databasePath.length === 0)
+        return null;
+    return readIncidentLedgerSignalsReadOnly({ databasePath, sinceUtc });
 }

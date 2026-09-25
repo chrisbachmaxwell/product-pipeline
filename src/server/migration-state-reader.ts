@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import {
   findUnresolvedListingCreateReadOnly,
   inspectMigrationStoreReadOnly,
+  readIncidentLedgerSignalsReadOnly,
+  type IncidentLedgerSignals,
   type MigrationStoreProjection,
   type UnresolvedListingCreateProjection,
 } from '../migration-store/projection.js';
@@ -458,4 +460,22 @@ export function findUnresolvedListingCreateFromArgv(
   const databasePath = index >= 0 ? entries[index + 1] : undefined;
   if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
   return findUnresolvedListingCreateReadOnly({ databasePath, sku });
+}
+
+export type { IncidentLedgerSignals };
+
+/**
+ * READ-ONLY incident-signal read for the watchdog, taking the store path
+ * from an operator-armed ceremony argv template (the value after its
+ * --migration-store flag) — the server never holds a second store path.
+ */
+export function readIncidentLedgerSignalsFromArgv(
+  argv: readonly string[] | null | undefined,
+  sinceUtc: string,
+): IncidentLedgerSignals | null {
+  const entries = argv ?? [];
+  const index = entries.indexOf('--migration-store');
+  const databasePath = index >= 0 ? entries[index + 1] : undefined;
+  if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
+  return readIncidentLedgerSignalsReadOnly({ databasePath, sinceUtc });
 }

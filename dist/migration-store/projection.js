@@ -267,3 +267,57 @@ export function findUnresolvedListingCreateReadOnly(input) {
         return null;
     }
 }
+/**
+ * READ-ONLY incident signals for the watchdog (L75): the ledger records
+ * every failure truthfully; this surfaces the shapes that demand a human.
+ * Same database-path discipline as the other read-only projections.
+ */
+export function readIncidentLedgerSignalsReadOnly(input) {
+    if (typeof input.databasePath !== 'string'
+        || input.databasePath.length === 0
+        || input.databasePath.startsWith('file:')
+        || input.databasePath === ':memory:'
+        || !path.isAbsolute(input.databasePath)
+        || path.resolve(input.databasePath) !== input.databasePath
+        || typeof input.sinceUtc !== 'string'
+        || Number.isNaN(Date.parse(input.sinceUtc))) {
+        return null;
+    }
+    try {
+        const database = new Database(input.databasePath, { readonly: true, fileMustExist: true });
+        try {
+            const unresolved = database.prepare('SELECT e.binding_key AS binding, j.job_id AS jobId, j.reserved_at_utc AS reservedAtUtc '
+                + 'FROM execution_jobs j '
+                + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+                + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+                + 'LEFT JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+                + "WHERE j.job_id LIKE 'listing-create-job:%' AND r.resolution_id IS NULL "
+                + 'ORDER BY j.reserved_at_utc DESC LIMIT 20').all();
+            const failures = database.prepare('SELECT e.binding_key AS binding, COUNT(*) AS count, MAX(j.reserved_at_utc) AS lastAtUtc '
+                + 'FROM execution_jobs j '
+                + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+                + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+                + 'JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+                + "WHERE j.responsibility = 'inventory' AND r.resolution = 'confirmed_missing' "
+                + 'AND j.reserved_at_utc > ? '
+                + 'GROUP BY e.binding_key HAVING COUNT(*) >= 3 '
+                + 'ORDER BY lastAtUtc DESC LIMIT 20').all(input.sinceUtc);
+            const sku = (binding) => binding.replace(/^ebay-inventory-sku:/, '')
+                .replace(/^ebay-listing:/, 'listing ');
+            return Object.freeze({
+                unresolvedCreates: unresolved.map((row) => Object.freeze({
+                    sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,
+                })),
+                repeatedEndFailures: failures.map((row) => Object.freeze({
+                    sku: sku(row.binding), count: row.count, lastAtUtc: row.lastAtUtc,
+                })),
+            });
+        }
+        finally {
+            database.close();
+        }
+    }
+    catch {
+        return null;
+    }
+}

@@ -1,0 +1,41 @@
+# Tier 3 of the self-healing pipeline (L76): when the watchdog opens an
+# issue labeled `incident`, Claude reads it, follows the Brain protocol,
+# and opens a PULL REQUEST with the fix and tests. It never merges — a
+# human's merge is the one-action approval, same as every other change.
+# Armed by the ANTHROPIC_API_KEY repository secret.
+name: incident-fix-proposal
+on:
+  issues:
+    types: [labeled]
+jobs:
+  propose-fix:
+    if: github.event.label.name == 'incident'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are handling an automatically detected production incident for
+            ProductPipeline. Read CLAUDE.md first and follow PROJECT_BRAIN.md
+            Section 12; the incident report is in issue #${{ github.event.issue.number }}
+            (title: ${{ github.event.issue.title }}).
+
+            ${{ github.event.issue.body }}
+
+            Diagnose the root cause in the code, write the fix with a
+            regression test, run `npx tsc --noEmit` and `npx vitest run`
+            (the 11 src/credential-admin failures are known-environmental),
+            append the learning to PROJECT_BRAIN.md Section 17, and open a
+            pull request referencing the issue. NEVER merge, never touch
+            credentials, never weaken the safety absolutes, and make no
+            provider (eBay/Shopify) calls of any kind.
+          claude_args: "--allowedTools Bash,Read,Write,Edit,Glob,Grep"
