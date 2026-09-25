@@ -126,6 +126,12 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
         return {
             Authorization: `Bearer ${token}`,
             Accept: 'application/json',
+            // eBay's Inventory API hard-rejects requests without BOTH language
+            // headers (error 25709). Its absence here is why every sell-out
+            // withdrawOffer was rejected for 38 hours on 11301-U684 (L75) —
+            // the same quirk that broke the revise adapter's reads (L-revise)
+            // and every header-less diagnostic getOffers.
+            'Accept-Language': 'en-US',
             'Content-Type': 'application/json',
             'Content-Language': 'en-US',
         };
@@ -197,9 +203,17 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
         }
         const response = await boundedPostTo('https://api.ebay.com/sell/inventory/v1/offer/'
             + encodeURIComponent(input.offerId) + '/withdraw', '{}');
-        // Withdraw returns 200 with the ended listingId.
-        if (response.status !== 200)
+        // Withdraw returns 200 with the ended listingId. A rejection here is
+        // the SELL-OUT guard failing — the single most safety-critical write in
+        // the system — so the sanitized provider text goes to the operator log
+        // instead of vanishing into a bare code (L75: 34 silent rejections).
+        if (response.status !== 200) {
+            const sanitized = response.text
+                .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+                .slice(0, 300);
+            console.warn(`EBAY_ENDLIST_REJECTED status=${response.status} offer=${input.offerId} ${sanitized}`);
             deny('ALIGN_DISPATCH_REJECTED');
+        }
     }
     return Object.freeze({
         updateOfferPrice: (input) => dispatch('price', input),

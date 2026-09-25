@@ -91,3 +91,30 @@ export declare function findUnresolvedListingCreateReadOnly(input: {
     databasePath: string;
     sku: string;
 }): UnresolvedListingCreateProjection | null;
+export type IncidentLedgerSignals = Readonly<{
+    /** Unresolved listing-create jobs (no attempt resolution yet). */
+    unresolvedCreates: ReadonlyArray<{
+        sku: string;
+        jobId: string;
+        reservedAtUtc: string;
+    }>;
+    /**
+     * SKUs whose recent inventory dispatches keep closing confirmed_missing —
+     * the L75 signature of a provider-rejected sell-out end. Grouped since
+     * `sinceUtc`, only groups of three or more.
+     */
+    repeatedEndFailures: ReadonlyArray<{
+        sku: string;
+        count: number;
+        lastAtUtc: string;
+    }>;
+}>;
+/**
+ * READ-ONLY incident signals for the watchdog (L75): the ledger records
+ * every failure truthfully; this surfaces the shapes that demand a human.
+ * Same database-path discipline as the other read-only projections.
+ */
+export declare function readIncidentLedgerSignalsReadOnly(input: {
+    databasePath: string;
+    sinceUtc: string;
+}): IncidentLedgerSignals | null;

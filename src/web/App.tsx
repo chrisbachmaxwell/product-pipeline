@@ -6,6 +6,7 @@ import { NavMenu } from '@shopify/app-bridge-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Dashboard from './pages/Dashboard';
 import AppNavigation from './components/AppNavigation';
+import { IncidentBanner } from './components/IncidentBanner';
 import { useAppStore } from './store';
 
 const Listings = React.lazy(() => import('./pages/Listings'));
@@ -117,6 +118,7 @@ const AppFrame: React.FC = () => {
         onNavigationDismiss={toggleSidebar}
       >
         <ErrorBoundary>
+          <IncidentBanner />
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
