@@ -880,7 +880,7 @@ describe('Shopify order adapter target grammar (L77 / #150)', () => {
         const { adapter, queries } = fakeShopify((requested) => `${requested}-OTHER`);
         for (const hostile of [`${L77_SKU}'`, `ILCE7RM4' OR sku:'*`, `/${L77_SKU}`]) {
             await expect(adapter.findVariantGidBySku(hostile)).rejects.toMatchObject({
-                code: 'SHOPIFY_TARGET_INVALID',
+                code: 'SHOPIFY_SKU_INVALID',
             });
         }
         expect(queries).toEqual([]);

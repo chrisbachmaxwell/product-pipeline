@@ -215,9 +215,93 @@ export function createPriceInventoryDispatchAdapter(dependencies) {
             deny('ALIGN_DISPATCH_REJECTED');
         }
     }
+    async function boundedGetFrom(url) {
+        const headers = await authorizedHeaders();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        try {
+            const response = await fetchImpl(url, {
+                method: 'GET', headers, redirect: 'error', signal: controller.signal,
+            });
+            const text = await response.text();
+            if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
+                deny('ALIGN_DISPATCH_READ_FAILED');
+            }
+            return { status: response.status, text };
+        }
+        catch (error) {
+            if (error instanceof AlignDispatchError)
+                throw error;
+            return deny('ALIGN_DISPATCH_READ_FAILED');
+        }
+        finally {
+            clearTimeout(timeout);
+        }
+    }
+    async function getOfferBySku(sku) {
+        if (!SAFE_SKU.test(sku))
+            deny('ALIGN_DISPATCH_TARGET_INVALID');
+        const response = await boundedGetFrom('https://api.ebay.com/sell/inventory/v1/offer?sku=' + encodeURIComponent(sku));
+        if (response.status === 404)
+            return null;
+        if (response.status !== 200)
+            deny('ALIGN_DISPATCH_READ_FAILED');
+        let parsed;
+        try {
+            parsed = JSON.parse(response.text);
+        }
+        catch {
+            return deny('ALIGN_DISPATCH_READ_FAILED');
+        }
+        const offers = parsed !== null && typeof parsed === 'object'
+            ? parsed.offers : null;
+        if (offers === undefined || offers === null)
+            return null;
+        if (!Array.isArray(offers))
+            return deny('ALIGN_DISPATCH_READ_FAILED');
+        if (offers.length > 1)
+            deny('ALIGN_DISPATCH_READ_FAILED');
+        if (offers.length === 0)
+            return null;
+        const offer = offers[0];
+        if (typeof offer.offerId !== 'string' || !EXACT_OFFER_ID.test(offer.offerId)
+            || typeof offer.status !== 'string') {
+            return deny('ALIGN_DISPATCH_READ_FAILED');
+        }
+        return { offerId: offer.offerId, status: offer.status };
+    }
+    async function publishOffer(offerId) {
+        if (!EXACT_OFFER_ID.test(offerId))
+            deny('ALIGN_DISPATCH_TARGET_INVALID');
+        const response = await boundedPostTo('https://api.ebay.com/sell/inventory/v1/offer/'
+            + encodeURIComponent(offerId) + '/publish', '{}');
+        if (response.status !== 200) {
+            const sanitized = response.text
+                .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+                .slice(0, 300);
+            console.warn('EBAY_RELIST_PUBLISH_REJECTED status=' + response.status
+                + ' offer=' + offerId + ' ' + sanitized);
+            deny('ALIGN_DISPATCH_REJECTED');
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(response.text);
+        }
+        catch {
+            return deny('ALIGN_DISPATCH_REJECTED');
+        }
+        const listingId = parsed !== null && typeof parsed === 'object'
+            ? parsed.listingId : null;
+        if (typeof listingId !== 'string' || !/^[0-9]{1,19}$/.test(listingId)) {
+            return deny('ALIGN_DISPATCH_REJECTED');
+        }
+        return listingId;
+    }
     return Object.freeze({
         updateOfferPrice: (input) => dispatch('price', input),
         updateOfferQuantity: (input) => dispatch('quantity', input),
         withdrawOffer,
+        getOfferBySku,
+        publishOffer,
     });
 }

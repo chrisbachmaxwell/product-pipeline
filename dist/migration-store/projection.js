@@ -304,6 +304,13 @@ export function readIncidentLedgerSignalsReadOnly(input) {
                 + 'ORDER BY lastAtUtc DESC LIMIT 20').all(input.sinceUtc);
             const sku = (binding) => binding.replace(/^ebay-inventory-sku:/, '')
                 .replace(/^ebay-listing:/, 'listing ');
+            const unresolvedFulfillments = database.prepare('SELECT e.binding_key AS binding, MAX(j.reserved_at_utc) AS reservedAtUtc '
+                + 'FROM execution_jobs j '
+                + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+                + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+                + 'LEFT JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+                + "WHERE j.responsibility = 'fulfillment' AND r.resolution_id IS NULL "
+                + 'GROUP BY e.binding_key ORDER BY reservedAtUtc ASC LIMIT 10').all();
             const stuckOrder = database.prepare('SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc '
                 + 'FROM order_observations o '
                 + 'LEFT JOIN order_observation_resolutions r ON r.observation_id = o.observation_id '
@@ -316,6 +323,9 @@ export function readIncidentLedgerSignalsReadOnly(input) {
                 }),
                 unresolvedCreates: unresolved.map((row) => Object.freeze({
                     sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,
+                })),
+                unresolvedFulfillments: unresolvedFulfillments.map((row) => Object.freeze({
+                    subject: sku(row.binding), reservedAtUtc: row.reservedAtUtc,
                 })),
                 repeatedEndFailures: failures.map((row) => Object.freeze({
                     sku: sku(row.binding), count: row.count, lastAtUtc: row.lastAtUtc,

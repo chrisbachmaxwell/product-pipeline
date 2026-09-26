@@ -36,6 +36,7 @@ export class AlignDispatchError extends Error {
     | 'ALIGN_DISPATCH_PAYLOAD_INVALID'
     | 'ALIGN_DISPATCH_PAYLOAD_TOO_LARGE'
     | 'ALIGN_DISPATCH_WRITE_FAILED'
+    | 'ALIGN_DISPATCH_READ_FAILED'
     | 'ALIGN_DISPATCH_REJECTED') {
     super('Price/inventory alignment dispatch adapter failed');
     this.name = 'AlignDispatchError';
@@ -71,6 +72,13 @@ export type PriceInventoryDispatchAdapter = Readonly<{
    * buyable on eBay and oversold.
    */
   withdrawOffer: (input: Readonly<{ sku: string; offerId: string }>) => Promise<void>;
+  /** GET the one offer bound to a SKU; null when none exists. */
+  getOfferBySku: (sku: string) => Promise<{ offerId: string; status: string } | null>;
+  /**
+   * Publish an UNPUBLISHED offer — the Inventory API's relist (L83: the
+   * restock half of the L64 sell-out guard). Returns the new listing id.
+   */
+  publishOffer: (offerId: string) => Promise<string>;
 }>;
 
 function collectKeys(value: unknown, keys: string[]): void {
@@ -262,9 +270,88 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
     }
   }
 
+  async function boundedGetFrom(url: string): Promise<{ status: number; text: string }> {
+    const headers = await authorizedHeaders();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET', headers, redirect: 'error', signal: controller.signal,
+      });
+      const text = await response.text();
+      if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
+        deny('ALIGN_DISPATCH_READ_FAILED');
+      }
+      return { status: response.status, text };
+    } catch (error) {
+      if (error instanceof AlignDispatchError) throw error;
+      return deny('ALIGN_DISPATCH_READ_FAILED');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function getOfferBySku(sku: string): Promise<{ offerId: string; status: string } | null> {
+    if (!SAFE_SKU.test(sku)) deny('ALIGN_DISPATCH_TARGET_INVALID');
+    const response = await boundedGetFrom(
+      'https://api.ebay.com/sell/inventory/v1/offer?sku=' + encodeURIComponent(sku),
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) deny('ALIGN_DISPATCH_READ_FAILED');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(response.text) as unknown;
+    } catch {
+      return deny('ALIGN_DISPATCH_READ_FAILED');
+    }
+    const offers = parsed !== null && typeof parsed === 'object'
+      ? (parsed as { offers?: unknown }).offers : null;
+    if (offers === undefined || offers === null) return null;
+    if (!Array.isArray(offers)) return deny('ALIGN_DISPATCH_READ_FAILED');
+    if (offers.length > 1) deny('ALIGN_DISPATCH_READ_FAILED');
+    if (offers.length === 0) return null;
+    const offer = offers[0] as { offerId?: unknown; status?: unknown };
+    if (typeof offer.offerId !== 'string' || !EXACT_OFFER_ID.test(offer.offerId)
+      || typeof offer.status !== 'string') {
+      return deny('ALIGN_DISPATCH_READ_FAILED');
+    }
+    return { offerId: offer.offerId, status: offer.status };
+  }
+
+  async function publishOffer(offerId: string): Promise<string> {
+    if (!EXACT_OFFER_ID.test(offerId)) deny('ALIGN_DISPATCH_TARGET_INVALID');
+    const response = await boundedPostTo(
+      'https://api.ebay.com/sell/inventory/v1/offer/'
+      + encodeURIComponent(offerId) + '/publish',
+      '{}',
+    );
+    if (response.status !== 200) {
+      const sanitized = response.text
+        .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+        .slice(0, 300);
+      console.warn('EBAY_RELIST_PUBLISH_REJECTED status=' + response.status
+        + ' offer=' + offerId + ' ' + sanitized);
+      deny('ALIGN_DISPATCH_REJECTED');
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(response.text) as unknown;
+    } catch {
+      return deny('ALIGN_DISPATCH_REJECTED');
+    }
+    const listingId = parsed !== null && typeof parsed === 'object'
+      ? (parsed as { listingId?: unknown }).listingId : null;
+    if (typeof listingId !== 'string' || !/^[0-9]{1,19}$/.test(listingId)) {
+      return deny('ALIGN_DISPATCH_REJECTED');
+    }
+    return listingId;
+  }
+
   return Object.freeze({
     updateOfferPrice: (input: AlignPriceInput) => dispatch('price', input),
     updateOfferQuantity: (input: AlignQuantityInput) => dispatch('quantity', input),
     withdrawOffer,
+    getOfferBySku,
+    publishOffer,
   });
 }

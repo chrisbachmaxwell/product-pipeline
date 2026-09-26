@@ -26,6 +26,7 @@ import {
   buildPriceInventoryAdminProgram,
   type PriceInventoryAdminIo,
 } from '../program.js';
+import { openQuantityBeliefStore } from '../quantity-beliefs.js';
 import type { PriceInventoryDispatchAdapter } from '../dispatch-adapter.js';
 
 const MIGRATION_SCOPE: IntegrationScope = {
@@ -262,6 +263,10 @@ function createTradingWorld(): TradingWorld {
     updateOfferPrice: unexpected('updateOfferPrice'),
     updateOfferQuantity: unexpected('updateOfferQuantity'),
     withdrawOffer: unexpected('withdrawOffer'),
+    // Trading-model rows have no Inventory-API offer; the relist branch
+    // (L83) probes and must fall through to the Trading relist.
+    getOfferBySku: async () => null,
+    publishOffer: unexpected('publishOffer'),
   });
 
   const stdout: string[] = [];
@@ -723,6 +728,85 @@ describe('trading-model price/inventory alignment dispatch', () => {
     const summary = lastJson(stdout);
     expect(summary).toMatchObject({ status: 'swept', aligned: 1, failed: 0 });
     expect(inventoryCalls).toEqual(['withdraw:' + OFFER]);
+  });
+
+  it('relists an Inventory-model listing on restock via publishOffer (L83)', async () => {
+    // The restock half of the L64 guard, unimplemented until 2026-09-26: an
+    // offer withdrawn at sell-out survives as UNPUBLISHED, and the relist is
+    // quantity-realign + publishOffer — the Trading relist must NOT fire.
+    const world = createTradingWorld();
+    const beliefPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'inv-relist-')), 'beliefs.sqlite',
+    );
+    await world.run(establishArguments('inventory', world.migrationDatabasePath));
+    const OFFER = '263799001012';
+    // Restocked row: stock back, no live listing, ended-marker present.
+    const restocked = JSON.parse(JSON.stringify(
+      tradingWorkspace({ shopifyAvailable: 3, ebayQuantity: 3 }),
+    )) as ReturnType<typeof tradingWorkspace>;
+    (restocked.catalog as { ebay: unknown }).ebay = {
+      sku: SKU, state: 'not_listed', listingId: null, offerId: null, url: null,
+      activeMatchCount: 0, inventoryItemCount: 1, offerCount: 1,
+      unpublishedArtifactCount: 2,
+    };
+    (restocked.catalog as { lifecycleStatus: string }).lifecycleStatus = 'not_listed';
+    (restocked as { ebayDetail: unknown }).ebayDetail = null;
+
+    const beliefs = openQuantityBeliefStore(beliefPath);
+    beliefs.recordEnded({
+      sku: SKU, listingId: LISTING_ID, endedAtUtc: '2026-09-26T00:00:00.000Z',
+    });
+    beliefs.close();
+
+    const inventoryCalls: string[] = [];
+    const stdout: string[] = [];
+    const io: PriceInventoryAdminIo = {
+      stdout: (m) => stdout.push(m),
+      stderr: () => undefined,
+      setExitCode: () => undefined,
+    };
+    await buildPriceInventoryAdminProgram({
+      readWorkspace: async () => restocked as never,
+      getSnapshot: async () => ({
+        schemaVersion: 3,
+        observedAtUtc: '2026-08-19T16:00:00.000Z',
+        rows: [restocked.catalog],
+        summary: {},
+        coverage: {},
+      }) as never,
+      createAdapter: () => ({
+        updateOfferPrice: async () => { inventoryCalls.push('price'); },
+        updateOfferQuantity: async (input: { quantity: number }) => {
+          inventoryCalls.push('quantity:' + input.quantity);
+        },
+        withdrawOffer: async () => { inventoryCalls.push('withdraw'); },
+        getOfferBySku: async () => ({ offerId: OFFER, status: 'UNPUBLISHED' }),
+        publishOffer: async (offerId: string) => {
+          inventoryCalls.push('publish:' + offerId);
+          return '200000000002';
+        },
+      }) as never,
+      createTradingAdapter: () => ({
+        reviseInventoryStatus: async () => { inventoryCalls.push('trading'); },
+        endFixedPriceItem: async () => { inventoryCalls.push('trading-end'); },
+        relistFixedPriceItem: async () => {
+          inventoryCalls.push('trading-relist');
+          return '200000000009';
+        },
+      }) as never,
+      io,
+    }).parseAsync(['align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'quantity', '--confirm-sweep',
+      '--end-at-zero', '--relist-on-restock', '--belief-store', beliefPath,
+    ], { from: 'user' });
+    const summary = lastJson(stdout);
+    expect(summary).toMatchObject({ status: 'swept', relisted: 1 });
+    const relistResult = (summary.results as Array<Record<string, unknown>>)
+      .find((entry) => entry.dispatchMode === 'relisted_after_restock')!;
+    expect(relistResult).toMatchObject({ newListingId: '200000000002' });
+    expect(inventoryCalls).toEqual(['quantity:3', 'publish:' + OFFER]);
   });
 
   it('refuses --end-at-zero for a price sweep', async () => {

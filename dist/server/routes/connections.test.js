@@ -28,8 +28,10 @@ function harness(options) {
     app.use('/api', writerQuarantineMiddleware);
     app.post('/api/connections/anthropic', listingDraftJsonParser);
     app.post('/api/connections/github', listingDraftJsonParser);
+    app.post('/api/connections/email', listingDraftJsonParser);
     app.use(listingDraftJsonErrorHandler);
     let githubStored = null;
+    let emailStored = null;
     app.use(createConnectionsRouter({
         validate: async () => options.verdict ?? 'valid',
         store: (key) => { stored = key; return true; },
@@ -45,6 +47,14 @@ function harness(options) {
             connected: githubStored !== null,
             source: githubStored !== null ? 'stored' : null,
         }),
+        emailStatus: () => ({
+            connected: emailStored !== null,
+            source: emailStored !== null ? 'stored' : null,
+            to: emailStored !== null ? ['chrism@pictureline.com'] : null,
+        }),
+        emailTestSend: async () => options.emailDelivers !== false,
+        emailStore: (json) => { emailStored = json; return true; },
+        emailRemove: () => { emailStored = null; return true; },
     }));
     return { app, getStored: () => stored, getGithubStored: () => githubStored };
 }
@@ -104,5 +114,24 @@ describe('connections route', () => {
         expect((await call(h.app, 'POST', '/api/connections/github', { apiKey: 'ghp' })).status).toBe(400);
         expect((await call(h.app, 'DELETE', '/api/connections/github')).status).toBe(200);
         expect(h.getGithubStored()).toBeNull();
+    });
+    it('connects email by delivering a real test message; refuses undeliverable settings', async () => {
+        const good = harness({ kind: 'shopify_session' });
+        const response = await call(good.app, 'POST', '/api/connections/email', {
+            address: 'alerts@pictureline.com',
+            appPassword: 'abcd efgh ijkl mnop',
+            recipients: 'chrism@pictureline.com, nick@pictureline.com',
+        });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ email: { connected: true, source: 'stored' } });
+        expect(JSON.stringify(response.body)).not.toContain('abcd efgh');
+        const bad = harness({ kind: 'shopify_session', emailDelivers: false });
+        expect((await call(bad.app, 'POST', '/api/connections/email', {
+            address: 'alerts@pictureline.com', appPassword: 'abcd efgh ijkl mnop',
+            recipients: 'chrism@pictureline.com',
+        })).status).toBe(422);
+        expect((await call(good.app, 'POST', '/api/connections/email', {
+            address: 'not-an-email', appPassword: 'x', recipients: '',
+        })).status).toBe(400);
     });
 });

@@ -1,3 +1,8 @@
+export declare function recordOrderImportFailure(orderId: string, code: string): void;
+export declare function lastOrderImportFailure(orderId: string): {
+    code: string;
+    atUtc: string;
+} | null;
 export declare function configuredOrderPollArgv(env?: NodeJS.ProcessEnv): readonly string[] | null;
 export declare function configuredOrderImportArgv(env?: NodeJS.ProcessEnv): readonly string[] | null;
 export declare function configuredOrderReconcileArgv(env?: NodeJS.ProcessEnv): readonly string[] | null;

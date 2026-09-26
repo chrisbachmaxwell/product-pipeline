@@ -866,11 +866,25 @@ export function buildPriceInventoryAdminProgram(
     let dispatchFailureCode: string | null = null;
     let newListingId: string | null = null;
     try {
-      newListingId = await createTradingAdapter().relistFixedPriceItem({
-        listingId: input.endedListingId,
-        quantity,
-        price,
-      });
+      // Model branch (L83): an offer-managed listing's END was withdrawOffer,
+      // and its relist is publishOffer — the restock half of the L64 guard,
+      // unimplemented until now. The offer survives its withdrawal, so an
+      // UNPUBLISHED offer bound to this SKU IS the inventory-model marker;
+      // its quantity is realigned to live Shopify stock before publishing.
+      // No offer (or a PUBLISHED one, which eBay will refuse to relist over)
+      // falls through to the Trading relist exactly as before.
+      const adapter = createAdapter();
+      const offer = await adapter.getOfferBySku(sku);
+      if (offer !== null && offer.status === 'UNPUBLISHED') {
+        await adapter.updateOfferQuantity({ sku, offerId: offer.offerId, quantity });
+        newListingId = await adapter.publishOffer(offer.offerId);
+      } else {
+        newListingId = await createTradingAdapter().relistFixedPriceItem({
+          listingId: input.endedListingId,
+          quantity,
+          price,
+        });
+      }
     } catch (error) {
       dispatchFailed = true;
       dispatchFailureCode = safeErrorCode(error);

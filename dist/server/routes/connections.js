@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { apiPrincipal } from '../middleware/auth.js';
-import { deleteStoredAnthropicKey, deleteStoredGithubToken, getAnthropicConnectionStatus, getGithubConnectionStatus, isPlausibleAnthropicKey, isPlausibleGithubToken, storeAnthropicKey, storeGithubToken, validateAnthropicKey, validateGithubToken, } from '../connections.js';
+import { sendIncidentEmail, smtpConfigFromVaultJson, } from '../incident-email.js';
+import { deleteStoredAnthropicKey, deleteStoredEmailConfig, readStoredEmailConfigJson, storeEmailConfigJson, deleteStoredGithubToken, getAnthropicConnectionStatus, getGithubConnectionStatus, isPlausibleAnthropicKey, isPlausibleGithubToken, storeAnthropicKey, storeGithubToken, validateAnthropicKey, validateGithubToken, } from '../connections.js';
 /**
  * Settings → Connections (L79). POST validates the pasted key LIVE against
  * the provider before storing it in the app's credential vault; the key is
@@ -41,10 +42,24 @@ export function createConnectionsRouter(dependencies = {}) {
         }
         return true;
     };
+    const emailStatus = dependencies.emailStatus ?? (() => {
+        const armedByEnv = (process.env.INCIDENT_SMTP_HOST ?? '') !== ''
+            && (process.env.INCIDENT_EMAIL_TO ?? '') !== '';
+        if (armedByEnv)
+            return { connected: true, source: 'env', to: null };
+        const config = smtpConfigFromVaultJson(readStoredEmailConfigJson());
+        return config === null
+            ? { connected: false, source: null, to: null }
+            : { connected: true, source: 'stored', to: [...config.to] };
+    });
+    const emailTestSend = dependencies.emailTestSend ?? sendIncidentEmail;
+    const emailStore = dependencies.emailStore ?? storeEmailConfigJson;
+    const emailRemove = dependencies.emailRemove ?? deleteStoredEmailConfig;
     const statuses = () => ({
         schemaVersion: 1,
         anthropic: providers.anthropic.status(),
         github: providers.github.status(),
+        email: emailStatus(),
     });
     router.get('/api/connections', (req, res) => {
         if (!gate(req, res))
@@ -96,6 +111,67 @@ export function createConnectionsRouter(dependencies = {}) {
             res.json(statuses());
         });
     }
+    const EMAIL_ROUTE = '/api/connections/email';
+    router.post(EMAIL_ROUTE, async (req, res) => {
+        if (req.originalUrl !== EMAIL_ROUTE) {
+            res.status(403).json({ error: 'Connections are scoped to the exact route' });
+            return;
+        }
+        if (!gate(req, res))
+            return;
+        const body = req.body;
+        const candidate = smtpConfigFromVaultJson(JSON.stringify({
+            user: body?.address,
+            pass: body?.appPassword,
+            to: typeof body?.recipients === 'string'
+                ? body.recipients.split(',').map((value) => value.trim()).filter(Boolean)
+                : body?.recipients,
+        }));
+        if (candidate === null) {
+            res.status(400).json({
+                error: 'Need a valid sending address, an app password, and at least one recipient email.',
+                code: 'CONNECTION_KEY_SHAPE',
+            });
+            return;
+        }
+        // Live validation IS a test email — if it lands, the settings work.
+        const delivered = await emailTestSend({
+            severity: 'info',
+            title: 'ProductPipeline alert emails are connected',
+            detail: 'This is the connection test. Critical sync incidents will arrive at this address within minutes of detection.',
+            diagnosis: null,
+            githubIssueUrl: null,
+            detectedAtUtc: new Date().toISOString(),
+        }, candidate);
+        if (!delivered) {
+            res.status(422).json({
+                error: 'The test email could not be sent — check the address and app password '
+                    + '(Google → Security → 2-Step Verification → App passwords).',
+                code: 'CONNECTION_KEY_REJECTED',
+            });
+            return;
+        }
+        if (!emailStore(JSON.stringify({
+            user: candidate.user, pass: candidate.pass, to: candidate.to,
+        }))) {
+            res.status(500).json({ error: 'The test email sent but settings could not be saved.', code: 'CONNECTION_STORE_FAILED' });
+            return;
+        }
+        res.json(statuses());
+    });
+    router.delete(EMAIL_ROUTE, (req, res) => {
+        if (!gate(req, res))
+            return;
+        if (emailStatus().source === 'env') {
+            res.status(409).json({
+                error: 'This connection is set by the server environment and cannot be disconnected from the app.',
+                code: 'CONNECTION_ENV_MANAGED',
+            });
+            return;
+        }
+        emailRemove();
+        res.json(statuses());
+    });
     return router;
 }
 export default createConnectionsRouter();

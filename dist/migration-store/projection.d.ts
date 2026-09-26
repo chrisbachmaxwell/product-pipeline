@@ -107,6 +107,11 @@ export type IncidentLedgerSignals = Readonly<{
         jobId: string;
         reservedAtUtc: string;
     }>;
+    /** Unresolved fulfillment (tracking push) jobs — a buyer is waiting. */
+    unresolvedFulfillments: ReadonlyArray<{
+        subject: string;
+        reservedAtUtc: string;
+    }>;
     /**
      * SKUs whose recent inventory dispatches keep closing confirmed_missing —
      * the L75 signature of a provider-rejected sell-out end. Grouped since
