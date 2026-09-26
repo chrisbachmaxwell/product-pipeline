@@ -203,3 +203,29 @@ export function storeGithubToken(token) {
 export function deleteStoredGithubToken() {
     return deleteSecret(GITHUB_PLATFORM);
 }
+/* -------------------------- Email connection ------------------------- */
+const EMAIL_PLATFORM = 'smtp';
+export function readStoredEmailConfigJson() {
+    const database = openConnectionsStore(false);
+    if (database === null)
+        return null;
+    try {
+        const row = database.prepare('SELECT secret FROM connections WHERE platform = ?')
+            .get(EMAIL_PLATFORM);
+        return row?.secret ?? null;
+    }
+    catch {
+        return null;
+    }
+    finally {
+        database.close();
+    }
+}
+export function storeEmailConfigJson(json) {
+    if (typeof json !== 'string' || json.length === 0 || json.length > 4_096)
+        return false;
+    return writeSecret(EMAIL_PLATFORM, json);
+}
+export function deleteStoredEmailConfig() {
+    return deleteSecret(EMAIL_PLATFORM);
+}

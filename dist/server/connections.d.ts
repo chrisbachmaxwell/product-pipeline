@@ -31,3 +31,6 @@ export declare function getGithubConnectionStatus(): AnthropicConnectionStatus;
 export declare function validateGithubToken(token: string): Promise<'valid' | 'unauthorized' | 'unreachable'>;
 export declare function storeGithubToken(token: string): boolean;
 export declare function deleteStoredGithubToken(): boolean;
+export declare function readStoredEmailConfigJson(): string | null;
+export declare function storeEmailConfigJson(json: string): boolean;
+export declare function deleteStoredEmailConfig(): boolean;

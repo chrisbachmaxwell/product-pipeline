@@ -19,8 +19,8 @@
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
 export { createProductionDispatchTokenProvider };
 export declare class AlignDispatchError extends Error {
-    readonly code: 'ALIGN_DISPATCH_AUTHORITY_UNAVAILABLE' | 'ALIGN_DISPATCH_TARGET_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_TOO_LARGE' | 'ALIGN_DISPATCH_WRITE_FAILED' | 'ALIGN_DISPATCH_REJECTED';
-    constructor(code: 'ALIGN_DISPATCH_AUTHORITY_UNAVAILABLE' | 'ALIGN_DISPATCH_TARGET_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_TOO_LARGE' | 'ALIGN_DISPATCH_WRITE_FAILED' | 'ALIGN_DISPATCH_REJECTED');
+    readonly code: 'ALIGN_DISPATCH_AUTHORITY_UNAVAILABLE' | 'ALIGN_DISPATCH_TARGET_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_TOO_LARGE' | 'ALIGN_DISPATCH_WRITE_FAILED' | 'ALIGN_DISPATCH_READ_FAILED' | 'ALIGN_DISPATCH_REJECTED';
+    constructor(code: 'ALIGN_DISPATCH_AUTHORITY_UNAVAILABLE' | 'ALIGN_DISPATCH_TARGET_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_INVALID' | 'ALIGN_DISPATCH_PAYLOAD_TOO_LARGE' | 'ALIGN_DISPATCH_WRITE_FAILED' | 'ALIGN_DISPATCH_READ_FAILED' | 'ALIGN_DISPATCH_REJECTED');
 }
 type FetchLike = typeof fetch;
 export type AlignPriceInput = Readonly<{
@@ -50,6 +50,16 @@ export type PriceInventoryDispatchAdapter = Readonly<{
         sku: string;
         offerId: string;
     }>) => Promise<void>;
+    /** GET the one offer bound to a SKU; null when none exists. */
+    getOfferBySku: (sku: string) => Promise<{
+        offerId: string;
+        status: string;
+    } | null>;
+    /**
+     * Publish an UNPUBLISHED offer — the Inventory API's relist (L83: the
+     * restock half of the L64 sell-out guard). Returns the new listing id.
+     */
+    publishOffer: (offerId: string) => Promise<string>;
 }>;
 /**
  * Serialize the one bounded bulk_update_price_quantity body and assert its

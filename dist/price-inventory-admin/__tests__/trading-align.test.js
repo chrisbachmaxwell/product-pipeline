@@ -12,6 +12,7 @@ import { createMigrationStore, deriveScopeKey, openMigrationStoreReadOnly, } fro
 import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
 import { buildReviseInventoryStatusXml, createTradingAlignDispatchAdapter, TradingAlignDispatchError, } from '../trading-dispatch-adapter.js';
 import { buildPriceInventoryAdminProgram, } from '../program.js';
+import { openQuantityBeliefStore } from '../quantity-beliefs.js';
 const MIGRATION_SCOPE = {
     shopifyStoreDomain: LISTING_DRAFT_SCOPE.shopifyStoreDomain,
     ebayEnvironment: LISTING_DRAFT_SCOPE.ebayEnvironment,
@@ -198,6 +199,10 @@ function createTradingWorld() {
         updateOfferPrice: unexpected('updateOfferPrice'),
         updateOfferQuantity: unexpected('updateOfferQuantity'),
         withdrawOffer: unexpected('withdrawOffer'),
+        // Trading-model rows have no Inventory-API offer; the relist branch
+        // (L83) probes and must fall through to the Trading relist.
+        getOfferBySku: async () => null,
+        publishOffer: unexpected('publishOffer'),
     });
     const stdout = [];
     const stderr = [];
@@ -620,6 +625,78 @@ describe('trading-model price/inventory alignment dispatch', () => {
         const summary = lastJson(stdout);
         expect(summary).toMatchObject({ status: 'swept', aligned: 1, failed: 0 });
         expect(inventoryCalls).toEqual(['withdraw:' + OFFER]);
+    });
+    it('relists an Inventory-model listing on restock via publishOffer (L83)', async () => {
+        // The restock half of the L64 guard, unimplemented until 2026-09-26: an
+        // offer withdrawn at sell-out survives as UNPUBLISHED, and the relist is
+        // quantity-realign + publishOffer — the Trading relist must NOT fire.
+        const world = createTradingWorld();
+        const beliefPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'inv-relist-')), 'beliefs.sqlite');
+        await world.run(establishArguments('inventory', world.migrationDatabasePath));
+        const OFFER = '263799001012';
+        // Restocked row: stock back, no live listing, ended-marker present.
+        const restocked = JSON.parse(JSON.stringify(tradingWorkspace({ shopifyAvailable: 3, ebayQuantity: 3 })));
+        restocked.catalog.ebay = {
+            sku: SKU, state: 'not_listed', listingId: null, offerId: null, url: null,
+            activeMatchCount: 0, inventoryItemCount: 1, offerCount: 1,
+            unpublishedArtifactCount: 2,
+        };
+        restocked.catalog.lifecycleStatus = 'not_listed';
+        restocked.ebayDetail = null;
+        const beliefs = openQuantityBeliefStore(beliefPath);
+        beliefs.recordEnded({
+            sku: SKU, listingId: LISTING_ID, endedAtUtc: '2026-09-26T00:00:00.000Z',
+        });
+        beliefs.close();
+        const inventoryCalls = [];
+        const stdout = [];
+        const io = {
+            stdout: (m) => stdout.push(m),
+            stderr: () => undefined,
+            setExitCode: () => undefined,
+        };
+        await buildPriceInventoryAdminProgram({
+            readWorkspace: async () => restocked,
+            getSnapshot: async () => ({
+                schemaVersion: 3,
+                observedAtUtc: '2026-08-19T16:00:00.000Z',
+                rows: [restocked.catalog],
+                summary: {},
+                coverage: {},
+            }),
+            createAdapter: () => ({
+                updateOfferPrice: async () => { inventoryCalls.push('price'); },
+                updateOfferQuantity: async (input) => {
+                    inventoryCalls.push('quantity:' + input.quantity);
+                },
+                withdrawOffer: async () => { inventoryCalls.push('withdraw'); },
+                getOfferBySku: async () => ({ offerId: OFFER, status: 'UNPUBLISHED' }),
+                publishOffer: async (offerId) => {
+                    inventoryCalls.push('publish:' + offerId);
+                    return '200000000002';
+                },
+            }),
+            createTradingAdapter: () => ({
+                reviseInventoryStatus: async () => { inventoryCalls.push('trading'); },
+                endFixedPriceItem: async () => { inventoryCalls.push('trading-end'); },
+                relistFixedPriceItem: async () => {
+                    inventoryCalls.push('trading-relist');
+                    return '200000000009';
+                },
+            }),
+            io,
+        }).parseAsync(['align-sweep',
+            '--migration-store', world.migrationDatabasePath,
+            '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+            '--field', 'quantity', '--confirm-sweep',
+            '--end-at-zero', '--relist-on-restock', '--belief-store', beliefPath,
+        ], { from: 'user' });
+        const summary = lastJson(stdout);
+        expect(summary).toMatchObject({ status: 'swept', relisted: 1 });
+        const relistResult = summary.results
+            .find((entry) => entry.dispatchMode === 'relisted_after_restock');
+        expect(relistResult).toMatchObject({ newListingId: '200000000002' });
+        expect(inventoryCalls).toEqual(['quantity:3', 'publish:' + OFFER]);
     });
     it('refuses --end-at-zero for a price sweep', async () => {
         const world = createTradingWorld();

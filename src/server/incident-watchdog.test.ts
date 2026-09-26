@@ -29,7 +29,7 @@ describe('evaluateIncidentCandidates', () => {
   it('flags a zero-stock item whose eBay listing is still live as critical', () => {
     const candidates = evaluateIncidentCandidates({
       snapshot: { observedAtUtc: FRESH, rows: [row('LEICA-1', 0, '147000000001')] },
-      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] },
+      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [] },
       nowMs: NOW,
     });
     expect(candidates).toEqual([expect.objectContaining({
@@ -41,6 +41,7 @@ describe('evaluateIncidentCandidates', () => {
     const signals = {
       oldestUnresolvedOrder: null,
       unresolvedCreates: [],
+      unresolvedFulfillments: [],
       repeatedEndFailures: [{ sku: 'LEICA-1', count: 34, lastAtUtc: FRESH }],
     };
     const live = evaluateIncidentCandidates({
@@ -49,6 +50,14 @@ describe('evaluateIncidentCandidates', () => {
     });
     expect(live.find((candidate) => candidate.code === 'END_DISPATCH_REJECTED'))
       .toMatchObject({ severity: 'critical' });
+    // IN-STOCK churn (the 16437396 chronic zombie) must never page as a
+    // sell-out emergency.
+    const inStock = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LEICA-1', 106, '147000000001')] },
+      signals, nowMs: NOW,
+    });
+    expect(inStock.find((candidate) => candidate.code === 'END_DISPATCH_REJECTED'))
+      .toMatchObject({ severity: 'warning' });
     const ended = evaluateIncidentCandidates({
       snapshot: { observedAtUtc: FRESH, rows: [row('LEICA-1', 0, null)] },
       signals, nowMs: NOW,
@@ -65,6 +74,7 @@ describe('evaluateIncidentCandidates', () => {
       },
       signals: {
         oldestUnresolvedOrder: null,
+        unresolvedFulfillments: [],
         unresolvedCreates: [
           { sku: 'STUCK-1', jobId: 'j1', reservedAtUtc: new Date(NOW - 2 * 3_600_000).toISOString() },
           { sku: 'FRESH-1', jobId: 'j2', reservedAtUtc: new Date(NOW - 5 * 60_000).toISOString() },
@@ -82,7 +92,7 @@ describe('evaluateIncidentCandidates', () => {
   it('stays silent on a healthy store', () => {
     expect(evaluateIncidentCandidates({
       snapshot: { observedAtUtc: FRESH, rows: [row('OK-1', 2, '147000000009'), row('OK-2', 1, null)] },
-      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] },
+      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [] },
       nowMs: NOW,
     })).toEqual([]);
   });
@@ -105,7 +115,7 @@ describe('runWatchdogOnce', () => {
     const dependencies = {
       stateFile,
       getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [row('LEICA-1', 0, '147000000001')] }),
-      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [] }),
       diagnose: async (incident: Incident) => { diagnosed.push(incident); return 'WHAT HAPPENED: test'; },
       openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/1'; },
       notify: async () => undefined,
@@ -132,7 +142,7 @@ describe('runWatchdogOnce', () => {
     const dependencies = {
       stateFile,
       getSnapshot: async () => ({ observedAtUtc: FRESH, rows }),
-      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [] }),
       diagnose: async () => { throw new Error('unarmed'); },
       openIssue: async () => null,
       notify: async () => undefined,
@@ -157,7 +167,7 @@ describe('ORDER_PIPELINE_BLOCKED (L77)', () => {
           orderId: '21-15190-74821',
           observedAtUtc: new Date(NOW - 40 * 3_600_000).toISOString(),
         },
-        unresolvedCreates: [], repeatedEndFailures: [],
+        unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [],
       },
       nowMs: NOW,
     });
@@ -174,7 +184,7 @@ describe('ORDER_PIPELINE_BLOCKED (L77)', () => {
           orderId: '21-15190-74821',
           observedAtUtc: new Date(NOW - 5 * 60_000).toISOString(),
         },
-        unresolvedCreates: [], repeatedEndFailures: [],
+        unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [],
       },
       nowMs: NOW,
     })).toEqual([]);

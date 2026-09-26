@@ -108,6 +108,7 @@ app.post('/api/listing-publish', listingDraftJsonParser);
 app.post('/api/listing-publish-all', listingDraftJsonParser);
 app.post('/api/connections/anthropic', listingDraftJsonParser);
 app.post('/api/connections/github', listingDraftJsonParser);
+app.post('/api/connections/email', listingDraftJsonParser);
 app.use(listingDraftJsonErrorHandler);
 // --- Routes ---
 app.use(healthRoutes);

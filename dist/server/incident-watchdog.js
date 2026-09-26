@@ -18,6 +18,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
 import { sendIncidentEmail } from './incident-email.js';
+import { getPublishAllStatus } from './publish-all.js';
+import { lastOrderImportFailure } from './order-import-trigger.js';
 import { readIncidentLedgerSignalsFromArgv, } from './migration-state-reader.js';
 const EVALUATION_INTERVAL_MS = 5 * 60_000;
 const LEDGER_WINDOW_MS = 24 * 3_600_000;
@@ -40,6 +42,11 @@ export function evaluateIncidentCandidates(input) {
         const ageMs = nowMs - Date.parse(stuckOrder.observedAtUtc);
         if (Number.isFinite(ageMs) && ageMs > 30 * 60_000) {
             const hours = Math.round(ageMs / 3_600_000 * 10) / 10;
+            // The recorded denial code turns this from "go read server logs" into
+            // a greppable root-cause lead the fix-proposal agent can act on (L80:
+            // on 2026-09-25 that code was SHOPIFY_TARGET_INVALID and lived only
+            // in logs nobody reads).
+            const failure = lastOrderImportFailure(stuckOrder.orderId);
             candidates.push({
                 id: `ORDER_PIPELINE_BLOCKED:${stuckOrder.orderId}`,
                 severity: 'critical',
@@ -48,9 +55,13 @@ export function evaluateIncidentCandidates(input) {
                 title: `eBay ORDERS ARE NOT IMPORTING — blocked ${hours}h behind order ${stuckOrder.orderId}`,
                 detail: 'The order poll is strictly ordered: one order that cannot import freezes '
                     + 'EVERY order behind it — customers are paying and nothing reaches Shopify to '
-                    + 'ship (L77 was 40 hours and account strikes). Check the server log for '
-                    + `ORDER_IMPORT_FAILED lines naming ${stuckOrder.orderId}, fix its cause, and `
-                    + 'the pipeline drains automatically.',
+                    + 'ship (L77 was 40 hours and account strikes). '
+                    + (failure !== null
+                        ? `The import for ${stuckOrder.orderId} last failed with code ${failure.code} `
+                            + `at ${failure.atUtc} — search the codebase for that code to find every `
+                            + 'deny site on the import path. '
+                        : `Check the server log for ORDER_IMPORT_FAILED lines naming ${stuckOrder.orderId}. `)
+                    + 'Fix the cause and the pipeline drains automatically.',
             });
         }
     }
@@ -74,13 +85,19 @@ export function evaluateIncidentCandidates(input) {
     for (const failure of signals?.repeatedEndFailures ?? []) {
         const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku);
         const stillLive = row?.ebay?.listingId != null;
+        // Critical ONLY in true sell-out context (stock <= 0): repeated
+        // confirmed_missing on an IN-STOCK listing is alignment churn (the
+        // 16437396 chronic-zombie shape), not the L75 emergency — a false
+        // critical here would page humans and burn diagnosis spend forever.
+        const soldOut = row?.shopify?.available !== null
+            && row?.shopify?.available !== undefined && row.shopify.available <= 0;
         candidates.push({
             id: `END_DISPATCH_REJECTED:${failure.sku}`,
-            severity: stillLive ? 'critical' : 'warning',
+            severity: stillLive && soldOut ? 'critical' : 'warning',
             code: 'END_DISPATCH_REJECTED',
             sku: failure.sku,
             title: `eBay is rejecting the sell-out end for ${failure.sku} (${failure.count}× in 24h)`,
-            detail: stillLive
+            detail: stillLive && soldOut
                 ? 'The guard keeps trying to end this listing and eBay keeps refusing — the L75 '
                     + 'signature. The listing is STILL LIVE. End it manually on eBay now, then check '
                     + 'the server log for EBAY_ENDLIST_REJECTED lines.'
@@ -99,6 +116,21 @@ export function evaluateIncidentCandidates(input) {
                 title: `A publish for ${create.sku} has been unresolved for over an hour`,
                 detail: 'The create dispatched but never verified. Leftover eBay data may be '
                     + 'blocking the item; the next Publish All run attempts automatic recovery.',
+            });
+        }
+    }
+    for (const fulfillment of signals?.unresolvedFulfillments ?? []) {
+        const ageMs = nowMs - Date.parse(fulfillment.reservedAtUtc);
+        if (Number.isFinite(ageMs) && ageMs > 2 * 3_600_000) {
+            candidates.push({
+                id: `FULFILLMENT_STUCK:${fulfillment.subject}`,
+                severity: 'warning',
+                code: 'FULFILLMENT_STUCK',
+                sku: null,
+                title: `A tracking-number push for ${fulfillment.subject} has been unresolved for hours`,
+                detail: 'The buyer paid and the shipment may already be moving, but eBay has not '
+                    + 'been told — late tracking risks defects. Check the server log for '
+                    + 'FULFILLMENT lines and the order in Seller Hub.',
             });
         }
     }
@@ -274,6 +306,19 @@ export async function runWatchdogOnce(dependencies = {}) {
     const snapshot = await getSnapshot();
     const signals = getLedgerSignals(new Date(nowMs - LEDGER_WINDOW_MS).toISOString());
     const candidates = evaluateIncidentCandidates({ snapshot, signals, nowMs });
+    const publishRun = getPublishAllStatus();
+    if (publishRun.state === 'stopped') {
+        candidates.push({
+            id: 'PUBLISH_RUN_STOPPED',
+            severity: 'warning',
+            code: 'PUBLISH_RUN_STOPPED',
+            sku: null,
+            title: 'The last Publish All run stopped early',
+            detail: `It stopped after repeated failures${publishRun.stopReason
+                ? `: ${publishRun.stopReason}` : ''}. Items after the stop were not attempted; `
+                + 'the next scheduled run retries, but a repeat points at something systemic.',
+        });
+    }
     const state = loadState(stateFile);
     const nextPending = {};
     const active = [];

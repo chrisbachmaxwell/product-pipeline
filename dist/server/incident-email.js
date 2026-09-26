@@ -53,6 +53,36 @@ export function buildIncidentEmail(input) {
     ].join('\r\n');
     return { subject, data };
 }
+/**
+ * Vault-stored email settings (L83): the operator connects alerts from
+ * Settings like every other connection. Fixed Google Workspace transport
+ * (smtp.gmail.com:465, from = the sending mailbox); only the mailbox, its
+ * app password, and the recipients are stored (as one JSON secret in the
+ * connections vault). Env config, when complete, always wins.
+ */
+export function smtpConfigFromVaultJson(raw) {
+    if (raw === null)
+        return null;
+    try {
+        const parsed = JSON.parse(raw);
+        const user = parsed.user;
+        const pass = parsed.pass;
+        const to = Array.isArray(parsed.to) ? parsed.to : [];
+        if (typeof user !== 'string' || !ADDRESS.test(user)
+            || typeof pass !== 'string' || pass.length < 8 || pass.length > 128
+            || to.length === 0 || to.length > 10
+            || !to.every((address) => typeof address === 'string' && ADDRESS.test(address))) {
+            return null;
+        }
+        return Object.freeze({
+            host: 'smtp.gmail.com', port: 465, user, pass, from: user,
+            to: Object.freeze(to),
+        });
+    }
+    catch {
+        return null;
+    }
+}
 export function readSmtpConfigFromEnv(env = process.env) {
     const host = env.INCIDENT_SMTP_HOST;
     const port = Number(env.INCIDENT_SMTP_PORT ?? '465');
@@ -75,7 +105,16 @@ export function readSmtpConfigFromEnv(env = process.env) {
  * Minimal SMTPS conversation: EHLO → AUTH LOGIN → MAIL FROM → RCPT TO …
  * → DATA → QUIT. Implicit TLS only (no STARTTLS downgrade surface).
  */
-export async function sendIncidentEmail(payload, config = readSmtpConfigFromEnv()) {
+export async function resolveSmtpConfig() {
+    const fromEnv = readSmtpConfigFromEnv();
+    if (fromEnv !== null)
+        return fromEnv;
+    const connections = await import('./connections.js');
+    return smtpConfigFromVaultJson(connections.readStoredEmailConfigJson());
+}
+export async function sendIncidentEmail(payload, config) {
+    if (config === undefined)
+        config = await resolveSmtpConfig();
     if (config === null)
         return false;
     const { data } = buildIncidentEmail({ from: config.from, to: config.to, payload });

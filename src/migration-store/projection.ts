@@ -390,6 +390,8 @@ export type IncidentLedgerSignals = Readonly<{
   oldestUnresolvedOrder: { orderId: string; observedAtUtc: string } | null;
   /** Unresolved listing-create jobs (no attempt resolution yet). */
   unresolvedCreates: ReadonlyArray<{ sku: string; jobId: string; reservedAtUtc: string }>;
+  /** Unresolved fulfillment (tracking push) jobs — a buyer is waiting. */
+  unresolvedFulfillments: ReadonlyArray<{ subject: string; reservedAtUtc: string }>;
   /**
    * SKUs whose recent inventory dispatches keep closing confirmed_missing —
    * the L75 signature of a provider-rejected sell-out end. Grouped since
@@ -444,6 +446,15 @@ export function readIncidentLedgerSignalsReadOnly(input: {
       ).all(input.sinceUtc) as Array<{ binding: string; count: number; lastAtUtc: string }>;
       const sku = (binding: string): string => binding.replace(/^ebay-inventory-sku:/, '')
         .replace(/^ebay-listing:/, 'listing ');
+      const unresolvedFulfillments = database.prepare(
+        'SELECT e.binding_key AS binding, MAX(j.reserved_at_utc) AS reservedAtUtc '
+        + 'FROM execution_jobs j '
+        + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+        + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+        + 'LEFT JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+        + "WHERE j.responsibility = 'fulfillment' AND r.resolution_id IS NULL "
+        + 'GROUP BY e.binding_key ORDER BY reservedAtUtc ASC LIMIT 10',
+      ).all() as Array<{ binding: string; reservedAtUtc: string }>;
       const stuckOrder = database.prepare(
         'SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc '
         + 'FROM order_observations o '
@@ -458,6 +469,9 @@ export function readIncidentLedgerSignalsReadOnly(input: {
         }),
         unresolvedCreates: unresolved.map((row) => Object.freeze({
           sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,
+        })),
+        unresolvedFulfillments: unresolvedFulfillments.map((row) => Object.freeze({
+          subject: sku(row.binding), reservedAtUtc: row.reservedAtUtc,
         })),
         repeatedEndFailures: failures.map((row) => Object.freeze({
           sku: sku(row.binding), count: row.count, lastAtUtc: row.lastAtUtc,

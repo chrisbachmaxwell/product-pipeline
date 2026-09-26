@@ -46,7 +46,8 @@ const RESPONSIBILITY_LABEL: Record<string, string> = {
  * credential vault. The key never renders anywhere after submission.
  */
 type ConnectionState = { connected: boolean; source: string | null };
-type ConnectionsResponse = { anthropic: ConnectionState; github: ConnectionState };
+type EmailState = ConnectionState & { to: string[] | null };
+type ConnectionsResponse = { anthropic: ConnectionState; github: ConnectionState; email: EmailState };
 
 /**
  * Connect an API from the app (L79): paste the secret once, the server
@@ -136,6 +137,97 @@ const ConnectionRow: React.FC<{
   );
 };
 
+
+/** Email alerts: three fields, and Connect literally sends a test email. */
+const EmailConnectionRow: React.FC<{
+  state: EmailState | null;
+  onChanged: (next: ConnectionsResponse) => void;
+}> = ({ state, onChanged }) => {
+  const [open, setOpen] = useState(false);
+  const [address, setAddress] = useState('');
+  const [appPassword, setAppPassword] = useState('');
+  const [recipients, setRecipients] = useState('chrism@pictureline.com, nick@pictureline.com');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await apiClient.post<ConnectionsResponse>('/connections/email', {
+        address: address.trim(), appPassword: appPassword.trim(), recipients,
+      });
+      onChanged(body);
+      setAppPassword('');
+      setOpen(false);
+    } catch (raised) {
+      setError(raised instanceof Error
+        ? raised.message.replace(/\s*\(CONNECTION_[A-Z_]+\)\s*$/, '')
+        : 'Connection failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      onChanged(await apiClient.delete<ConnectionsResponse>('/connections/email'));
+    } catch { /* next load corrects */ } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <BlockStack gap="200">
+      <Row label="Email alerts (critical incidents)">
+        {state === null ? <Badge>Checking…</Badge>
+          : state.connected
+            ? (
+              <InlineStack gap="200" blockAlign="center">
+                <Badge tone="success">
+                  {state.to ? `Connected → ${state.to.join(', ')}` : 'Connected'}
+                </Badge>
+                {state.source === 'stored' && (
+                  <Button variant="plain" tone="critical" disabled={busy} onClick={() => { void disconnect(); }}>
+                    Disconnect
+                  </Button>
+                )}
+              </InlineStack>
+            )
+            : <Button onClick={() => setOpen(true)} disabled={busy}>Connect</Button>}
+      </Row>
+      {open && state !== null && !state.connected && (
+        <BlockStack gap="200">
+          <Text as="p" variant="bodySm" tone="subdued">
+            Sends through your own Google Workspace. Create an app password for the
+            sending mailbox at{' '}
+            <Link url="https://myaccount.google.com/apppasswords" target="_blank">
+              Google → App passwords
+            </Link>
+            {' '}(requires 2-Step Verification). Connecting sends a test email — if it
+            lands, alerts work.
+          </Text>
+          {error && <Banner tone="critical"><Text as="p">{error}</Text></Banner>}
+          <TextField label="Sending address" type="email" autoComplete="off"
+            placeholder="alerts@pictureline.com" value={address} onChange={setAddress} />
+          <TextField label="App password" type="password" autoComplete="off"
+            value={appPassword} onChange={setAppPassword} />
+          <TextField label="Send alerts to (comma-separated)" autoComplete="off"
+            value={recipients} onChange={setRecipients} />
+          <InlineStack gap="200">
+            <Button variant="primary" loading={busy}
+              disabled={address.trim().length < 6 || appPassword.trim().length < 8}
+              onClick={() => { void connect(); }}>
+              Send test email & connect
+            </Button>
+            <Button disabled={busy} onClick={() => { setOpen(false); setError(null); setAppPassword(''); }}>
+              Cancel
+            </Button>
+          </InlineStack>
+        </BlockStack>
+      )}
+    </BlockStack>
+  );
+};
+
 const ApiConnections: React.FC = () => {
   const [connections, setConnections] = useState<ConnectionsResponse | null>(null);
   useEffect(() => {
@@ -167,6 +259,10 @@ const ApiConnections: React.FC = () => {
             app’s credential vault, and is never shown again.
           </>
         )}
+      />
+      <EmailConnectionRow
+        state={connections?.email ?? null}
+        onChanged={setConnections}
       />
       <ConnectionRow
         label="GitHub (incident fix proposals)"
