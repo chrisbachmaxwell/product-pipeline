@@ -39,6 +39,7 @@ export class ShopifyOrderAdapterError extends Error {
     | 'SHOPIFY_AUTHORITY_UNAVAILABLE'
     | 'SHOPIFY_IDENTITY_MISMATCH'
     | 'SHOPIFY_TARGET_INVALID'
+    | 'SHOPIFY_SKU_INVALID'
     | 'SHOPIFY_READ_FAILED'
     | 'SHOPIFY_WRITE_FAILED') {
     super('Shopify order adapter failed');
@@ -242,7 +243,11 @@ export function createShopifyOrderAdapter(dependencies: Readonly<{
     },
 
     findVariantGidBySku: async (sku: string): Promise<string | null> => {
-      if (typeof sku !== 'string' || !SAFE_SKU.test(sku)) deny('SHOPIFY_TARGET_INVALID');
+      // Dedicated code (L82, the #151 agent's suggestion): a SKU-grammar
+      // rejection is the one deny that can freeze the whole ordered poll
+      // (L77) — when the failure memory records THIS code, the incident
+      // names its own cause instead of leaving three candidate sites.
+      if (typeof sku !== 'string' || !SAFE_SKU.test(sku)) deny('SHOPIFY_SKU_INVALID');
       const data = await graphql(
         'OrderImportVariantBySku',
         VARIANT_BY_SKU_QUERY,
