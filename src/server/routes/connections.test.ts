@@ -36,7 +36,9 @@ function harness(options: {
   });
   app.use('/api', writerQuarantineMiddleware);
   app.post('/api/connections/anthropic', listingDraftJsonParser);
+  app.post('/api/connections/github', listingDraftJsonParser);
   app.use(listingDraftJsonErrorHandler);
+  let githubStored: string | null = null;
   app.use(createConnectionsRouter({
     validate: async () => options.verdict ?? 'valid',
     store: (key: string) => { stored = key; return true; },
@@ -45,8 +47,15 @@ function harness(options: {
       connected: options.envManaged === true || stored !== null,
       source: options.envManaged === true ? 'env' : stored !== null ? 'stored' : null,
     }),
+    githubValidate: async () => options.verdict ?? 'valid',
+    githubStore: (token: string) => { githubStored = token; return true; },
+    githubRemove: () => { githubStored = null; return true; },
+    githubStatus: () => ({
+      connected: githubStored !== null,
+      source: githubStored !== null ? 'stored' : null,
+    }),
   }));
-  return { app, getStored: () => stored };
+  return { app, getStored: () => stored, getGithubStored: () => githubStored };
 }
 
 async function call(app: express.Express, method: string, path: string, body?: unknown) {
@@ -98,5 +107,18 @@ describe('connections route', () => {
     expect((await call(h.app, 'POST', '/api/connections/anthropic', { apiKey: KEY })).status).toBe(403);
     expect((await call(h.app, 'DELETE', '/api/connections/anthropic')).status).toBe(403);
     expect(h.getStored()).toBeNull();
+  });
+
+  it('connects GitHub through the same verified flow', async () => {
+    const h = harness({ kind: 'shopify_session' });
+    const token = `github_pat_${'b'.repeat(40)}`;
+    const response = await call(h.app, 'POST', '/api/connections/github', { apiKey: token });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ github: { connected: true, source: 'stored' } });
+    expect(JSON.stringify(response.body)).not.toContain(token);
+    expect(h.getGithubStored()).toBe(token);
+    expect((await call(h.app, 'POST', '/api/connections/github', { apiKey: 'ghp' })).status).toBe(400);
+    expect((await call(h.app, 'DELETE', '/api/connections/github')).status).toBe(200);
+    expect(h.getGithubStored()).toBeNull();
   });
 });

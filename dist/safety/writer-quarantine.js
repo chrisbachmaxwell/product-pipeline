@@ -195,7 +195,8 @@ export function isExactListingPublishAll(method, originalUrl) {
  */
 export function isExactConnectionWrite(method, originalUrl) {
     return (method === 'POST' || method === 'DELETE')
-        && originalUrl === '/api/connections/anthropic';
+        && (originalUrl === '/api/connections/anthropic'
+            || originalUrl === '/api/connections/github');
 }
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(req, res, next) {

@@ -222,7 +222,8 @@ export function isExactListingPublishAll(method: string, originalUrl: string): b
  */
 export function isExactConnectionWrite(method: string, originalUrl: string): boolean {
   return (method === 'POST' || method === 'DELETE')
-    && originalUrl === '/api/connections/anthropic';
+    && (originalUrl === '/api/connections/anthropic'
+      || originalUrl === '/api/connections/github');
 }
 
 /** Default-deny every state-changing API method during shadow mode. */

@@ -45,28 +45,33 @@ const RESPONSIBILITY_LABEL: Record<string, string> = {
  * the server verifies it live with Anthropic before saving it to the
  * credential vault. The key never renders anywhere after submission.
  */
-const AnthropicConnection: React.FC = () => {
-  const [status, setStatus] = useState<{ connected: boolean; source: string | null } | null>(null);
+type ConnectionState = { connected: boolean; source: string | null };
+type ConnectionsResponse = { anthropic: ConnectionState; github: ConnectionState };
+
+/**
+ * Connect an API from the app (L79): paste the secret once, the server
+ * verifies it live with the provider before saving it to the credential
+ * vault. The secret never renders anywhere after submission.
+ */
+const ConnectionRow: React.FC<{
+  label: string;
+  endpoint: string;
+  placeholder: string;
+  instructions: React.ReactNode;
+  state: ConnectionState | null;
+  onChanged: (next: ConnectionsResponse) => void;
+}> = ({ label, endpoint, placeholder, instructions, state, onChanged }) => {
   const [open, setOpen] = useState(false);
-  const [apiKey, setApiKey] = useState('');
+  const [secret, setSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const refresh = async () => {
-    try {
-      const body = await apiClient.get<{ anthropic: { connected: boolean; source: string | null } }>('/connections');
-      setStatus(body.anthropic);
-    } catch { /* leave last state */ }
-  };
-  useEffect(() => { void refresh(); }, []);
   const connect = async () => {
     setBusy(true);
     setError(null);
     try {
-      const body = await apiClient.post<{ anthropic: { connected: boolean; source: string | null } }>(
-        '/connections/anthropic', { apiKey: apiKey.trim() },
-      );
-      setStatus(body.anthropic);
-      setApiKey('');
+      const body = await apiClient.post<ConnectionsResponse>(endpoint, { apiKey: secret.trim() });
+      onChanged(body);
+      setSecret('');
       setOpen(false);
     } catch (raised) {
       setError(raised instanceof Error
@@ -79,22 +84,20 @@ const AnthropicConnection: React.FC = () => {
   const disconnect = async () => {
     setBusy(true);
     try {
-      const body = await apiClient.delete<{ anthropic: { connected: boolean; source: string | null } }>('/connections/anthropic');
-      setStatus(body.anthropic);
-    } catch { /* surface via refresh */ } finally {
+      onChanged(await apiClient.delete<ConnectionsResponse>(endpoint));
+    } catch { /* next poll corrects */ } finally {
       setBusy(false);
-      void refresh();
     }
   };
   return (
     <BlockStack gap="200">
-      <Row label="Claude (AI incident diagnosis)">
-        {status === null ? <Badge>Checking…</Badge>
-          : status.connected
+      <Row label={label}>
+        {state === null ? <Badge>Checking…</Badge>
+          : state.connected
             ? (
               <InlineStack gap="200" blockAlign="center">
                 <Badge tone="success">Connected</Badge>
-                {status.source === 'stored' && (
+                {state.source === 'stored' && (
                   <Button variant="plain" tone="critical" disabled={busy} onClick={() => { void disconnect(); }}>
                     Disconnect
                   </Button>
@@ -103,41 +106,88 @@ const AnthropicConnection: React.FC = () => {
             )
             : <Button onClick={() => setOpen(true)} disabled={busy}>Connect</Button>}
       </Row>
-      {open && status !== null && !status.connected && (
+      {open && state !== null && !state.connected && (
         <BlockStack gap="200">
-          <Text as="p" variant="bodySm" tone="subdued">
-            1. Create a key at{' '}
-            <Link url="https://console.anthropic.com/settings/keys" target="_blank">
-              console.anthropic.com → API Keys
-            </Link>
-            {' '}(name it productpipeline). 2. Paste it below — it is verified with
-            Anthropic before being saved to this app’s credential vault, and is
-            never shown again.
-          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">{instructions}</Text>
           {error && <Banner tone="critical"><Text as="p">{error}</Text></Banner>}
           <InlineStack gap="200" blockAlign="end" wrap={false}>
             <div style={{ flexGrow: 1 }}>
               <TextField
-                label="Anthropic API key"
+                label={label}
                 labelHidden
                 type="password"
                 autoComplete="off"
-                placeholder="sk-ant-…"
-                value={apiKey}
-                onChange={setApiKey}
+                placeholder={placeholder}
+                value={secret}
+                onChange={setSecret}
               />
             </div>
-            <Button variant="primary" loading={busy} disabled={apiKey.trim().length < 12}
+            <Button variant="primary" loading={busy} disabled={secret.trim().length < 12}
               onClick={() => { void connect(); }}>
               Verify & connect
             </Button>
-            <Button disabled={busy} onClick={() => { setOpen(false); setError(null); setApiKey(''); }}>
+            <Button disabled={busy} onClick={() => { setOpen(false); setError(null); setSecret(''); }}>
               Cancel
             </Button>
           </InlineStack>
         </BlockStack>
       )}
     </BlockStack>
+  );
+};
+
+const ApiConnections: React.FC = () => {
+  const [connections, setConnections] = useState<ConnectionsResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const body = await apiClient.get<ConnectionsResponse>('/connections');
+        if (!cancelled) setConnections(body);
+      } catch { /* leave null */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return (
+    <>
+      <ConnectionRow
+        label="Claude (AI incident diagnosis)"
+        endpoint="/connections/anthropic"
+        placeholder="sk-ant-…"
+        state={connections?.anthropic ?? null}
+        onChanged={setConnections}
+        instructions={(
+          <>
+            1. Create a key at{' '}
+            <Link url="https://console.anthropic.com/settings/keys" target="_blank">
+              console.anthropic.com → API Keys
+            </Link>
+            {' '}(Default workspace is fine; name it productpipeline). 2. Paste it
+            below — it is verified with Anthropic before being saved to this
+            app’s credential vault, and is never shown again.
+          </>
+        )}
+      />
+      <ConnectionRow
+        label="GitHub (incident fix proposals)"
+        endpoint="/connections/github"
+        placeholder="github_pat_…"
+        state={connections?.github ?? null}
+        onChanged={setConnections}
+        instructions={(
+          <>
+            1. Create a fine-grained token at{' '}
+            <Link url="https://github.com/settings/personal-access-tokens/new" target="_blank">
+              github.com → Developer settings → Fine-grained tokens
+            </Link>
+            : Resource owner chrisbachmaxwell, Only select repositories →
+            product-pipeline, Repository permissions → Issues: Read and write.
+            2. Paste it below — verified against the repository before saving,
+            never shown again.
+          </>
+        )}
+      />
+    </>
   );
 };
 
@@ -162,7 +212,7 @@ const Settings: React.FC = () => {
                 ? <Badge tone="success">Connected</Badge>
                 : <Badge tone="attention">Checking…</Badge>}
             </Row>
-            <AnthropicConnection />
+            <ApiConnections />
           </BlockStack>
         </Card>
 
