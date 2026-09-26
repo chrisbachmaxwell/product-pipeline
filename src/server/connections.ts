@@ -8,7 +8,81 @@
  * operators retain the override; keys are never logged and never echoed
  * back to any client.
  */
-import { openShadowDatabase } from './shadow-db.js';
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+/**
+ * The app-managed connections vault. The legacy auth_tokens ledger is HARD
+ * read-only from the server by design (query_only enforced — its writer is
+ * the credential-admin ceremony), so operator-pasted AI/GitHub secrets get
+ * their own store beside the app's other writable state. 0600, never in
+ * the repo, logs, tests, or the migration store.
+ */
+function connectionsDbPath(): string {
+  return process.env.CONNECTIONS_DATABASE_PATH
+    ?? '/data/product-pipeline/connections.sqlite';
+}
+
+function openConnectionsStore(writable: boolean): InstanceType<typeof Database> | null {
+  const databasePath = connectionsDbPath();
+  try {
+    if (writable) fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    const database = new Database(databasePath, writable
+      ? {}
+      : { readonly: true, fileMustExist: true });
+    if (writable) {
+      database.exec('CREATE TABLE IF NOT EXISTS connections ('
+        + 'platform TEXT PRIMARY KEY, secret TEXT NOT NULL, '
+        + "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))");
+      try { fs.chmodSync(databasePath, 0o600); } catch { /* best effort */ }
+    }
+    return database;
+  } catch {
+    return null;
+  }
+}
+
+function readSecret(platform: string, shape: RegExp): string | null {
+  const database = openConnectionsStore(false);
+  if (database === null) return null;
+  try {
+    const row = database.prepare('SELECT secret FROM connections WHERE platform = ?')
+      .get(platform) as { secret: string } | undefined;
+    return row?.secret && shape.test(row.secret) ? row.secret : null;
+  } catch {
+    return null;
+  } finally {
+    database.close();
+  }
+}
+
+function writeSecret(platform: string, secret: string): boolean {
+  const database = openConnectionsStore(true);
+  if (database === null) return false;
+  try {
+    database.prepare('INSERT INTO connections (platform, secret) VALUES (?, ?) '
+      + 'ON CONFLICT(platform) DO UPDATE SET secret = excluded.secret, '
+      + 'updated_at = unixepoch()').run(platform, secret);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    database.close();
+  }
+}
+
+function deleteSecret(platform: string): boolean {
+  const database = openConnectionsStore(true);
+  if (database === null) return false;
+  try {
+    database.prepare('DELETE FROM connections WHERE platform = ?').run(platform);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    database.close();
+  }
+}
 
 const KEY_SHAPE = /^sk-ant-[A-Za-z0-9_-]{10,250}$/;
 const PLATFORM = 'anthropic';
@@ -24,19 +98,7 @@ export type AnthropicConnectionStatus = Readonly<{
 }>;
 
 export function readStoredAnthropicKey(): string | null {
-  try {
-    const database = openShadowDatabase();
-    try {
-      const row = database.prepare(
-        'SELECT access_token FROM auth_tokens WHERE platform = ?',
-      ).get(PLATFORM) as { access_token: string } | undefined;
-      return row?.access_token && KEY_SHAPE.test(row.access_token) ? row.access_token : null;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return null;
-  }
+  return readSecret(PLATFORM, KEY_SHAPE);
 }
 
 /** The one key resolver every AI feature uses: env override, then vault. */
@@ -73,35 +135,11 @@ export async function validateAnthropicKey(key: string): Promise<'valid' | 'unau
 
 export function storeAnthropicKey(key: string): boolean {
   if (!isPlausibleAnthropicKey(key)) return false;
-  try {
-    const database = openShadowDatabase();
-    try {
-      database.prepare(
-        'INSERT INTO auth_tokens (platform, access_token) VALUES (?, ?) '
-        + 'ON CONFLICT(platform) DO UPDATE SET access_token = excluded.access_token, '
-        + 'updated_at = unixepoch()',
-      ).run(PLATFORM, key);
-      return true;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return false;
-  }
+  return writeSecret(PLATFORM, key);
 }
 
 export function deleteStoredAnthropicKey(): boolean {
-  try {
-    const database = openShadowDatabase();
-    try {
-      database.prepare('DELETE FROM auth_tokens WHERE platform = ?').run(PLATFORM);
-      return true;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return false;
-  }
+  return deleteSecret(PLATFORM);
 }
 
 /* ------------------------- GitHub connection ------------------------- */
@@ -121,20 +159,7 @@ export function incidentGithubRepo(): string {
 }
 
 function readStoredGithubToken(): string | null {
-  try {
-    const database = openShadowDatabase();
-    try {
-      const row = database.prepare(
-        'SELECT access_token FROM auth_tokens WHERE platform = ?',
-      ).get(GITHUB_PLATFORM) as { access_token: string } | undefined;
-      return row?.access_token && GITHUB_TOKEN_SHAPE.test(row.access_token)
-        ? row.access_token : null;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return null;
-  }
+  return readSecret(GITHUB_PLATFORM, GITHUB_TOKEN_SHAPE);
 }
 
 /** Env override first, vault second — same contract as the Claude key. */
@@ -179,33 +204,9 @@ export async function validateGithubToken(token: string): Promise<'valid' | 'una
 
 export function storeGithubToken(token: string): boolean {
   if (!isPlausibleGithubToken(token)) return false;
-  try {
-    const database = openShadowDatabase();
-    try {
-      database.prepare(
-        'INSERT INTO auth_tokens (platform, access_token) VALUES (?, ?) '
-        + 'ON CONFLICT(platform) DO UPDATE SET access_token = excluded.access_token, '
-        + 'updated_at = unixepoch()',
-      ).run(GITHUB_PLATFORM, token);
-      return true;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return false;
-  }
+  return writeSecret(GITHUB_PLATFORM, token);
 }
 
 export function deleteStoredGithubToken(): boolean {
-  try {
-    const database = openShadowDatabase();
-    try {
-      database.prepare('DELETE FROM auth_tokens WHERE platform = ?').run(GITHUB_PLATFORM);
-      return true;
-    } finally {
-      database.close();
-    }
-  } catch {
-    return false;
-  }
+  return deleteSecret(GITHUB_PLATFORM);
 }
