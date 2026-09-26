@@ -14,7 +14,7 @@ import path from 'node:path';
 /**
  * The app-managed connections vault. The legacy auth_tokens ledger is HARD
  * read-only from the server by design (query_only enforced — its writer is
- * the credential-admin ceremony), so operator-pasted AI/GitHub secrets get
+ * the standalone rotation ceremony), so operator-pasted AI/GitHub secrets get
  * their own store beside the app's other writable state. 0600, never in
  * the repo, logs, tests, or the migration store.
  */
