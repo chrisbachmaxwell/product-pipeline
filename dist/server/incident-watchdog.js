@@ -158,9 +158,10 @@ function defaultLearningsContext() {
     }
 }
 async function defaultDiagnose(incident, context) {
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (typeof key !== 'string' || key.length === 0)
+    const resolved = (await import('./connections.js')).readAnthropicKey();
+    if (resolved === null)
         throw new Error('unarmed');
+    const key = resolved.key;
     const model = process.env.INCIDENT_DIAGNOSIS_MODEL ?? 'claude-sonnet-5';
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',

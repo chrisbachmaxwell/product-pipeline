@@ -127,6 +127,13 @@ export declare function isExactListingRecovery(method: string, originalUrl: stri
  * when the operator asked for a Publish-All button and schedule.
  */
 export declare function isExactListingPublishAll(method: string, originalUrl: string): boolean;
+/**
+ * The connections exception (L79): Settings stores/removes the operator's
+ * pasted AI key in the local credential vault. Local-only writes — the
+ * handler performs zero commerce-provider writes; its single outbound call
+ * is a read-only key validation against the AI provider.
+ */
+export declare function isExactConnectionWrite(method: string, originalUrl: string): boolean;
 /** Default-deny every state-changing API method during shadow mode. */
 export declare function writerQuarantineMiddleware(req: Request, res: Response, next: NextFunction): void;
 export declare function getMigrationPolicyStatus(servedAt?: string): {
