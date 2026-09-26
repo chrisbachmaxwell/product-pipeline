@@ -25,7 +25,12 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
 const SAFE_TAG = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;
-const SAFE_SKU = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
+// '/' admitted 2026-09-26 (L77): Sony factory SKUs (ILCE7RM4/B-U695) sell on
+// MC-era listings; rejecting the slash froze the ENTIRE order pipeline
+// behind one paid order. Injection-safe: the SKU rides inside a quoted
+// search token (the quote itself stays excluded) and only an exact echo
+// binds the variant.
+const SAFE_SKU = /^[A-Za-z0-9][A-Za-z0-9._ /-]{0,127}$/;
 const ORDER_GID = /^gid:\/\/shopify\/Order\/[^/\s]+$/;
 const VARIANT_GID = /^gid:\/\/shopify\/ProductVariant\/[^/\s]+$/;
 

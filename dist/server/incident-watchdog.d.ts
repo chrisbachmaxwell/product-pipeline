@@ -3,7 +3,7 @@ export type Incident = {
     /** Stable fingerprint: code + subject. */
     id: string;
     severity: 'critical' | 'warning';
-    code: 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'SNAPSHOT_STALE';
+    code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'SNAPSHOT_STALE';
     sku: string | null;
     title: string;
     detail: string;

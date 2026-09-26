@@ -29,7 +29,7 @@ describe('evaluateIncidentCandidates', () => {
   it('flags a zero-stock item whose eBay listing is still live as critical', () => {
     const candidates = evaluateIncidentCandidates({
       snapshot: { observedAtUtc: FRESH, rows: [row('LEICA-1', 0, '147000000001')] },
-      signals: { unresolvedCreates: [], repeatedEndFailures: [] },
+      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] },
       nowMs: NOW,
     });
     expect(candidates).toEqual([expect.objectContaining({
@@ -39,6 +39,7 @@ describe('evaluateIncidentCandidates', () => {
 
   it('flags repeated end rejections — critical while live, warning once ended (L75)', () => {
     const signals = {
+      oldestUnresolvedOrder: null,
       unresolvedCreates: [],
       repeatedEndFailures: [{ sku: 'LEICA-1', count: 34, lastAtUtc: FRESH }],
     };
@@ -63,6 +64,7 @@ describe('evaluateIncidentCandidates', () => {
         rows: [row('OK-1', 3, '147000000009')],
       },
       signals: {
+        oldestUnresolvedOrder: null,
         unresolvedCreates: [
           { sku: 'STUCK-1', jobId: 'j1', reservedAtUtc: new Date(NOW - 2 * 3_600_000).toISOString() },
           { sku: 'FRESH-1', jobId: 'j2', reservedAtUtc: new Date(NOW - 5 * 60_000).toISOString() },
@@ -80,7 +82,7 @@ describe('evaluateIncidentCandidates', () => {
   it('stays silent on a healthy store', () => {
     expect(evaluateIncidentCandidates({
       snapshot: { observedAtUtc: FRESH, rows: [row('OK-1', 2, '147000000009'), row('OK-2', 1, null)] },
-      signals: { unresolvedCreates: [], repeatedEndFailures: [] },
+      signals: { oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] },
       nowMs: NOW,
     })).toEqual([]);
   });
@@ -103,7 +105,7 @@ describe('runWatchdogOnce', () => {
     const dependencies = {
       stateFile,
       getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [row('LEICA-1', 0, '147000000001')] }),
-      getLedgerSignals: () => ({ unresolvedCreates: [], repeatedEndFailures: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] }),
       diagnose: async (incident: Incident) => { diagnosed.push(incident); return 'WHAT HAPPENED: test'; },
       openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/1'; },
       notify: async () => undefined,
@@ -130,7 +132,7 @@ describe('runWatchdogOnce', () => {
     const dependencies = {
       stateFile,
       getSnapshot: async () => ({ observedAtUtc: FRESH, rows }),
-      getLedgerSignals: () => ({ unresolvedCreates: [], repeatedEndFailures: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], repeatedEndFailures: [] }),
       diagnose: async () => { throw new Error('unarmed'); },
       openIssue: async () => null,
       notify: async () => undefined,
@@ -143,5 +145,38 @@ describe('runWatchdogOnce', () => {
     rows = [row('LEICA-1', 0, null)];                        // listing ended
     await runWatchdogOnce({ ...dependencies, now: () => NOW + 20 * 60_000 });
     expect(getIncidents()).toEqual([]);
+  });
+});
+
+describe('ORDER_PIPELINE_BLOCKED (L77)', () => {
+  it('flags an unresolved order observation older than 30 minutes as critical', () => {
+    const candidates = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [] },
+      signals: {
+        oldestUnresolvedOrder: {
+          orderId: '21-15190-74821',
+          observedAtUtc: new Date(NOW - 40 * 3_600_000).toISOString(),
+        },
+        unresolvedCreates: [], repeatedEndFailures: [],
+      },
+      nowMs: NOW,
+    });
+    expect(candidates).toEqual([expect.objectContaining({
+      code: 'ORDER_PIPELINE_BLOCKED', severity: 'critical',
+    })]);
+    expect(candidates[0]!.title).toContain('21-15190-74821');
+  });
+  it('stays quiet inside the 30-minute import window', () => {
+    expect(evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [] },
+      signals: {
+        oldestUnresolvedOrder: {
+          orderId: '21-15190-74821',
+          observedAtUtc: new Date(NOW - 5 * 60_000).toISOString(),
+        },
+        unresolvedCreates: [], repeatedEndFailures: [],
+      },
+      nowMs: NOW,
+    })).toEqual([]);
   });
 });
