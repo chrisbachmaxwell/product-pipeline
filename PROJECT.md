@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-09-26: Incident Drill #147 — Pipeline Proven End-to-End; Hermetic Connections Tests (L80)
+
+Issue #147 (`END_DISPATCH_REJECTED` for SKU `DRILL-TEST`) was the second synthetic self-healing drill (after #146, closed as DRILL COMPLETE). `DRILL-TEST` appears nowhere in source, and the watchdog has no drill or injection path, so there was no production defect to fix and no operator action on eBay. Its value: tier 3 (the fix-proposal workflow) ran for the first time with the repository secret set. That run found a real test defect: `src/server/connections.test.ts` read the runner's ambient `ANTHROPIC_API_KEY` (the workflow exports it), so two vault tests failed and the assertion diff printed the live key. The tests now blank every env override with `vi.stubEnv` and restore with `unstubAllEnvs`, replacing a `finally { delete process.env… }` that also erased the real key for later tests in the worker. Test-only change; no runtime behavior changed.
+
 ### 2026-09-18 → 2026-09-23: Publish-All Product Feature and the Starvation Post-Mortem (L72-L73)
 
 Publishing became a product feature: a Publish All button on the Listings page with live per-item progress, and a server-side schedule (PUBLISH_ALL_INTERVAL_MINUTES=300) replacing the laptop cron — every write still per-item through the armed ceremony CLIs (PR #132). Five days later the operator reported 19 unpushed items: scheduled runs had starved behind publish-time aspect refusals whose failed dispatches stranded artifacts that blocked the draft service (and a Focus-Type deriver fix sat unmerged locally the whole time). PR #133 ended the class: a required-aspect gate checks the category's full taxonomy list before any ceremony (one skip message naming every gap), a startup residue sweep auto-recovers wedged rows, unknown failures no longer stop the queue, and derivation now covers camera Model/Type, marker-less Focus Type, and *OPEN BOX*. Ledger backlog closed: 4 residue recoveries, 6 accept-absent closures, one teleconverter recategorized (80390). The runner proved itself end-to-end on its first production drain.

@@ -2,10 +2,21 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Hermetic env (L80): the resolvers read env FIRST, so a real key in the
+// runner's environment (the incident-fix workflow sets ANTHROPIC_API_KEY)
+// both failed these tests and printed the live secret in the assertion
+// diff. Blank every override the module reads; empty string = unset.
+beforeEach(() => {
+  vi.stubEnv('ANTHROPIC_API_KEY', '');
+  vi.stubEnv('INCIDENT_GITHUB_TOKEN', '');
+  vi.stubEnv('INCIDENT_GITHUB_REPO', '');
+});
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   delete process.env.CONNECTIONS_DATABASE_PATH;
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -42,14 +53,19 @@ describe('connections vault', () => {
   it('env secrets override the vault and report source env', () => {
     freshVault();
     module.storeAnthropicKey(`sk-ant-${'c'.repeat(40)}`);
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-override-key-000000';
-    try {
-      expect(module.readAnthropicKey()).toEqual({
-        key: 'sk-ant-env-override-key-000000', source: 'env',
-      });
-      expect(module.getAnthropicConnectionStatus()).toEqual({ connected: true, source: 'env' });
-    } finally {
-      delete process.env.ANTHROPIC_API_KEY;
-    }
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-env-override-key-000000');
+    expect(module.readAnthropicKey()).toEqual({
+      key: 'sk-ant-env-override-key-000000', source: 'env',
+    });
+    expect(module.getAnthropicConnectionStatus()).toEqual({ connected: true, source: 'env' });
+  });
+
+  it('starts every test with each env override blanked, whatever the runner holds', () => {
+    // Order-dependent: runs after the override test above, proving its stub
+    // did not leak (the old `finally { delete ... }` also erased a real
+    // runner key for every later test in the worker; unstubAllEnvs restores).
+    expect(process.env.ANTHROPIC_API_KEY).toBe('');
+    expect(process.env.INCIDENT_GITHUB_TOKEN).toBe('');
+    expect(process.env.INCIDENT_GITHUB_REPO).toBe('');
   });
 });
