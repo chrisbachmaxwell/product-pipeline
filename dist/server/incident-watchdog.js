@@ -34,6 +34,25 @@ const MAX_INCIDENTS = 20;
 export function evaluateIncidentCandidates(input) {
     const candidates = [];
     const { snapshot, signals, nowMs } = input;
+    const stuckOrder = signals?.oldestUnresolvedOrder ?? null;
+    if (stuckOrder !== null) {
+        const ageMs = nowMs - Date.parse(stuckOrder.observedAtUtc);
+        if (Number.isFinite(ageMs) && ageMs > 30 * 60_000) {
+            const hours = Math.round(ageMs / 3_600_000 * 10) / 10;
+            candidates.push({
+                id: `ORDER_PIPELINE_BLOCKED:${stuckOrder.orderId}`,
+                severity: 'critical',
+                code: 'ORDER_PIPELINE_BLOCKED',
+                sku: null,
+                title: `eBay ORDERS ARE NOT IMPORTING — blocked ${hours}h behind order ${stuckOrder.orderId}`,
+                detail: 'The order poll is strictly ordered: one order that cannot import freezes '
+                    + 'EVERY order behind it — customers are paying and nothing reaches Shopify to '
+                    + 'ship (L77 was 40 hours and account strikes). Check the server log for '
+                    + `ORDER_IMPORT_FAILED lines naming ${stuckOrder.orderId}, fix its cause, and `
+                    + 'the pipeline drains automatically.',
+            });
+        }
+    }
     for (const row of snapshot.rows) {
         if (!row.shopify || !row.ebay)
             continue;

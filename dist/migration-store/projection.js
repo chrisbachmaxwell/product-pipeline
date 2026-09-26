@@ -304,7 +304,16 @@ export function readIncidentLedgerSignalsReadOnly(input) {
                 + 'ORDER BY lastAtUtc DESC LIMIT 20').all(input.sinceUtc);
             const sku = (binding) => binding.replace(/^ebay-inventory-sku:/, '')
                 .replace(/^ebay-listing:/, 'listing ');
+            const stuckOrder = database.prepare('SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc '
+                + 'FROM order_observations o '
+                + 'LEFT JOIN order_observation_resolutions r ON r.observation_id = o.observation_id '
+                + 'WHERE r.observation_id IS NULL '
+                + 'ORDER BY o.observed_at_utc ASC LIMIT 1').get();
             return Object.freeze({
+                oldestUnresolvedOrder: stuckOrder === undefined ? null : Object.freeze({
+                    orderId: stuckOrder.observationId.replace(/^observation:/, ''),
+                    observedAtUtc: stuckOrder.observedAtUtc,
+                }),
                 unresolvedCreates: unresolved.map((row) => Object.freeze({
                     sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,
                 })),

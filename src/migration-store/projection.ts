@@ -382,6 +382,12 @@ export function findUnresolvedListingCreateReadOnly(input: {
 }
 
 export type IncidentLedgerSignals = Readonly<{
+  /**
+   * The oldest eBay order observation with no resolution. The poll cursor
+   * is strictly ordered, so ONE stuck order freezes every order behind it
+   * (L77) — this is the single highest-severity signal in the system.
+   */
+  oldestUnresolvedOrder: { orderId: string; observedAtUtc: string } | null;
   /** Unresolved listing-create jobs (no attempt resolution yet). */
   unresolvedCreates: ReadonlyArray<{ sku: string; jobId: string; reservedAtUtc: string }>;
   /**
@@ -438,7 +444,18 @@ export function readIncidentLedgerSignalsReadOnly(input: {
       ).all(input.sinceUtc) as Array<{ binding: string; count: number; lastAtUtc: string }>;
       const sku = (binding: string): string => binding.replace(/^ebay-inventory-sku:/, '')
         .replace(/^ebay-listing:/, 'listing ');
+      const stuckOrder = database.prepare(
+        'SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc '
+        + 'FROM order_observations o '
+        + 'LEFT JOIN order_observation_resolutions r ON r.observation_id = o.observation_id '
+        + 'WHERE r.observation_id IS NULL '
+        + 'ORDER BY o.observed_at_utc ASC LIMIT 1',
+      ).get() as { observationId: string; observedAtUtc: string } | undefined;
       return Object.freeze({
+        oldestUnresolvedOrder: stuckOrder === undefined ? null : Object.freeze({
+          orderId: stuckOrder.observationId.replace(/^observation:/, ''),
+          observedAtUtc: stuckOrder.observedAtUtc,
+        }),
         unresolvedCreates: unresolved.map((row) => Object.freeze({
           sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,
         })),

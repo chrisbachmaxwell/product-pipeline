@@ -92,6 +92,15 @@ export declare function findUnresolvedListingCreateReadOnly(input: {
     sku: string;
 }): UnresolvedListingCreateProjection | null;
 export type IncidentLedgerSignals = Readonly<{
+    /**
+     * The oldest eBay order observation with no resolution. The poll cursor
+     * is strictly ordered, so ONE stuck order freezes every order behind it
+     * (L77) — this is the single highest-severity signal in the system.
+     */
+    oldestUnresolvedOrder: {
+        orderId: string;
+        observedAtUtc: string;
+    } | null;
     /** Unresolved listing-create jobs (no attempt resolution yet). */
     unresolvedCreates: ReadonlyArray<{
         sku: string;
