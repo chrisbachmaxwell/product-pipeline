@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-09-26: Incident #150 — Order-Freeze Triage; L77 Slash-SKU Regression Test (L81)
+
+Issue #150 reported ORDER_PIPELINE_BLOCKED behind order `90-00000-00077`, which last failed with `SHOPIFY_TARGET_INVALID`. The AI diagnosis blamed a repeat of L77's slash SKU. It is not a repeat: the L77 fix is on main, and the SKU it named (`ILCE7RM4/B-U695`) passes it. That SKU was never recorded by the watchdog (`SKU: n/a`); the diagnosis took it from L77. Any order id valid on the import path passes both tag-side deny sites, so only a line SKU outside SAFE_SKU could produce this code for a real order. The order id is synthetic-shaped and appears nowhere, so it is probably a drill; this was not verified, and no provider was contacted. The real gap: PR #140 relaxed SAFE_SKU without an adapter-level regression test. New tests in `src/order-import-admin/__tests__/order-import-admin.test.ts` pin the literal L77 SKU, the #150 order id at the tag and source-id sites, pre-request denial of quote-bearing SKUs, and exact-echo binding. Mutation-checked. Test-only change; no runtime behavior changed.
+
 ### 2026-09-26: Incident Drill #147 — Pipeline Proven End-to-End; Hermetic Connections Tests (L80)
 
 Issue #147 (`END_DISPATCH_REJECTED` for SKU `DRILL-TEST`) was the second synthetic self-healing drill (after #146, closed as DRILL COMPLETE). `DRILL-TEST` appears nowhere in source, and the watchdog has no drill or injection path, so there was no production defect to fix and no operator action on eBay. Its value: tier 3 (the fix-proposal workflow) ran for the first time with the repository secret set. That run found a real test defect: `src/server/connections.test.ts` read the runner's ambient `ANTHROPIC_API_KEY` (the workflow exports it), so two vault tests failed and the assertion diff printed the live key. The tests now blank every env override with `vi.stubEnv` and restore with `unstubAllEnvs`, replacing a `finally { delete process.env… }` that also erased the real key for later tests in the worker. Test-only change; no runtime behavior changed.

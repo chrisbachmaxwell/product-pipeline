@@ -831,3 +831,59 @@ describe('order-import operator CLI', () => {
         expect(storeReader).not.toMatch(/INSERT|UPDATE|DELETE|REPLACE|CREATE TABLE/i);
     });
 });
+// L77 regression (incident #150): the slash admission shipped in PR #140
+// without an adapter-level test, so reverting SAFE_SKU would silently
+// re-freeze the strictly-ordered poll. Pins every SHOPIFY_TARGET_INVALID deny
+// site on the import path against the real L77 SKU and the #150 order id,
+// plus the two properties that make the relaxed grammar injection-safe.
+describe('Shopify order adapter target grammar (L77 / #150)', () => {
+    const L77_SKU = 'ILCE7RM4/B-U695';
+    const INCIDENT_ORDER_ID = '90-00000-00077';
+    const L77_VARIANT_GID = 'gid://shopify/ProductVariant/55396000000695';
+    function fakeShopify(echoSku) {
+        const queries = [];
+        const fetchImpl = async (input, init) => {
+            if (String(input) !== SHOPIFY_URL)
+                throw new Error(`unexpected URL: ${String(input)}`);
+            const body = JSON.parse(String(init?.body));
+            queries.push(body.variables.query);
+            if (body.operationName === 'OrderImportVariantBySku') {
+                const requested = /^sku:'(.+)'$/.exec(body.variables.query)[1];
+                const echoed = echoSku(requested);
+                return jsonResponse({ data: { productVariants: {
+                            nodes: echoed === null ? [] : [{ id: L77_VARIANT_GID, sku: echoed }],
+                        } } });
+            }
+            return jsonResponse({ data: { orders: { nodes: [], pageInfo: { hasNextPage: false } } } });
+        };
+        const adapter = createShopifyOrderAdapter({
+            fetchImpl,
+            getAccessToken: async () => 'shopify-offline-test-token',
+        });
+        return { adapter, queries };
+    }
+    it('binds the literal L77 slash SKU through the quoted token and exact echo', async () => {
+        const { adapter, queries } = fakeShopify((requested) => requested);
+        await expect(adapter.findVariantGidBySku(L77_SKU)).resolves.toBe(L77_VARIANT_GID);
+        expect(queries).toEqual([`sku:'${L77_SKU}'`]);
+    });
+    it('admits the #150 order id at the tag and source-identifier deny sites', async () => {
+        const { adapter, queries } = fakeShopify(() => null);
+        await expect(adapter.findOrderGidsByTag(`eBay-${INCIDENT_ORDER_ID}`)).resolves.toEqual([]);
+        await expect(adapter.findOrderGidsBySourceIdentifier(INCIDENT_ORDER_ID)).resolves.toEqual([]);
+        expect(queries).toEqual([
+            `tag:'eBay-${INCIDENT_ORDER_ID}'`,
+            `source_identifier:${INCIDENT_ORDER_ID}`,
+        ]);
+    });
+    it('still refuses a quote-bearing SKU before any request, and a non-exact echo never binds', async () => {
+        const { adapter, queries } = fakeShopify((requested) => `${requested}-OTHER`);
+        for (const hostile of [`${L77_SKU}'`, `ILCE7RM4' OR sku:'*`, `/${L77_SKU}`]) {
+            await expect(adapter.findVariantGidBySku(hostile)).rejects.toMatchObject({
+                code: 'SHOPIFY_TARGET_INVALID',
+            });
+        }
+        expect(queries).toEqual([]);
+        await expect(adapter.findVariantGidBySku(L77_SKU)).resolves.toBeNull();
+    });
+});
