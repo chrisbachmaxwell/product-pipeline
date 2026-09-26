@@ -21,6 +21,7 @@ import listingPublishRoutes from './routes/listing-publish.js';
 import listingPublishAllRoutes from './routes/listing-publish-all.js';
 import { initPublishAllSchedule } from './publish-all.js';
 import incidentsRoutes from './routes/incidents.js';
+import connectionsRoutes from './routes/connections.js';
 import { initIncidentWatchdog } from './incident-watchdog.js';
 import activityRoutes from './routes/activity.js';
 import ebayQuotaRoutes from './routes/ebay-quota.js';
@@ -124,6 +125,7 @@ app.post('/api/listing-draft', listingDraftJsonParser);
 // session and refuses unless the operator has armed the publish argv.
 app.post('/api/listing-publish', listingDraftJsonParser);
 app.post('/api/listing-publish-all', listingDraftJsonParser);
+app.post('/api/connections/anthropic', listingDraftJsonParser);
 app.use(listingDraftJsonErrorHandler);
 
 // --- Routes ---
@@ -132,6 +134,7 @@ app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
 app.use(listingPublishAllRoutes);
 app.use(incidentsRoutes);
+app.use(connectionsRoutes);
 app.use(activityRoutes);
 app.use(ebayQuotaRoutes);
 app.use(ebayCategoryAspectsRoutes);

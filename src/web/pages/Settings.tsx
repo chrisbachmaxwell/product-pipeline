@@ -1,13 +1,17 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
+  Button,
   Card,
   InlineStack,
+  Link,
   Page,
   Text,
+  TextField,
 } from '@shopify/polaris';
-import { useMigrationStatus } from '../hooks/useApi';
+import { apiClient, useMigrationStatus } from '../hooks/useApi';
 import { useAuthoritativeListings } from '../hooks/useAuthoritativeListings';
 import { isLiveCatalogResponse } from '../operator-ui';
 
@@ -35,6 +39,108 @@ const RESPONSIBILITY_LABEL: Record<string, string> = {
   fulfillment: 'Tracking numbers',
 };
 
+
+/**
+ * Connect the AI diagnosis tier from the app (L79): paste the key once,
+ * the server verifies it live with Anthropic before saving it to the
+ * credential vault. The key never renders anywhere after submission.
+ */
+const AnthropicConnection: React.FC = () => {
+  const [status, setStatus] = useState<{ connected: boolean; source: string | null } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async () => {
+    try {
+      const body = await apiClient.get<{ anthropic: { connected: boolean; source: string | null } }>('/connections');
+      setStatus(body.anthropic);
+    } catch { /* leave last state */ }
+  };
+  useEffect(() => { void refresh(); }, []);
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await apiClient.post<{ anthropic: { connected: boolean; source: string | null } }>(
+        '/connections/anthropic', { apiKey: apiKey.trim() },
+      );
+      setStatus(body.anthropic);
+      setApiKey('');
+      setOpen(false);
+    } catch (raised) {
+      setError(raised instanceof Error
+        ? raised.message.replace(/\s*\(CONNECTION_[A-Z_]+\)\s*$/, '')
+        : 'Connection failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      const body = await apiClient.delete<{ anthropic: { connected: boolean; source: string | null } }>('/connections/anthropic');
+      setStatus(body.anthropic);
+    } catch { /* surface via refresh */ } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+  return (
+    <BlockStack gap="200">
+      <Row label="Claude (AI incident diagnosis)">
+        {status === null ? <Badge>Checking…</Badge>
+          : status.connected
+            ? (
+              <InlineStack gap="200" blockAlign="center">
+                <Badge tone="success">Connected</Badge>
+                {status.source === 'stored' && (
+                  <Button variant="plain" tone="critical" disabled={busy} onClick={() => { void disconnect(); }}>
+                    Disconnect
+                  </Button>
+                )}
+              </InlineStack>
+            )
+            : <Button onClick={() => setOpen(true)} disabled={busy}>Connect</Button>}
+      </Row>
+      {open && status !== null && !status.connected && (
+        <BlockStack gap="200">
+          <Text as="p" variant="bodySm" tone="subdued">
+            1. Create a key at{' '}
+            <Link url="https://console.anthropic.com/settings/keys" target="_blank">
+              console.anthropic.com → API Keys
+            </Link>
+            {' '}(name it productpipeline). 2. Paste it below — it is verified with
+            Anthropic before being saved to this app’s credential vault, and is
+            never shown again.
+          </Text>
+          {error && <Banner tone="critical"><Text as="p">{error}</Text></Banner>}
+          <InlineStack gap="200" blockAlign="end" wrap={false}>
+            <div style={{ flexGrow: 1 }}>
+              <TextField
+                label="Anthropic API key"
+                labelHidden
+                type="password"
+                autoComplete="off"
+                placeholder="sk-ant-…"
+                value={apiKey}
+                onChange={setApiKey}
+              />
+            </div>
+            <Button variant="primary" loading={busy} disabled={apiKey.trim().length < 12}
+              onClick={() => { void connect(); }}>
+              Verify & connect
+            </Button>
+            <Button disabled={busy} onClick={() => { setOpen(false); setError(null); setApiKey(''); }}>
+              Cancel
+            </Button>
+          </InlineStack>
+        </BlockStack>
+      )}
+    </BlockStack>
+  );
+};
+
 const Settings: React.FC = () => {
   const migration = useMigrationStatus();
   const listings = useAuthoritativeListings({ limit: 1, offset: 0 });
@@ -56,6 +162,7 @@ const Settings: React.FC = () => {
                 ? <Badge tone="success">Connected</Badge>
                 : <Badge tone="attention">Checking…</Badge>}
             </Row>
+            <AnthropicConnection />
           </BlockStack>
         </Card>
 

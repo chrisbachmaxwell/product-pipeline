@@ -214,6 +214,17 @@ export function isExactListingPublishAll(method: string, originalUrl: string): b
   return method === 'POST' && originalUrl === '/api/listing-publish-all';
 }
 
+/**
+ * The connections exception (L79): Settings stores/removes the operator's
+ * pasted AI key in the local credential vault. Local-only writes — the
+ * handler performs zero commerce-provider writes; its single outbound call
+ * is a read-only key validation against the AI provider.
+ */
+export function isExactConnectionWrite(method: string, originalUrl: string): boolean {
+  return (method === 'POST' || method === 'DELETE')
+    && originalUrl === '/api/connections/anthropic';
+}
+
 /** Default-deny every state-changing API method during shadow mode. */
 export function writerQuarantineMiddleware(
   req: Request,
@@ -241,6 +252,11 @@ export function writerQuarantineMiddleware(
   }
 
   if (isExactListingPublishAll(req.method, req.originalUrl || '')) {
+    next();
+    return;
+  }
+
+  if (isExactConnectionWrite(req.method, req.originalUrl || '')) {
     next();
     return;
   }
