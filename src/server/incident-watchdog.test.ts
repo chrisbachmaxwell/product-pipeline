@@ -70,7 +70,7 @@ describe('evaluateIncidentCandidates', () => {
     const candidates = evaluateIncidentCandidates({
       snapshot: {
         observedAtUtc: new Date(NOW - 50 * 60_000).toISOString(),
-        rows: [row('OK-1', 3, '147000000009')],
+        rows: [row('OK-1', 3, '147000000009'), row('STUCK-1', 1, null)],
       },
       signals: {
         oldestUnresolvedOrder: null,
@@ -78,6 +78,9 @@ describe('evaluateIncidentCandidates', () => {
         unresolvedCreates: [
           { sku: 'STUCK-1', jobId: 'j1', reservedAtUtc: new Date(NOW - 2 * 3_600_000).toISOString() },
           { sku: 'FRESH-1', jobId: 'j2', reservedAtUtc: new Date(NOW - 5 * 60_000).toISOString() },
+          // Vanished SKU (sold+archived, no catalog row): bookkeeping, not
+          // an incident.
+          { sku: 'GONE-1', jobId: 'j3', reservedAtUtc: new Date(NOW - 9 * 3_600_000).toISOString() },
         ],
         repeatedEndFailures: [],
       },

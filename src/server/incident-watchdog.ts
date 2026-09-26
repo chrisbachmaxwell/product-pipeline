@@ -152,7 +152,13 @@ export function evaluateIncidentCandidates(input: {
 
   for (const create of signals?.unresolvedCreates ?? []) {
     const ageMs = nowMs - Date.parse(create.reservedAtUtc);
-    if (Number.isFinite(ageMs) && ageMs > UNRESOLVED_CREATE_AGE_MS) {
+    // A SKU absent from the catalog entirely (sold out, archived, zero
+    // eBay artifacts) has nothing to recover and nothing at risk — its
+    // orphaned ledger job is bookkeeping, not an incident (L83: the
+    // Hektor sold before its stale job could close; the close ceremony
+    // itself requires a capture row that no longer exists).
+    const rowExists = snapshot.rows.some((row) => row.shopify?.sku === create.sku);
+    if (rowExists && Number.isFinite(ageMs) && ageMs > UNRESOLVED_CREATE_AGE_MS) {
       candidates.push({
         id: `UNRESOLVED_CREATE_AGING:${create.sku}`,
         severity: 'warning',
