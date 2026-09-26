@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
 import { sendIncidentEmail } from './incident-email.js';
+import { lastOrderImportFailure } from './order-import-trigger.js';
 import {
   readIncidentLedgerSignalsFromArgv,
   type IncidentLedgerSignals,
@@ -83,6 +84,11 @@ export function evaluateIncidentCandidates(input: {
     const ageMs = nowMs - Date.parse(stuckOrder.observedAtUtc);
     if (Number.isFinite(ageMs) && ageMs > 30 * 60_000) {
       const hours = Math.round(ageMs / 3_600_000 * 10) / 10;
+      // The recorded denial code turns this from "go read server logs" into
+      // a greppable root-cause lead the fix-proposal agent can act on (L80:
+      // on 2026-09-25 that code was SHOPIFY_TARGET_INVALID and lived only
+      // in logs nobody reads).
+      const failure = lastOrderImportFailure(stuckOrder.orderId);
       candidates.push({
         id: `ORDER_PIPELINE_BLOCKED:${stuckOrder.orderId}`,
         severity: 'critical',
@@ -91,9 +97,13 @@ export function evaluateIncidentCandidates(input: {
         title: `eBay ORDERS ARE NOT IMPORTING — blocked ${hours}h behind order ${stuckOrder.orderId}`,
         detail: 'The order poll is strictly ordered: one order that cannot import freezes '
           + 'EVERY order behind it — customers are paying and nothing reaches Shopify to '
-          + 'ship (L77 was 40 hours and account strikes). Check the server log for '
-          + `ORDER_IMPORT_FAILED lines naming ${stuckOrder.orderId}, fix its cause, and `
-          + 'the pipeline drains automatically.',
+          + 'ship (L77 was 40 hours and account strikes). '
+          + (failure !== null
+            ? `The import for ${stuckOrder.orderId} last failed with code ${failure.code} `
+              + `at ${failure.atUtc} — search the codebase for that code to find every `
+              + 'deny site on the import path. '
+            : `Check the server log for ORDER_IMPORT_FAILED lines naming ${stuckOrder.orderId}. `)
+          + 'Fix the cause and the pipeline drains automatically.',
       });
     }
   }

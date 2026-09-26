@@ -1,5 +1,49 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
+
+/**
+ * Recent import-failure memory (L80): the denial code that explains a
+ * blocked order pipeline previously lived only in log lines nobody reads —
+ * on 2026-09-25 the SHOPIFY_TARGET_INVALID that froze seven orders for 40h
+ * was right here in warn() output. The last few failures persist to a tiny
+ * state file so the incident watchdog can put the CODE into the incident
+ * itself (and the fix-proposal agent, which cannot read server logs, can
+ * grep the codebase for it). Order ids and ceremony codes only — no PII.
+ */
+const FAILURE_MEMORY_FILE = '/data/product-pipeline/order-import-failures.json';
+const FAILURE_MEMORY_CAP = 20;
+
+export function recordOrderImportFailure(orderId: string, code: string): void {
+  try {
+    let entries: Array<{ orderId: string; code: string; atUtc: string }> = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(FAILURE_MEMORY_FILE, 'utf8')) as unknown;
+      if (Array.isArray(parsed)) entries = parsed as typeof entries;
+    } catch { /* fresh */ }
+    entries.push({ orderId, code: code.slice(0, 80), atUtc: new Date().toISOString() });
+    fs.mkdirSync(path.dirname(FAILURE_MEMORY_FILE), { recursive: true });
+    fs.writeFileSync(FAILURE_MEMORY_FILE, JSON.stringify(entries.slice(-FAILURE_MEMORY_CAP)));
+  } catch { /* best effort */ }
+}
+
+export function lastOrderImportFailure(orderId: string): { code: string; atUtc: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FAILURE_MEMORY_FILE, 'utf8')) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      const entry = parsed[index] as { orderId?: unknown; code?: unknown; atUtc?: unknown };
+      if (entry.orderId === orderId && typeof entry.code === 'string'
+        && typeof entry.atUtc === 'string') {
+        return { code: entry.code, atUtc: entry.atUtc };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Automated order import: poll -> import -> reconcile, on a timer and on
@@ -157,8 +201,9 @@ export function createOrderImportTrigger(dependencies: Readonly<{
         );
         const status = typeof imported.json?.status === 'string' ? imported.json.status : 'no-summary';
         if (imported.json === null || status === 'denied') {
-          warn(`ORDER_IMPORT_FAILED: ${orderId} ${
-            typeof imported.json?.code === 'string' ? imported.json.code : 'no-summary'}`);
+          const code = typeof imported.json?.code === 'string' ? imported.json.code : 'no-summary';
+          warn(`ORDER_IMPORT_FAILED: ${orderId} ${code}`);
+          recordOrderImportFailure(orderId, code);
           continue;
         }
         const jobId = imported.json.jobId;
