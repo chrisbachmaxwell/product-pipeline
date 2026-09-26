@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
+import { sendIncidentEmail } from './incident-email.js';
 import {
   readIncidentLedgerSignalsFromArgv,
   type IncidentLedgerSignals,
@@ -45,6 +46,7 @@ export type Incident = {
   diagnosisState: 'none' | 'pending' | 'done' | 'failed';
   diagnosis: string | null;
   githubIssueUrl: string | null;
+  notifiedAtUtc: string | null;
 };
 
 type SnapshotRow = {
@@ -275,6 +277,16 @@ async function defaultOpenIssue(incident: Incident): Promise<string | null> {
 }
 
 async function defaultNotify(incident: Incident): Promise<void> {
+  // Email first (operator ask 2026-09-26: chrism@/nick@pictureline.com);
+  // webhook second. Both best-effort and independently armed by env.
+  await sendIncidentEmail({
+    severity: incident.severity,
+    title: incident.title,
+    detail: incident.detail,
+    diagnosis: incident.diagnosis,
+    githubIssueUrl: incident.githubIssueUrl,
+    detectedAtUtc: incident.detectedAtUtc,
+  }).catch(() => false);
   const url = process.env.INCIDENT_WEBHOOK_URL;
   if (!url || !/^https:\/\//.test(url)) return;
   await fetch(url, {
@@ -343,6 +355,7 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
       diagnosisState: 'none',
       diagnosis: null,
       githubIssueUrl: null,
+      notifiedAtUtc: null,
     });
     warn(`[Incidents] NEW ${candidate.severity} ${candidate.id}`);
   }
@@ -367,8 +380,17 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
       try {
         needsDiagnosis.githubIssueUrl = await openIssue(needsDiagnosis);
       } catch { /* escalation is best-effort */ }
-      await notify(needsDiagnosis).catch(() => undefined);
     }
+  }
+
+  // Alerting is independent of diagnosis arming (L78): a critical with no
+  // API key still emails/webhooks immediately — the L77 freeze must never
+  // again depend on someone reading server logs. One alert per incident.
+  for (const incident of active) {
+    if (incident.severity !== 'critical' || incident.notifiedAtUtc !== null) continue;
+    if (incident.diagnosisState === 'pending') continue;
+    await notify(incident).catch(() => undefined);
+    incident.notifiedAtUtc = nowUtc;
   }
 
   currentIncidents = active.slice(0, MAX_INCIDENTS);
