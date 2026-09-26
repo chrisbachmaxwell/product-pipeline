@@ -12,6 +12,7 @@ export type Incident = {
     diagnosisState: 'none' | 'pending' | 'done' | 'failed';
     diagnosis: string | null;
     githubIssueUrl: string | null;
+    notifiedAtUtc: string | null;
 };
 type SnapshotRow = {
     shopify: {
