@@ -126,6 +126,7 @@ app.post('/api/listing-draft', listingDraftJsonParser);
 app.post('/api/listing-publish', listingDraftJsonParser);
 app.post('/api/listing-publish-all', listingDraftJsonParser);
 app.post('/api/connections/anthropic', listingDraftJsonParser);
+app.post('/api/connections/github', listingDraftJsonParser);
 app.use(listingDraftJsonErrorHandler);
 
 // --- Routes ---

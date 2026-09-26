@@ -201,10 +201,12 @@ async function defaultDiagnose(incident, context) {
     return text.slice(0, 6_000);
 }
 async function defaultOpenIssue(incident) {
-    const token = process.env.INCIDENT_GITHUB_TOKEN;
-    const repo = process.env.INCIDENT_GITHUB_REPO;
-    if (!token || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo))
+    const connections = await import('./connections.js');
+    const resolved = connections.readGithubToken();
+    if (resolved === null)
         return null;
+    const token = resolved.token;
+    const repo = connections.incidentGithubRepo();
     const response = await fetch(`https://api.github.com/repos/${repo}/issues`, {
         method: 'POST',
         headers: {
