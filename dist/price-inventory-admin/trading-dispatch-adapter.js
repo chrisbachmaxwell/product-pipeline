@@ -222,8 +222,20 @@ export function createTradingAlignDispatchAdapter(dependencies) {
             ? parsed[`${callName}Response`]
             : null;
         const ack = isRecord(response) ? response.Ack : null;
-        if (ack !== 'Success' && ack !== 'Warning')
+        if (ack !== 'Success' && ack !== 'Warning') {
+            // L84 (the L75 playbook): a bare TRADING_ALIGN_REJECTED hid eBay's
+            // reason for WEEKS of 16437396 churn. Surface the sanitized error
+            // text (token-shaped runs stripped, operator log only) so the next
+            // rejection diagnoses itself.
+            const errorText = /<Errors>[\s\S]{0,600}?<\/Errors>/u.exec(text)?.[0] ?? '';
+            const sanitized = errorText
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+                .replace(/\s+/g, ' ')
+                .slice(0, 300);
+            console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
             deny('TRADING_ALIGN_REJECTED');
+        }
         return text;
     }
     async function reviseInventoryStatus(input) {
