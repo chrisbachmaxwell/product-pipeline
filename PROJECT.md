@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-23. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-28. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,11 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-24 → 2026-09-28: The Order Freeze, the Self-Healing Pipeline, and In-App Connections (L74-L84)
+
+The hardest week yet, and the one that produced the self-healing loop. Order import stopped writing the Shopify Notes field (custom attributes instead, PR #137). The Steel Rim near-oversell (L75) exposed a withdrawOffer missing eBay's required Accept-Language header — rejected silently 34 times over 38 hours until the operator ended the listing by hand; header fixed, rejections made loud. Then the week's biggest incident (L77): a slash-SKU Sony order froze the strictly-ordered import pipeline for 40 hours — seven paid orders unimported, account strikes — fixed by admitting '/' to the SKU grammar and answered structurally with the incident watchdog: OVERSELL_EXPOSURE / END_DISPATCH_REJECTED / ORDER_PIPELINE_BLOCKED / UNRESOLVED_CREATE_AGING / FULFILLMENT_STUCK / PUBLISH_RUN_STOPPED / SNAPSHOT_STALE detection on a 5-minute cadence, a red banner across the app, dependency-free SMTPS email alerts (L78), Claude-written diagnoses, auto-opened GitHub incident issues, and a fix-proposal workflow that opens PRs a human always merges (L76). Settings gained paste-once live-verified Connections for Claude, GitHub, and email — secrets in a dedicated 0600 vault after the legacy ledger proved server-read-only by design (L79). Two live drills proved the loop end-to-end: the agent identified drills as drills, found and fixed a real secret-printing test defect (PR #149, L80), and — given the failure-code enrichment (L80/PR #148) — walked the L77 root cause exactly, pinning it with a mutation-checked regression test (PR #151, L81). Loop-closing hardening followed (L83): inventory-model relist-on-restock via publishOffer (the L64 guard's missing half), sell-out-context gating on critical pages, and email as an in-app connection validated by actually delivering a test message. Monday's audit (L84) found the first fully-quiet weekend and finally decoded the 16437396 zombie — Trading rejections now log eBay's sanitized reason.
+
 
 ### 2026-09-26: Incident #150 — Order-Freeze Triage; L77 Slash-SKU Regression Test (L81)
 
