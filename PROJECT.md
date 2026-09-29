@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-28. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
+
+First fully-quiet weekend (3/3 orders imported, zero incidents, agent pipeline correctly idle). Monday audit decoded the 16437396 zombie (2-unit drift, rejection reason now loud-logged, capture pending), published the Hasselblad XCD 45P (147605742950) via the runner after a one-field Mount fill, and identified the sold-before-listing pattern (a7R V entered and left the ready queue within an hour). L85 is the session-close handoff snapshot: working/verified systems, operator-held outstanding items, unproven-live write paths, and the ops laws that bite.
 
 ### 2026-09-24 → 2026-09-28: The Order Freeze, the Self-Healing Pipeline, and In-App Connections (L74-L84)
 
