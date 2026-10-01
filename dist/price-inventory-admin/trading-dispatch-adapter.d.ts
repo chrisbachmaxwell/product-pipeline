@@ -1,3 +1,17 @@
+/** L87 ring of sanitized provider rejections read by the incident watchdog. */
+export declare const PROVIDER_REJECTIONS_FILE = "/data/product-pipeline/provider-rejections.json";
+/**
+ * One sanitized rejection as persisted for the watchdog. `listingId` binds
+ * the reason to the exact listing it was sent for (L88: without it the
+ * watchdog quoted another listing's reason on an unrelated incident).
+ */
+export type ProviderRejectionEntry = {
+    call: string;
+    listingId: string | null;
+    errorCode: string | null;
+    reason: string;
+    atUtc: string;
+};
 export declare class TradingAlignDispatchError extends Error {
     readonly code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED';
     constructor(code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED');
@@ -79,5 +93,7 @@ export declare function buildRelistFixedPriceItemXml(input: Readonly<{
 export declare function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     fetchImpl?: FetchLike;
     getAccessToken: () => Promise<string>;
+    /** Override for tests; production uses PROVIDER_REJECTIONS_FILE. */
+    rejectionsFile?: string;
 }>): TradingAlignDispatchAdapter;
 export {};

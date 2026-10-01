@@ -251,6 +251,7 @@ function createTradingWorld(): TradingWorld {
   const tradingAdapter = createTradingAlignDispatchAdapter({
     fetchImpl: fakeFetch,
     getAccessToken: async () => 'test-iaf-token',
+    rejectionsFile: path.join(root, 'provider-rejections.json'),
   });
 
   // The Inventory-API adapter must never be touched by a Trading dispatch.
@@ -974,5 +975,41 @@ describe('trading-model price/inventory alignment dispatch', () => {
     expect(() => buildReviseInventoryStatusXml({
       listingId: LISTING_ID, field: 'price', price: { value: '12.95', currency: 'usd' },
     })).toThrow(TradingAlignDispatchError);
+  });
+});
+
+describe('persisted provider rejections (L88)', () => {
+  it('records each rejection against the exact listing it was sent for, with eBay\'s error code', async () => {
+    // Incident #160: the ring stored no listing id, so the watchdog quoted
+    // listing 147441150035's Best Offer rejection on 146695190152's incident.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trading-rejections-'));
+    roots.push(root);
+    const rejectionsFile = path.join(root, 'provider-rejections.json');
+    const adapter = createTradingAlignDispatchAdapter({
+      getAccessToken: async () => 'test-iaf-token',
+      rejectionsFile,
+      fetchImpl: async () => new Response(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        + '<ReviseInventoryStatusResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
+        + '<Ack>Failure</Ack><Errors>'
+        + '<ShortMessage>Invalid AutoAccept price.</ShortMessage>'
+        + '<LongMessage>The Best Offer Auto Accept Price must be less than the Buy It Now price.</LongMessage>'
+        + '<ErrorCode>23004</ErrorCode><SeverityCode>Error</SeverityCode>'
+        + '</Errors></ReviseInventoryStatusResponse>',
+        { status: 200, headers: { 'Content-Type': 'text/xml' } },
+      ),
+    });
+    await expect(adapter.reviseInventoryStatus({
+      listingId: LISTING_ID, field: 'price', price: { value: '299.95', currency: 'USD' },
+    })).rejects.toMatchObject({ code: 'TRADING_ALIGN_REJECTED' });
+    const entries = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8')) as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      call: 'ReviseInventoryStatus',
+      listingId: LISTING_ID,
+      errorCode: '23004',
+    });
+    expect(entries[0]!.reason).toContain('Invalid AutoAccept price');
+    expect(JSON.stringify(entries)).not.toContain('test-iaf-token');
   });
 });

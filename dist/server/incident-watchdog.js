@@ -29,6 +29,12 @@ const SNAPSHOT_STALE_MS = 45 * 60_000;
  * is an incident — the sweep's normal end takes a few minutes. */
 const PERSISTENCE_MS = 8 * 60_000;
 const STATE_FILE = '/data/product-pipeline/incidents.json';
+/** Written by the Trading align adapter (L87); duplicated, not imported —
+ * the server must never import a writer module (writer quarantine). */
+const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
+/** eBay Trading: "Invalid AutoAccept price" — Best Offer auto-accept must be
+ * below the Buy It Now price (incident #160). */
+const EBAY_BEST_OFFER_AUTO_ACCEPT_CONFLICT = '23004';
 const MAX_INCIDENTS = 20;
 /**
  * Pure detection over one observation. Persistence (the two-sighting rule
@@ -129,7 +135,20 @@ export function evaluateIncidentCandidates(input) {
         const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
             || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
         const stillLive = row?.ebay?.listingId != null;
-        const reason = latestProviderRejection();
+        const listingId = failure.sku.startsWith('listing ')
+            ? failure.sku.slice('listing '.length)
+            : row?.ebay?.listingId ?? null;
+        // L88: only ever quote THIS listing's rejection. The ring is shared, and
+        // incident #160 quoted another listing's reason as this one's.
+        const rejection = listingId === null ? null
+            : latestProviderRejectionFor(listingId, input.providerRejections);
+        const reason = rejection?.reason.slice(0, 300) ?? null;
+        const action = rejection?.errorCode === EBAY_BEST_OFFER_AUTO_ACCEPT_CONFLICT
+            ? 'eBay refuses any Buy It Now price at or below this listing\'s Best Offer '
+                + 'auto-accept price, and ProductPipeline never changes Best Offer settings. '
+                + 'On eBay, lower (or remove) the Best Offer auto-accept price below the new '
+                + 'Shopify price — the next price sweep then aligns automatically. '
+            : 'Set the price manually on eBay now. ';
         candidates.push({
             id: `PRICE_SYNC_REJECTED:${failure.sku}`,
             // A live listing showing a WRONG PRICE can sell at that price —
@@ -140,10 +159,12 @@ export function evaluateIncidentCandidates(input) {
             sku: failure.sku,
             title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
             detail: 'Shopify price changes for this listing are NOT reaching eBay — the live '
-                + 'listing may be selling at the old price. Set the price manually on eBay now. '
+                + 'listing may be selling at the old price. '
+                + action
                 + (reason !== null
-                    ? `eBay's own reason for the most recent rejection: ${reason}`
-                    : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+                    ? `eBay's own reason for the most recent rejection of listing ${listingId}: ${reason}`
+                    : 'No rejection reason is recorded for this listing — check the server log for '
+                        + `EBAY_TRADING_REJECTED lines naming item=${listingId ?? 'unknown'}.`),
         });
     }
     for (const fulfillment of signals?.unresolvedFulfillments ?? []) {
@@ -176,19 +197,33 @@ export function evaluateIncidentCandidates(input) {
     }
     return candidates;
 }
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection() {
-    try {
-        const parsed = JSON.parse(fs.readFileSync('/data/product-pipeline/provider-rejections.json', 'utf8'));
-        if (!Array.isArray(parsed) || parsed.length === 0)
+/** Latest sanitized provider rejection the Trading adapter recorded (L87)
+ * for exactly this listing (L88) — eBay's own words, safe for incidents and
+ * the fix agent. Entries without a listing id are never attributed. */
+function latestProviderRejectionFor(listingId, injected) {
+    let entries = injected ?? [];
+    if (injected === undefined) {
+        try {
+            const parsed = JSON.parse(fs.readFileSync(PROVIDER_REJECTIONS_FILE, 'utf8'));
+            if (Array.isArray(parsed))
+                entries = parsed;
+        }
+        catch {
             return null;
-        const last = parsed[parsed.length - 1];
-        return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+        }
     }
-    catch {
-        return null;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry !== null && typeof entry === 'object' && entry.listingId === listingId
+            && typeof entry.reason === 'string') {
+            return {
+                listingId,
+                errorCode: typeof entry.errorCode === 'string' ? entry.errorCode : null,
+                reason: entry.reason,
+            };
+        }
     }
+    return null;
 }
 /* ------------------------------------------------------------------ */
 function parseArgvEnv(name) {
