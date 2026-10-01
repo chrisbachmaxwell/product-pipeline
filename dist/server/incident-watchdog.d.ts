@@ -47,7 +47,14 @@ export declare function evaluateIncidentCandidates(input: {
     snapshot: Snapshot;
     signals: IncidentLedgerSignals | null;
     nowMs: number;
+    /** Defaults to the Trading adapter's persisted ring (L87). */
+    providerRejections?: readonly ProviderRejection[];
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>>;
+export type ProviderRejection = {
+    reason: string;
+    listingId?: string;
+    code?: string;
+};
 export declare function getIncidents(): readonly Incident[];
 export declare function runWatchdogOnce(dependencies?: WatchdogDependencies): Promise<void>;
 export declare function initIncidentWatchdog(dependencies?: WatchdogDependencies): NodeJS.Timeout;

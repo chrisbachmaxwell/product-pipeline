@@ -129,7 +129,12 @@ export function evaluateIncidentCandidates(input) {
         const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
             || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
         const stillLive = row?.ebay?.listingId != null;
-        const reason = latestProviderRejection();
+        const listingId = row?.ebay?.listingId
+            ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
+        const rejection = providerRejectionFor(input.providerRejections ?? readProviderRejections(), listingId);
+        const bestOfferConflict = rejection !== null
+            && (rejection.code === 'TRADING_ALIGN_BEST_OFFER_CONFLICT'
+                || /Auto\s?Accept/iu.test(rejection.reason));
         candidates.push({
             id: `PRICE_SYNC_REJECTED:${failure.sku}`,
             // A live listing showing a WRONG PRICE can sell at that price —
@@ -139,11 +144,24 @@ export function evaluateIncidentCandidates(input) {
             code: 'PRICE_SYNC_REJECTED',
             sku: failure.sku,
             title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
-            detail: 'Shopify price changes for this listing are NOT reaching eBay — the live '
-                + 'listing may be selling at the old price. Set the price manually on eBay now. '
-                + (reason !== null
-                    ? `eBay's own reason for the most recent rejection: ${reason}`
-                    : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+            // L88 (#159): eBay error 23004 is a seller setting, not a sync defect.
+            // Hand-setting the price on eBay hits the same rule, so the action
+            // line must name the setting; ProductPipeline never changes
+            // auto-accept itself (it decides which offers sell — money).
+            detail: bestOfferConflict
+                ? 'Shopify price changes for this listing are NOT reaching eBay — the live '
+                    + 'listing is still at the old price. The new price is at or below this '
+                    + "listing's Best Offer auto-accept price, which eBay forbids (error 23004); "
+                    + 'setting the price by hand on eBay is refused for the same reason. In Seller '
+                    + 'Hub, lower or turn off Best Offer auto-accept (and auto-decline) for this '
+                    + 'listing so it sits below the new Shopify price — the next price sweep then '
+                    + 'lands the price automatically. No code change is needed. '
+                    + `eBay's own words: ${rejection.reason}`
+                : 'Shopify price changes for this listing are NOT reaching eBay — the live '
+                    + 'listing may be selling at the old price. Set the price manually on eBay now. '
+                    + (rejection !== null
+                        ? `eBay's own reason for the most recent rejection: ${rejection.reason}`
+                        : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
         });
     }
     for (const fulfillment of signals?.unresolvedFulfillments ?? []) {
@@ -176,19 +194,33 @@ export function evaluateIncidentCandidates(input) {
     }
     return candidates;
 }
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection() {
+/** Sanitized provider rejections recorded by the Trading adapter (L87) —
+ * eBay's own words, safe for incidents and the fix agent. The adapter is
+ * quarantined from the server, so the path is duplicated, not imported. */
+function readProviderRejections() {
     try {
         const parsed = JSON.parse(fs.readFileSync('/data/product-pipeline/provider-rejections.json', 'utf8'));
-        if (!Array.isArray(parsed) || parsed.length === 0)
-            return null;
-        const last = parsed[parsed.length - 1];
-        return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+        if (!Array.isArray(parsed))
+            return [];
+        return parsed.filter((entry) => entry !== null && typeof entry === 'object'
+            && typeof entry.reason === 'string');
     }
     catch {
-        return null;
+        return [];
     }
+}
+/**
+ * The newest rejection for THIS listing (L88): the ring is shared by every
+ * Trading call, so "the latest entry" can quote another listing's reason.
+ * Entries predating the listingId field match on eBay's echoed ItemID.
+ */
+function providerRejectionFor(rejections, listingId) {
+    const match = [...rejections].reverse().find((entry) => listingId === null
+        || entry.listingId === listingId
+        || (entry.listingId === undefined && entry.reason.includes(listingId)));
+    return match === undefined
+        ? null
+        : { reason: match.reason.slice(0, 300), code: match.code ?? null };
 }
 /* ------------------------------------------------------------------ */
 function parseArgvEnv(name) {

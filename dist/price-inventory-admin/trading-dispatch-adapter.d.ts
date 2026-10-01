@@ -1,6 +1,6 @@
 export declare class TradingAlignDispatchError extends Error {
-    readonly code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED';
-    constructor(code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED');
+    readonly code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED' | 'TRADING_ALIGN_BEST_OFFER_CONFLICT';
+    constructor(code: 'TRADING_ALIGN_AUTHORITY_UNAVAILABLE' | 'TRADING_ALIGN_TARGET_INVALID' | 'TRADING_ALIGN_PAYLOAD_INVALID' | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE' | 'TRADING_ALIGN_WRITE_FAILED' | 'TRADING_ALIGN_REJECTED' | 'TRADING_ALIGN_BEST_OFFER_CONFLICT');
 }
 type FetchLike = typeof fetch;
 export type TradingAlignInput = Readonly<{
@@ -76,8 +76,27 @@ export declare function buildRelistFixedPriceItemXml(input: Readonly<{
         currency: string;
     }>;
 }>): string;
+/** Ring of sanitized provider rejections read by the incident watchdog. */
+export declare const PROVIDER_REJECTIONS_FILE = "/data/product-pipeline/provider-rejections.json";
+export type ProviderRejectionRecord = {
+    call: string;
+    reason: string;
+    atUtc: string;
+    listingId?: string;
+    code?: string;
+};
+/**
+ * Classify one non-Ack Trading response body (L88). eBay error 23004
+ * ("Invalid AutoAccept price") means the requested Buy It Now price is at or
+ * below the listing's Best Offer auto-accept price: a seller-side setting, not
+ * a sync defect, and every retry is refused identically until a human lowers
+ * or clears auto-accept. ProductPipeline never changes auto-accept itself --
+ * that threshold decides which offers sell automatically, i.e. money.
+ */
+export declare function classifyTradingRejection(responseXml: string): 'TRADING_ALIGN_BEST_OFFER_CONFLICT' | 'TRADING_ALIGN_REJECTED';
 export declare function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     fetchImpl?: FetchLike;
     getAccessToken: () => Promise<string>;
+    rejectionsFile?: string;
 }>): TradingAlignDispatchAdapter;
 export {};

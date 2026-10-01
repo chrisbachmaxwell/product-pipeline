@@ -19,6 +19,7 @@ import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.
 import type { LiveListingCatalogSnapshot } from '../../server/live-listing-catalog.js';
 import {
   buildReviseInventoryStatusXml,
+  classifyTradingRejection,
   createTradingAlignDispatchAdapter,
   TradingAlignDispatchError,
 } from '../trading-dispatch-adapter.js';
@@ -974,5 +975,87 @@ describe('trading-model price/inventory alignment dispatch', () => {
     expect(() => buildReviseInventoryStatusXml({
       listingId: LISTING_ID, field: 'price', price: { value: '12.95', currency: 'usd' },
     })).toThrow(TradingAlignDispatchError);
+  });
+});
+
+describe('Best Offer auto-accept conflict (L88, incident #159)', () => {
+  // eBay's exact non-Ack response shape for listing 147441150035 (SKU
+  // 578969-U367) on 2026-10-01: a StartPrice revise refused because the new
+  // Buy It Now price is not above the listing's Best Offer auto-accept price.
+  const AUTO_ACCEPT_REJECTION = '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<ReviseInventoryStatusResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + '<Ack>Failure</Ack><Errors>'
+    + '<ShortMessage>Invalid AutoAccept price.</ShortMessage>'
+    + '<LongMessage>The Best Offer Auto Accept Price must be less than the Buy It Now price.'
+    + '</LongMessage><ErrorCode>23004</ErrorCode><SeverityCode>Error</SeverityCode>'
+    + '<ErrorParameters ParamID="0"><Value>345.95 USD</Value></ErrorParameters>'
+    + '<ErrorParameters ParamID="1"><Value>147441150035</Value></ErrorParameters>'
+    + '<ErrorParameters ParamID="2"><Value>578969-U367</Value></ErrorParameters>'
+    + '<ErrorClassification>RequestError</ErrorClassification>'
+    + '</Errors></ReviseInventoryStatusResponse>';
+
+  const directories: string[] = [];
+  afterEach(() => {
+    for (const directory of directories.splice(0)) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  function adapterReturning(body: string) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rejections-'));
+    directories.push(directory);
+    const rejectionsFile = path.join(directory, 'provider-rejections.json');
+    const adapter = createTradingAlignDispatchAdapter({
+      fetchImpl: async () => new Response(body, {
+        status: 200, headers: { 'Content-Type': 'text/xml' },
+      }),
+      getAccessToken: async () => 'test-iaf-token',
+      rejectionsFile,
+    });
+    return { adapter, rejectionsFile };
+  }
+
+  it('classifies eBay error 23004 apart from a generic rejection', () => {
+    expect(classifyTradingRejection(AUTO_ACCEPT_REJECTION))
+      .toBe('TRADING_ALIGN_BEST_OFFER_CONFLICT');
+    expect(classifyTradingRejection(
+      '<Errors><ShortMessage>Item not found.</ShortMessage>'
+      + '<ErrorCode>17</ErrorCode></Errors>',
+    )).toBe('TRADING_ALIGN_REJECTED');
+  });
+
+  it('throws the specific code and records the rejection keyed by listing', async () => {
+    const { adapter, rejectionsFile } = adapterReturning(AUTO_ACCEPT_REJECTION);
+    await expect(adapter.reviseInventoryStatus({
+      listingId: '147441150035',
+      field: 'price',
+      price: { value: '345.95', currency: 'USD' },
+    })).rejects.toMatchObject({ code: 'TRADING_ALIGN_BEST_OFFER_CONFLICT' });
+
+    const recorded = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8')) as Array<
+      Record<string, unknown>>;
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      call: 'ReviseInventoryStatus',
+      listingId: '147441150035',
+      code: 'TRADING_ALIGN_BEST_OFFER_CONFLICT',
+    });
+    expect(recorded[0].reason).toContain('Invalid AutoAccept price.');
+    expect(recorded[0].reason).toContain('23004');
+    expect(recorded[0].reason).not.toMatch(/test-iaf-token/);
+  });
+
+  it('keeps the generic code for any other rejection', async () => {
+    const { adapter, rejectionsFile } = adapterReturning(
+      AUTO_ACCEPT_REJECTION
+        .replace('Invalid AutoAccept price.', 'Item cannot be accessed.')
+        .replace(/<LongMessage>[\s\S]*?<\/LongMessage>/u, '')
+        .replace('23004', '17'),
+    );
+    await expect(adapter.reviseInventoryStatus({
+      listingId: '147441150035', field: 'quantity', quantity: 2,
+    })).rejects.toMatchObject({ code: 'TRADING_ALIGN_REJECTED' });
+    expect(JSON.parse(fs.readFileSync(rejectionsFile, 'utf8'))[0])
+      .toMatchObject({ listingId: '147441150035', code: 'TRADING_ALIGN_REJECTED' });
   });
 });

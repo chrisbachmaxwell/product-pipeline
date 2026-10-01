@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-01. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-01: Incident #159 — Best Offer Auto-Accept Blocks Price Sync (L88)
+
+The first PRICE_SYNC_REJECTED incident (listing 147441150035, SKU 578969-U367, 3× in 24h) was not a sync defect: eBay error 23004 refuses any `ReviseInventoryStatus` StartPrice at or below the listing's Best Offer auto-accept price. Fix: the Trading adapter classifies that rejection as `TRADING_ALIGN_BEST_OFFER_CONFLICT` (sweep summary + ledger failure code) and records each persisted rejection with its `listingId` and code; the watchdog quotes the rejection for THAT listing (it used to quote whichever listing failed last) and, for this class, gives the operator the real action — lower or turn off auto-accept/auto-decline in Seller Hub — instead of "set the price manually", which eBay refuses for the same reason. ProductPipeline deliberately never changes auto-accept itself. Regression tests pin eBay's exact 23004 response.
 
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 
