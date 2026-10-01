@@ -209,3 +209,53 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
             .toMatchObject({ severity: 'warning' });
     });
 });
+describe('PRICE_SYNC_REJECTED Best Offer auto-accept conflict (L88, #159)', () => {
+    const signals = {
+        oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+        repeatedEndFailures: [],
+        repeatedPriceFailures: [{ sku: 'listing 147441150035', count: 3, lastAtUtc: FRESH }],
+    };
+    const autoAccept = {
+        reason: ' Invalid AutoAccept price. The Best Offer Auto Accept Price must be less than '
+            + 'the Buy It Now price. 23004 Error 345.95 USD 147441150035 578969-U367 RequestError ',
+        listingId: '147441150035',
+        code: 'TRADING_ALIGN_BEST_OFFER_CONFLICT',
+    };
+    it('names the auto-accept setting instead of "set the price manually"', () => {
+        const incident = evaluateIncidentCandidates({
+            snapshot: { observedAtUtc: FRESH, rows: [row('578969-U367', 1, '147441150035')] },
+            signals,
+            nowMs: NOW,
+            providerRejections: [autoAccept],
+        }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED');
+        expect(incident).toMatchObject({ severity: 'critical' });
+        expect(incident.detail).toContain('Best Offer auto-accept');
+        expect(incident.detail).toContain('23004');
+        expect(incident.detail).toContain('old price');
+        expect(incident.detail).not.toContain('Set the price manually');
+    });
+    it("quotes this listing's rejection, not another listing's newer one", () => {
+        const incident = evaluateIncidentCandidates({
+            snapshot: { observedAtUtc: FRESH, rows: [row('578969-U367', 1, '147441150035')] },
+            signals,
+            nowMs: NOW,
+            providerRejections: [
+                autoAccept,
+                { reason: 'Item cannot be accessed. 17 Error 147520586676', listingId: '147520586676',
+                    code: 'TRADING_ALIGN_REJECTED' },
+            ],
+        }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED');
+        expect(incident.detail).toContain('Invalid AutoAccept price');
+        expect(incident.detail).not.toContain('147520586676');
+    });
+    it('matches pre-L88 records (no listingId) by the ItemID eBay echoes', () => {
+        const incident = evaluateIncidentCandidates({
+            snapshot: { observedAtUtc: FRESH, rows: [] },
+            signals,
+            nowMs: NOW,
+            providerRejections: [{ reason: autoAccept.reason }],
+        }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED');
+        expect(incident).toMatchObject({ severity: 'warning' });
+        expect(incident.detail).toContain('Best Offer auto-accept');
+    });
+});

@@ -38,7 +38,8 @@ export class TradingAlignDispatchError extends Error {
     | 'TRADING_ALIGN_PAYLOAD_INVALID'
     | 'TRADING_ALIGN_PAYLOAD_TOO_LARGE'
     | 'TRADING_ALIGN_WRITE_FAILED'
-    | 'TRADING_ALIGN_REJECTED') {
+    | 'TRADING_ALIGN_REJECTED'
+    | 'TRADING_ALIGN_BEST_OFFER_CONFLICT') {
     super('Trading price/inventory alignment dispatch adapter failed');
     this.name = 'TradingAlignDispatchError';
   }
@@ -191,6 +192,33 @@ export function buildRelistFixedPriceItemXml(input: Readonly<{
   return xml;
 }
 
+/** Ring of sanitized provider rejections read by the incident watchdog. */
+export const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
+
+export type ProviderRejectionRecord = {
+  call: string;
+  reason: string;
+  atUtc: string;
+  listingId?: string;
+  code?: string;
+};
+
+/**
+ * Classify one non-Ack Trading response body (L88). eBay error 23004
+ * ("Invalid AutoAccept price") means the requested Buy It Now price is at or
+ * below the listing's Best Offer auto-accept price: a seller-side setting, not
+ * a sync defect, and every retry is refused identically until a human lowers
+ * or clears auto-accept. ProductPipeline never changes auto-accept itself --
+ * that threshold decides which offers sell automatically, i.e. money.
+ */
+export function classifyTradingRejection(responseXml: string):
+  'TRADING_ALIGN_BEST_OFFER_CONFLICT' | 'TRADING_ALIGN_REJECTED' {
+  return /<ErrorCode>\s*23004\s*<\/ErrorCode>/u.test(responseXml)
+    || /Auto\s?Accept/iu.test(responseXml)
+    ? 'TRADING_ALIGN_BEST_OFFER_CONFLICT'
+    : 'TRADING_ALIGN_REJECTED';
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -198,8 +226,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   fetchImpl?: FetchLike;
   getAccessToken: () => Promise<string>;
+  rejectionsFile?: string;
 }>): TradingAlignDispatchAdapter {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const rejectionsFile = dependencies.rejectionsFile ?? PROVIDER_REJECTIONS_FILE;
 
   async function accessToken(): Promise<string> {
     let token = '';
@@ -250,11 +280,19 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
-    await dispatchBoundedCallReturningBody(body, callName);
+  async function dispatchBoundedCall(
+    body: string,
+    callName: string,
+    listingId: string,
+  ): Promise<void> {
+    await dispatchBoundedCallReturningBody(body, callName, listingId);
   }
 
-  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
+  async function dispatchBoundedCallReturningBody(
+    body: string,
+    callName: string,
+    listingId: string,
+  ): Promise<string> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
@@ -286,31 +324,37 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
         .replace(/\s+/g, ' ')
         .slice(0, 300);
-      console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+      const code = classifyTradingRejection(text);
+      console.warn(`EBAY_TRADING_REJECTED call=${callName} code=${code} ${sanitized}`);
       // L87: persist the sanitized reason so incidents (and the fix agent,
-      // which can never read server logs) receive eBay's own words.
+      // which can never read server logs) receive eBay's own words. L88:
+      // keyed by listing and classified, so an incident quotes ITS listing's
+      // rejection rather than whichever listing was rejected last.
       try {
         const fs = await import('node:fs');
-        const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
+        let entries: ProviderRejectionRecord[] = [];
         try {
-          const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+          const parsed = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8')) as unknown;
           if (Array.isArray(parsed)) entries = parsed as typeof entries;
         } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
-        fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
+        entries.push({
+          call: callName, reason: sanitized, atUtc: new Date().toISOString(), listingId, code,
+        });
+        fs.writeFileSync(rejectionsFile, JSON.stringify(entries.slice(-20)));
       } catch { /* best effort */ }
-      deny('TRADING_ALIGN_REJECTED');
+      deny(code);
     }
     return text;
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+    await dispatchBoundedCall(
+      buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME, input.listingId);
   }
 
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
-    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+    await dispatchBoundedCall(
+      buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME, input.listingId);
   }
 
   async function relistFixedPriceItem(input: Readonly<{
@@ -321,6 +365,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     const text = await dispatchBoundedCallReturningBody(
       buildRelistFixedPriceItemXml(input),
       EBAY_TRADING_RELIST_CALL_NAME,
+      input.listingId,
     );
     // The response's ItemID is the NEW listing eBay created.
     const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
