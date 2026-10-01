@@ -29,6 +29,8 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const EXACT_ITEM_ID = /^[0-9]{1,19}$/;
 const PRICE_AMOUNT = /^[0-9]{1,10}(\.[0-9]{1,2})?$/;
 const CURRENCY = /^[A-Z]{3}$/;
+/** L87 ring of sanitized provider rejections read by the incident watchdog. */
+export const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
 export class TradingAlignDispatchError extends Error {
     code;
     constructor(code) {
@@ -144,6 +146,7 @@ function isRecord(value) {
 }
 export function createTradingAlignDispatchAdapter(dependencies) {
     const fetchImpl = dependencies.fetchImpl ?? fetch;
+    const rejectionsFile = dependencies.rejectionsFile ?? PROVIDER_REJECTIONS_FILE;
     async function accessToken() {
         let token = '';
         try {
@@ -196,10 +199,10 @@ export function createTradingAlignDispatchAdapter(dependencies) {
             clearTimeout(timeout);
         }
     }
-    async function dispatchBoundedCall(body, callName) {
-        await dispatchBoundedCallReturningBody(body, callName);
+    async function dispatchBoundedCall(body, callName, listingId) {
+        await dispatchBoundedCallReturningBody(body, callName, listingId);
     }
-    async function dispatchBoundedCallReturningBody(body, callName) {
+    async function dispatchBoundedCallReturningBody(body, callName, listingId) {
         if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
             deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
         }
@@ -233,21 +236,28 @@ export function createTradingAlignDispatchAdapter(dependencies) {
                 .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
                 .replace(/\s+/g, ' ')
                 .slice(0, 300);
-            console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+            const errorCode = /<ErrorCode>([0-9]{1,8})<\/ErrorCode>/u.exec(errorText)?.[1] ?? null;
+            console.warn(`EBAY_TRADING_REJECTED call=${callName} item=${listingId} ${sanitized}`);
             // L87: persist the sanitized reason so incidents (and the fix agent,
-            // which can never read server logs) receive eBay's own words.
+            // which can never read server logs) receive eBay's own words. L88:
+            // keyed by listing so a reason is only ever quoted for its own item.
             try {
                 const fs = await import('node:fs');
-                const file = '/data/product-pipeline/provider-rejections.json';
                 let entries = [];
                 try {
-                    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    const parsed = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8'));
                     if (Array.isArray(parsed))
                         entries = parsed;
                 }
                 catch { /* fresh */ }
-                entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
-                fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
+                entries.push({
+                    call: callName,
+                    listingId: EXACT_ITEM_ID.test(listingId) ? listingId : null,
+                    errorCode,
+                    reason: sanitized,
+                    atUtc: new Date().toISOString(),
+                });
+                fs.writeFileSync(rejectionsFile, JSON.stringify(entries.slice(-20)));
             }
             catch { /* best effort */ }
             deny('TRADING_ALIGN_REJECTED');
@@ -255,13 +265,13 @@ export function createTradingAlignDispatchAdapter(dependencies) {
         return text;
     }
     async function reviseInventoryStatus(input) {
-        await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+        await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME, input.listingId);
     }
     async function endFixedPriceItem(input) {
-        await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+        await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME, input.listingId);
     }
     async function relistFixedPriceItem(input) {
-        const text = await dispatchBoundedCallReturningBody(buildRelistFixedPriceItemXml(input), EBAY_TRADING_RELIST_CALL_NAME);
+        const text = await dispatchBoundedCallReturningBody(buildRelistFixedPriceItemXml(input), EBAY_TRADING_RELIST_CALL_NAME, input.listingId);
         // The response's ItemID is the NEW listing eBay created.
         const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
         if (!newListingId)

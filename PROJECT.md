@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-01. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-01: Incident #160 — Price-Rejection Reasons Bound to Their Own Listing; Best Offer Auto-Accept Conflict Named (L88)
+
+Issue #160 (`PRICE_SYNC_REJECTED`, listing `146695190152`, 3× in 24h) quoted eBay error 23004 "Invalid AutoAccept price", but the error's own parameters named listing `147441150035` (SKU `578969-U367`). Root cause in code: the L87 rejection ring (`/data/product-pipeline/provider-rejections.json`) stored no listing id, and the watchdog attached the newest entry to every price incident. So any incident could quote another listing's reason, and the operator could fix the wrong listing. Fix: the Trading align adapter now records `listingId` and eBay's `ErrorCode` with each sanitized rejection (and logs `item=`). The watchdog quotes only the incident's own listing; entries without a listing id are never attributed. For 23004 it gives the exact eBay-side fix: lower or remove the Best Offer auto-accept price below the new Shopify price. ProductPipeline never changes Best Offer settings. Regression tests are in `trading-align.test.ts` and `incident-watchdog.test.ts`. No provider was contacted.
 
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 

@@ -30,6 +30,21 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const EXACT_ITEM_ID = /^[0-9]{1,19}$/;
 const PRICE_AMOUNT = /^[0-9]{1,10}(\.[0-9]{1,2})?$/;
 const CURRENCY = /^[A-Z]{3}$/;
+/** L87 ring of sanitized provider rejections read by the incident watchdog. */
+export const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
+
+/**
+ * One sanitized rejection as persisted for the watchdog. `listingId` binds
+ * the reason to the exact listing it was sent for (L88: without it the
+ * watchdog quoted another listing's reason on an unrelated incident).
+ */
+export type ProviderRejectionEntry = {
+  call: string;
+  listingId: string | null;
+  errorCode: string | null;
+  reason: string;
+  atUtc: string;
+};
 
 export class TradingAlignDispatchError extends Error {
   constructor(readonly code:
@@ -198,8 +213,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   fetchImpl?: FetchLike;
   getAccessToken: () => Promise<string>;
+  /** Override for tests; production uses PROVIDER_REJECTIONS_FILE. */
+  rejectionsFile?: string;
 }>): TradingAlignDispatchAdapter {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const rejectionsFile = dependencies.rejectionsFile ?? PROVIDER_REJECTIONS_FILE;
 
   async function accessToken(): Promise<string> {
     let token = '';
@@ -250,11 +268,15 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
-    await dispatchBoundedCallReturningBody(body, callName);
+  async function dispatchBoundedCall(body: string, callName: string, listingId: string): Promise<void> {
+    await dispatchBoundedCallReturningBody(body, callName, listingId);
   }
 
-  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
+  async function dispatchBoundedCallReturningBody(
+    body: string,
+    callName: string,
+    listingId: string,
+  ): Promise<string> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
@@ -286,19 +308,26 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
         .replace(/\s+/g, ' ')
         .slice(0, 300);
-      console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+      const errorCode = /<ErrorCode>([0-9]{1,8})<\/ErrorCode>/u.exec(errorText)?.[1] ?? null;
+      console.warn(`EBAY_TRADING_REJECTED call=${callName} item=${listingId} ${sanitized}`);
       // L87: persist the sanitized reason so incidents (and the fix agent,
-      // which can never read server logs) receive eBay's own words.
+      // which can never read server logs) receive eBay's own words. L88:
+      // keyed by listing so a reason is only ever quoted for its own item.
       try {
         const fs = await import('node:fs');
-        const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
+        let entries: ProviderRejectionEntry[] = [];
         try {
-          const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+          const parsed = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8')) as unknown;
           if (Array.isArray(parsed)) entries = parsed as typeof entries;
         } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
-        fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
+        entries.push({
+          call: callName,
+          listingId: EXACT_ITEM_ID.test(listingId) ? listingId : null,
+          errorCode,
+          reason: sanitized,
+          atUtc: new Date().toISOString(),
+        });
+        fs.writeFileSync(rejectionsFile, JSON.stringify(entries.slice(-20)));
       } catch { /* best effort */ }
       deny('TRADING_ALIGN_REJECTED');
     }
@@ -306,11 +335,19 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+    await dispatchBoundedCall(
+      buildReviseInventoryStatusXml(input),
+      EBAY_TRADING_CALL_NAME,
+      input.listingId,
+    );
   }
 
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
-    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+    await dispatchBoundedCall(
+      buildEndFixedPriceItemXml(input),
+      EBAY_TRADING_END_CALL_NAME,
+      input.listingId,
+    );
   }
 
   async function relistFixedPriceItem(input: Readonly<{
@@ -321,6 +358,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     const text = await dispatchBoundedCallReturningBody(
       buildRelistFixedPriceItemXml(input),
       EBAY_TRADING_RELIST_CALL_NAME,
+      input.listingId,
     );
     // The response's ItemID is the NEW listing eBay created.
     const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];

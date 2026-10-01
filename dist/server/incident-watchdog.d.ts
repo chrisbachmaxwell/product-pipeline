@@ -29,6 +29,12 @@ type Snapshot = {
     observedAtUtc: string;
     rows: readonly SnapshotRow[];
 };
+/** One persisted sanitized rejection; legacy entries lack listing/code. */
+export type ProviderRejection = {
+    listingId?: string | null;
+    errorCode?: string | null;
+    reason: string;
+};
 export type WatchdogDependencies = Readonly<{
     getSnapshot?: () => Promise<Snapshot>;
     getLedgerSignals?: (sinceUtc: string) => IncidentLedgerSignals | null;
@@ -47,6 +53,8 @@ export declare function evaluateIncidentCandidates(input: {
     snapshot: Snapshot;
     signals: IncidentLedgerSignals | null;
     nowMs: number;
+    /** Injected for tests; defaults to the adapter's persisted ring. */
+    providerRejections?: readonly ProviderRejection[];
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>>;
 export declare function getIncidents(): readonly Incident[];
 export declare function runWatchdogOnce(dependencies?: WatchdogDependencies): Promise<void>;

@@ -225,3 +225,49 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
       .toMatchObject({ severity: 'warning' });
   });
 });
+
+describe('PRICE_SYNC_REJECTED reason attribution (L88, incident #160)', () => {
+  const signals = (sku: string) => ({
+    oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+    repeatedEndFailures: [],
+    repeatedPriceFailures: [{ sku, count: 3, lastAtUtc: FRESH }],
+  });
+  const BEST_OFFER_REASON = 'Invalid AutoAccept price. The Best Offer Auto Accept Price must be '
+    + 'less than the Buy It Now price. 23004 Error 345.95 USD 147441150035 578969-U367 RequestError';
+
+  it('never quotes another listing\'s rejection reason', () => {
+    // #160: 146695190152's incident carried 147441150035's Best Offer error
+    // because the ring's newest entry was attributed to every incident.
+    const candidates = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('OTHER-1', 1, '146695190152')] },
+      signals: signals('listing 146695190152'),
+      nowMs: NOW,
+      providerRejections: [
+        { listingId: '147441150035', errorCode: '23004', reason: BEST_OFFER_REASON },
+        { reason: 'legacy entry with no listing id' },
+      ],
+    });
+    const incident = candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident.detail).not.toContain('147441150035');
+    expect(incident.detail).not.toContain('AutoAccept');
+    expect(incident.detail).not.toContain('legacy entry');
+    expect(incident.detail).toContain('item=146695190152');
+  });
+
+  it('names the Best Offer auto-accept conflict and its exact eBay-side fix for its own listing', () => {
+    const candidates = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('578969-U367', 1, '147441150035')] },
+      signals: signals('578969-U367'),
+      nowMs: NOW,
+      providerRejections: [
+        { listingId: '147441150035', errorCode: '23004', reason: BEST_OFFER_REASON },
+        { listingId: '146695190152', errorCode: '21916', reason: 'unrelated' },
+      ],
+    });
+    const incident = candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident.severity).toBe('critical');
+    expect(incident.detail).toContain('Best Offer auto-accept price');
+    expect(incident.detail).toContain('listing 147441150035: Invalid AutoAccept price');
+    expect(incident.detail).not.toContain('unrelated');
+  });
+});
