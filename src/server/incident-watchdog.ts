@@ -39,7 +39,7 @@ export type Incident = {
   /** Stable fingerprint: code + subject. */
   id: string;
   severity: 'critical' | 'warning';
-  code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'SNAPSHOT_STALE';
+  code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'PRICE_SYNC_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'SNAPSHOT_STALE';
   sku: string | null;
   title: string;
   detail: string;
@@ -171,6 +171,28 @@ export function evaluateIncidentCandidates(input: {
     }
   }
 
+  for (const failure of signals?.repeatedPriceFailures ?? []) {
+    const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
+      || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
+    const stillLive = row?.ebay?.listingId != null;
+    const reason = latestProviderRejection();
+    candidates.push({
+      id: `PRICE_SYNC_REJECTED:${failure.sku}`,
+      // A live listing showing a WRONG PRICE can sell at that price —
+      // that is money, so live = critical (L87; Sept 30 was 55 rejected
+      // price revises across five listings with zero alarms).
+      severity: stillLive ? 'critical' : 'warning',
+      code: 'PRICE_SYNC_REJECTED',
+      sku: failure.sku,
+      title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
+      detail: 'Shopify price changes for this listing are NOT reaching eBay — the live '
+        + 'listing may be selling at the old price. Set the price manually on eBay now. '
+        + (reason !== null
+          ? `eBay's own reason for the most recent rejection: ${reason}`
+          : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+    });
+  }
+
   for (const fulfillment of signals?.unresolvedFulfillments ?? []) {
     const ageMs = nowMs - Date.parse(fulfillment.reservedAtUtc);
     if (Number.isFinite(ageMs) && ageMs > 2 * 3_600_000) {
@@ -202,6 +224,20 @@ export function evaluateIncidentCandidates(input: {
   }
 
   return candidates;
+}
+
+/** Latest sanitized provider rejection recorded by the Trading adapter
+ * (L87) — eBay's own words, safe for incidents and the fix agent. */
+function latestProviderRejection(): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(
+      '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    const last = parsed[parsed.length - 1] as { reason?: unknown };
+    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+  } catch {
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ */

@@ -398,6 +398,8 @@ export type IncidentLedgerSignals = Readonly<{
    * `sinceUtc`, only groups of three or more.
    */
   repeatedEndFailures: ReadonlyArray<{ sku: string; count: number; lastAtUtc: string }>;
+  /** Same signature on the PRICE path (L87): eBay refusing price revises. */
+  repeatedPriceFailures: ReadonlyArray<{ sku: string; count: number; lastAtUtc: string }>;
 }>;
 
 /**
@@ -433,17 +435,19 @@ export function readIncidentLedgerSignalsReadOnly(input: {
         + "WHERE j.job_id LIKE 'listing-create-job:%' AND r.resolution_id IS NULL "
         + 'ORDER BY j.reserved_at_utc DESC LIMIT 20',
       ).all() as Array<{ binding: string; jobId: string; reservedAtUtc: string }>;
-      const failures = database.prepare(
+      const rejectionGroups = (responsibility: string) => database.prepare(
         'SELECT e.binding_key AS binding, COUNT(*) AS count, MAX(j.reserved_at_utc) AS lastAtUtc '
         + 'FROM execution_jobs j '
         + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
         + 'JOIN intent_attempts a ON a.job_id = j.job_id '
         + 'JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
-        + "WHERE j.responsibility = 'inventory' AND r.resolution = 'confirmed_missing' "
+        + "WHERE j.responsibility = ? AND r.resolution = 'confirmed_missing' "
         + 'AND j.reserved_at_utc > ? '
         + 'GROUP BY e.binding_key HAVING COUNT(*) >= 3 '
         + 'ORDER BY lastAtUtc DESC LIMIT 20',
-      ).all(input.sinceUtc) as Array<{ binding: string; count: number; lastAtUtc: string }>;
+      ).all(responsibility, input.sinceUtc) as Array<{ binding: string; count: number; lastAtUtc: string }>;
+      const failures = rejectionGroups('inventory');
+      const priceFailures = rejectionGroups('price');
       const sku = (binding: string): string => binding.replace(/^ebay-inventory-sku:/, '')
         .replace(/^ebay-listing:/, 'listing ');
       const unresolvedFulfillments = database.prepare(
@@ -474,6 +478,9 @@ export function readIncidentLedgerSignalsReadOnly(input: {
           subject: sku(row.binding), reservedAtUtc: row.reservedAtUtc,
         })),
         repeatedEndFailures: failures.map((row) => Object.freeze({
+          sku: sku(row.binding), count: row.count, lastAtUtc: row.lastAtUtc,
+        })),
+        repeatedPriceFailures: priceFailures.map((row) => Object.freeze({
           sku: sku(row.binding), count: row.count, lastAtUtc: row.lastAtUtc,
         })),
       });
