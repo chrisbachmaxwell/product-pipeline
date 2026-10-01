@@ -287,6 +287,19 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         .replace(/\s+/g, ' ')
         .slice(0, 300);
       console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+      // L87: persist the sanitized reason so incidents (and the fix agent,
+      // which can never read server logs) receive eBay's own words.
+      try {
+        const fs = await import('node:fs');
+        const file = '/data/product-pipeline/provider-rejections.json';
+        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
+        try {
+          const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+          if (Array.isArray(parsed)) entries = parsed as typeof entries;
+        } catch { /* fresh */ }
+        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
+        fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
+      } catch { /* best effort */ }
       deny('TRADING_ALIGN_REJECTED');
     }
     return text;

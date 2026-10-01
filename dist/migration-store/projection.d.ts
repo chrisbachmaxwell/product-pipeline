@@ -122,6 +122,12 @@ export type IncidentLedgerSignals = Readonly<{
         count: number;
         lastAtUtc: string;
     }>;
+    /** Same signature on the PRICE path (L87): eBay refusing price revises. */
+    repeatedPriceFailures: ReadonlyArray<{
+        sku: string;
+        count: number;
+        lastAtUtc: string;
+    }>;
 }>;
 /**
  * READ-ONLY incident signals for the watchdog (L75): the ledger records
