@@ -1,0 +1,72 @@
+# Pre-approved merges by CONSTRUCTION, not judgment (L88). A pull request
+# auto-merges only when EVERY changed file is in the structurally-safe
+# class — documentation and tests — which is incapable of touching the
+# provider-writer path, the safety boundaries, or this policy itself.
+# Everything else waits for a human merge, which remains the one-action
+# approval for production code (Absolute #3).
+#
+# Security shape: this runs on pull_request_target, so THIS file is always
+# taken from main — a PR cannot rewrite the policy that judges it. The
+# file-list check happens via the API without executing PR code; tests run
+# in the separate secretless `ci` workflow, whose success is required.
+name: auto-merge-safe-prs
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled]
+jobs:
+  merge-if-safe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check every changed file is in the pre-approved class
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" --paginate --jq '.[].filename')
+          echo "$files"
+          safe=true
+          while IFS= read -r file; do
+            case "$file" in
+              CLAUDE.md|AGENTS.md|.github/*) safe=false ;;            # policy & constitution: never auto
+              *.md) ;;                                                 # docs
+              src/*.test.ts|src/*.test.tsx|*/__tests__/*) ;;           # tests
+              dist/*.test.js|dist/*.test.d.ts) ;;                      # synced dist test copies
+              *) safe=false ;;
+            esac
+            if [ "$safe" = false ]; then echo "UNSAFE: $file"; break; fi
+          done <<< "$files"
+          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+      - name: Wait for the secretless CI check to pass
+        if: steps.paths.outputs.safe == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for i in $(seq 1 60); do
+            conclusion=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" \
+              --jq '[.check_runs[] | select(.name == "test")][0].conclusion // "pending"')
+            status=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" \
+              --jq '[.check_runs[] | select(.name == "test")][0].status // "queued"')
+            echo "ci: $status/$conclusion"
+            if [ "$conclusion" = "success" ]; then exit 0; fi
+            if [ "$conclusion" != "pending" ] && [ "$status" = "completed" ]; then
+              echo "ci failed"; exit 1
+            fi
+            sleep 30
+          done
+          echo "ci timed out"; exit 1
+      - name: Merge (pre-approved class, tests green)
+        if: steps.paths.outputs.safe == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "Auto-merged under the L88 pre-approved class: every changed file is documentation or tests, and the secretless CI check passed. Production-code changes still require a human merge."
+          gh pr merge "$PR" --repo "${{ github.repository }}" --squash --delete-branch
