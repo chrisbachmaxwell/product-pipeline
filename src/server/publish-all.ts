@@ -28,6 +28,14 @@
  */
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
+import {
+  autofillListingAspects,
+  createClaudeAspectProposer,
+  initialConditionDescription,
+  missingAspectFromProviderMessage,
+  type AutofillDraftService,
+  type AutofillResult,
+} from './listing-autofill.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
 import { findUnresolvedListingCreateFromArgv } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from './order-import-trigger.js';
@@ -45,6 +53,7 @@ export function tryAcquirePublishLock(): boolean {
   return true;
 }
 export function releasePublishLock(): void { publishLockHeld = false; }
+export function isPublishLockHeld(): boolean { return publishLockHeld; }
 
 export type PublishAllItem = Readonly<{
   sku: string;
@@ -136,12 +145,17 @@ export type PublishAllDependencies = Readonly<{
   maxItems?: number;
   getCategoryAspects?: (categoryId: string) => Promise<{
     available: boolean;
-    aspects: ReadonlyArray<{ name: string; required: boolean }>;
+    aspects: ReadonlyArray<{
+      name: string; required: boolean;
+      mode?: 'FREE_TEXT' | 'SELECTION_ONLY'; values?: readonly string[];
+    }>;
   }>;
   findUnresolvedCreate?: (sku: string) => Readonly<{
     jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
   }> | null;
   latestRevisionDigest?: (catalogId: string) => string | null;
+  /** Claude fills missing item specifics into the draft (listing-autofill). */
+  autofill?: (catalogId: string, extraAspects?: readonly string[]) => Promise<AutofillResult>;
 }>;
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -229,6 +243,16 @@ export function startPublishAllRun(
     } catch {
       return null;
     }
+  });
+
+  let proposerPromise: ReturnType<typeof createClaudeAspectProposer> | null = null;
+  const autofill = dependencies.autofill ?? (async (catalogId: string, extraAspects?: readonly string[]) => {
+    proposerPromise ??= createClaudeAspectProposer();
+    return autofillListingAspects(catalogId, {
+      draftService: (await draftServicePromise) as unknown as AutofillDraftService,
+      getCategoryAspects,
+      propose: await proposerPromise,
+    }, { extraAspects, actor: 'publish-all-autofill' });
   });
 
   status.state = 'running';
@@ -362,9 +386,8 @@ export function startPublishAllRun(
           if (dto.revision) {
             revisionDigest = dto.revision.revisionDigest;
           } else {
-            const chart = dto.sections.listing.conditionDescription.shopify;
-            const note = ((chart ? `${chart} ` : '')
-              + 'The photographs show the exact item for sale.').slice(0, 1000);
+            const note = initialConditionDescription(
+              dto.sections.listing.conditionDescription.shopify);
             const payload = draftPayload(dto, { conditionDescription: note });
             (payload as { catalogId: unknown }).catalogId = row.id;
             const saved = await draftService.save(payload, 'publish-all');
@@ -397,10 +420,25 @@ export function startPublishAllRun(
                 .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()))
                 .map((aspect) => aspect.name);
               if (missing.length > 0) {
-                record({ sku, title, status: 'skipped',
-                  reason: `eBay requires ${missing.join(', ')} for this category — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
-                await sleep(15_000);
-                continue;
+                // Before asking a person, let Claude fill what the product's
+                // own title and description establish (validated against
+                // eBay's taxonomy, saved as a local draft only).
+                let stillMissing: readonly string[] = missing;
+                try {
+                  const filled = await autofill(row.id);
+                  if (filled.revisionDigest !== null && filled.filled.length > 0) {
+                    revisionDigest = filled.revisionDigest;
+                  }
+                  if (filled.status !== 'unavailable') stillMissing = filled.stillMissing;
+                } catch {
+                  // Autofill is best-effort; the skip below stays truthful.
+                }
+                if (stillMissing.length > 0) {
+                  record({ sku, title, status: 'skipped',
+                    reason: `eBay requires ${stillMissing.join(', ')} for this category and the product listing does not say — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
+                  await sleep(15_000);
+                  continue;
+                }
               }
             }
           }
@@ -513,11 +551,26 @@ export function startPublishAllRun(
               dispatchJson: { ...dispatched.json, manifestDigest },
             });
           }
+          // eBay enforces aspects the taxonomy never marks required (L67)
+          // and names one per refusal: fill it now so the next run (which
+          // needs a fresh revision anyway, L74) can publish.
+          const refusedAspect = missingAspectFromProviderMessage(providerMessage);
+          let followUp = '';
+          if (refusedAspect !== null) {
+            try {
+              const filled = await autofill(row.id, [refusedAspect]);
+              followUp = filled.stillMissing.length === 0 && filled.filled.length > 0
+                ? ` Filled ${filled.filled.join(', ')} from the product listing — it will retry next run.`
+                : '';
+            } catch {
+              // Best-effort.
+            }
+          }
           record({
             sku, title, status: 'failed',
-            reason: providerMessage
+            reason: (providerMessage
               ? `eBay refused the listing: ${providerMessage}`
-              : `The publish did not complete (${dispatchStatus}).`,
+              : `The publish did not complete (${dispatchStatus}).`) + followUp,
           });
         }
         await sleep(60_000);

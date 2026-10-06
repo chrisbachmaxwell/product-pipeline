@@ -3,6 +3,7 @@ import { verifyShopifyWebhookHmac } from '../../shopify/request-verification.js'
 import { info, warn } from '../../utils/logger.js';
 import { getLiveListingCatalogSnapshot } from '../live-listing-catalog-source.js';
 import { inventorySweepTrigger, isInventoryTopic, isPriceTopic, priceSweepTrigger, } from '../inventory-sweep-trigger.js';
+import { notifyProductChanged } from '../listing-prep.js';
 async function verifyShopifyWebhook(req) {
     return verifyShopifyWebhookHmac(req.get('X-Shopify-Hmac-Sha256'), req.rawBody);
 }
@@ -16,6 +17,7 @@ export function createShopifyWebhookRouter(dependencies = {
     refreshListings: () => getLiveListingCatalogSnapshot.refreshIfStale(30_000),
     notifyInventoryChanged: () => inventorySweepTrigger.notifyInventoryChanged(),
     notifyPriceChanged: () => priceSweepTrigger.notifyInventoryChanged(),
+    notifyProductChanged: () => notifyProductChanged(),
 }) {
     const router = Router();
     router.post('/webhooks/shopify/:topic', async (req, res) => {
@@ -41,6 +43,12 @@ export function createShopifyWebhookRouter(dependencies = {
             if (isPriceTopic(topic) && dependencies.notifyPriceChanged
                 && dependencies.notifyPriceChanged()) {
                 info(`[Shopify Webhook] ${topic} queued a price alignment sweep`);
+            }
+            // A new or edited product gets its eBay details prepared now rather
+            // than on publish day.
+            if (isPriceTopic(topic) && dependencies.notifyProductChanged
+                && dependencies.notifyProductChanged()) {
+                info(`[Shopify Webhook] ${topic} queued listing prep`);
             }
         }).catch(() => {
             warn('LISTING_CATALOG_SHOPIFY_WEBHOOK_REFRESH_FAILED');

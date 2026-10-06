@@ -20,6 +20,8 @@ import listingDraftRoutes, {
 import listingPublishRoutes from './routes/listing-publish.js';
 import listingPublishAllRoutes from './routes/listing-publish-all.js';
 import { initPublishAllSchedule } from './publish-all.js';
+import { initListingPrepSchedule } from './listing-prep.js';
+import listingPrepRoutes from './routes/listing-prep.js';
 import incidentsRoutes from './routes/incidents.js';
 import connectionsRoutes from './routes/connections.js';
 import { initIncidentWatchdog } from './incident-watchdog.js';
@@ -135,6 +137,7 @@ app.use(healthRoutes);
 app.use(listingDraftRoutes);
 app.use(listingPublishRoutes);
 app.use(listingPublishAllRoutes);
+app.use(listingPrepRoutes);
 app.use(incidentsRoutes);
 app.use(connectionsRoutes);
 app.use(activityRoutes);
@@ -214,6 +217,11 @@ async function start() {
     // PUBLISH_ALL_INTERVAL_MINUTES; every write still runs the per-item
     // ceremony CLIs from the armed PUBLISH_*_ARGV templates.
     initPublishAllSchedule();
+    // Listing prep: fills missing eBay item specifics for not-yet-listed
+    // products (Claude, taxonomy-validated) into LOCAL drafts as products
+    // appear. Zero provider writes; LISTING_PREP_INTERVAL_MINUTES=off
+    // disables it.
+    initListingPrepSchedule();
     // The alarm surface (L76): detects the known emergency shapes and
     // feeds the UI banner; diagnosis/escalation arm via ANTHROPIC_API_KEY
     // and INCIDENT_GITHUB_TOKEN. Read-only.
