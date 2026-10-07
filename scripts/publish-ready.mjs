@@ -21,6 +21,9 @@ const CONTROL = '/data/product-pipeline/listing-control.sqlite';
 const CLI = 'dist/listing-lifecycle-admin/index.js';
 const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const NEVER_PUBLISH = new Set(['PIPELINE-TEST-20260826']);
+// Operator per-run exclusions (comma-separated SKUs), validated by the wrapper.
+const EXCLUDED = new Set((process.env.PUBLISH_EXCLUDE_SKUS || '')
+  .split(',').map((sku) => sku.trim()).filter(Boolean));
 
 function run(argv) {
   return new Promise((resolve) => {
@@ -46,8 +49,10 @@ const transient = (result) => !result || result.code === 'LISTING_LIFECYCLE_DENI
 
 const snapshot = await getLiveListingCatalogSnapshot.refresh();
 const ready = snapshot.rows.filter((row) => row.readyToList
-  && !NEVER_PUBLISH.has(row.shopify.sku));
+  && !NEVER_PUBLISH.has(row.shopify.sku)
+  && !EXCLUDED.has(row.shopify.sku));
 console.log('READY', ready.length, 'snapshot', snapshot.observedAtUtc);
+if (EXCLUDED.size > 0) console.log('EXCLUDED', [...EXCLUDED].join(','));
 
 const service = createListingDraftService();
 let live = 0;

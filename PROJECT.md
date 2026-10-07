@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: Ready-Queue Runner Per-Run SKU Exclusions
+
+`scripts/publish-ready.sh` accepts `PUBLISH_EXCLUDE_SKUS=SKU1,SKU2` (validated locally against the eBay SKU grammar, passed to the box as an env var) and `scripts/publish-ready.mjs` drops those rows from the ready queue for that run, logging `EXCLUDED`. Lets the operator publish "everything ready except X" without editing `NEVER_PUBLISH`. No ceremony, approval, or writer path changed.
+
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 
 First fully-quiet weekend (3/3 orders imported, zero incidents, agent pipeline correctly idle). Monday audit decoded the 16437396 zombie (2-unit drift, rejection reason now loud-logged, capture pending), published the Hasselblad XCD 45P (147605742950) via the runner after a one-field Mount fill, and identified the sold-before-listing pattern (a7R V entered and left the ready queue within an hour). L85 is the session-close handoff snapshot: working/verified systems, operator-held outstanding items, unproven-live write paths, and the ops laws that bite.
