@@ -5,6 +5,14 @@
 # Everything else waits for a human merge, which remains the one-action
 # approval for production code (Absolute #3).
 #
+# Second class (L94, operator instruction 2026-10-07 "it fixes itself"): a
+# self-healing fix PR (label `incident-fix`, branch `claude/…`, opened by
+# incident-fix.yml) may also change ordinary application source, but NEVER
+# the protected paths below: the safety boundary, middleware, migration
+# store, every ceremony/admin CLI, credentials and auth, order import,
+# dependencies, CI/policy, and the agent constitution. Those keep the
+# human merge, so the four absolutes cannot be loosened without a person.
+#
 # Security shape: this runs on pull_request_target, so THIS file is always
 # taken from main — a PR cannot rewrite the policy that judges it. The
 # file-list check happens via the API without executing PR code; tests run
@@ -27,21 +35,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           files=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" --paginate --jq '.[].filename')
           echo "$files"
+          labels=$(gh api "repos/${{ github.repository }}/issues/$PR/labels" --jq '.[].name')
+          incident_fix=false
+          if printf '%s\n' "$labels" | grep -qx 'incident-fix' && [[ "$HEAD_REF" == claude/* ]]; then
+            incident_fix=true
+          fi
+          echo "incident-fix tier: $incident_fix"
           safe=true
           while IFS= read -r file; do
             case "$file" in
-              CLAUDE.md|AGENTS.md|.github/*) safe=false ;;            # policy & constitution: never auto
+              # Protected in EVERY tier: constitution, policy, dependencies,
+              # and the code that enforces the four absolutes.
+              CLAUDE.md|AGENTS.md|GROK.md|.cursorrules|.github/*) safe=false ;;
+              package.json|package-lock.json) safe=false ;;
               *.md) ;;                                                 # docs
-              src/*.test.ts|src/*.test.tsx|*/__tests__/*) ;;           # tests
+              src/*.test.ts|src/*.test.tsx|*/__tests__/*) ;;           # tests (never deployed)
               dist/*.test.js|dist/*.test.d.ts) ;;                      # synced dist test copies
+              src/safety/*|src/server/middleware/*|src/migration-store/*) safe=false ;;
+              src/*-admin/*|src/config/*|src/shopify/*) safe=false ;;
+              src/server/connections*|src/server/order-import*|src/server/migration-state-reader*) safe=false ;;
+              src/*|dist/web/*)                                        # app source: incident fixes only
+                if [ "$incident_fix" != true ]; then safe=false; fi ;;
               *) safe=false ;;
             esac
             if [ "$safe" = false ]; then echo "UNSAFE: $file"; break; fi
           done <<< "$files"
           echo "safe=$safe" >> "$GITHUB_OUTPUT"
+          echo "incident_fix=$incident_fix" >> "$GITHUB_OUTPUT"
       - name: Wait for the secretless CI check to pass
         if: steps.paths.outputs.safe == 'true'
         env:
@@ -66,7 +90,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          INCIDENT_FIX: ${{ steps.paths.outputs.incident_fix }}
         run: |
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
-            "Auto-merged under the L88 pre-approved class: every changed file is documentation or tests, and the secretless CI check passed. Production-code changes still require a human merge."
+          if [ "$INCIDENT_FIX" = true ]; then
+            body="Auto-merged as a self-healing incident fix (L94): no protected path changed and the secretless CI check passed. Changes to the safety boundary, ceremonies, credentials, order import, dependencies or policy still require a human merge."
+          else
+            body="Auto-merged under the L88 pre-approved class: every changed file is documentation or tests, and the secretless CI check passed. Production-code changes still require a human merge."
+          fi
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "$body"
           gh pr merge "$PR" --repo "${{ github.repository }}" --squash --delete-branch

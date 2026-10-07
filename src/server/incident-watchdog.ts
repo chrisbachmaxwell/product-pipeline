@@ -39,7 +39,7 @@ export type Incident = {
   /** Stable fingerprint: code + subject. */
   id: string;
   severity: 'critical' | 'warning';
-  code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'PRICE_SYNC_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'SNAPSHOT_STALE';
+  code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'PRICE_SYNC_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'PUBLISH_ITEM_BLOCKED' | 'SNAPSHOT_STALE';
   sku: string | null;
   title: string;
   detail: string;
@@ -66,7 +66,48 @@ export type WatchdogDependencies = Readonly<{
   openIssue?: (incident: Incident) => Promise<string | null>;
   notify?: (incident: Incident) => Promise<void>;
   learningsContext?: () => string;
+  getPublishStatus?: () => Pick<ReturnType<typeof getPublishAllStatus>, 'state' | 'stopReason' | 'items'>;
 }>;
+
+/**
+ * Publish-All items the run could not publish, grouped by root cause so one
+ * defect hitting ten SKUs is ONE incident (and one fix PR), not ten. The
+ * class is the first error code in the reason (CREATE_IDENTITY_MISMATCH,
+ * …) or, without one, the reason with SKUs and listed names stripped.
+ * Items the operator deliberately holds never reach the run (no-ebay tag,
+ * L90), so everything here is something the pipeline failed to handle.
+ */
+export function publishBlockCandidates(
+  items: ReadonlyArray<{ sku: string; status: string; reason?: string }>,
+): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
+  const groups = new Map<string, Array<{ sku: string; reason: string }>>();
+  for (const item of items) {
+    if (item.status !== 'failed' && item.status !== 'skipped') continue;
+    const reason = (item.reason ?? item.status).slice(0, 400);
+    const code = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/.exec(reason)?.[0];
+    const reasonClass = code ?? reason
+      .split(item.sku).join('<sku>')
+      .replace(/eBay requires .*? for this category/, 'eBay requires <aspects> for this category')
+      .replace(/\([^)]*\)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
+    const group = groups.get(reasonClass) ?? [];
+    group.push({ sku: item.sku, reason });
+    groups.set(reasonClass, group);
+  }
+  return [...groups.entries()].map(([reasonClass, group]) => ({
+    id: `PUBLISH_ITEM_BLOCKED:${reasonClass}`,
+    severity: 'warning' as const,
+    code: 'PUBLISH_ITEM_BLOCKED' as const,
+    sku: group[0]!.sku,
+    title: `Publish All could not publish ${group.length === 1 ? group[0]!.sku : `${group.length} items`}: ${reasonClass}`,
+    detail: 'The last Publish All run skipped or failed these items for the same cause. '
+      + 'Find the root cause in the publish path and fix it so the next run publishes them '
+      + 'without manual work.\n'
+      + group.slice(0, 8).map((entry) => `- ${entry.sku}: ${entry.reason}`).join('\n'),
+  }));
+}
 
 /**
  * Pure detection over one observation. Persistence (the two-sighting rule
@@ -346,7 +387,8 @@ async function defaultOpenIssue(incident: Incident): Promise<string | null> {
         + `**Detected:** ${incident.detectedAtUtc}\n\n${incident.detail}\n\n`
         + `## Diagnosis\n\n${incident.diagnosis ?? '_diagnosis unavailable_'}\n\n`
         + '---\nOpened automatically by the incident watchdog (L76). The `incident` '
-        + 'label triggers the fix-proposal workflow; a human always merges.',
+        + 'label triggers the fix workflow; its PR auto-merges when CI passes and no '
+        + 'protected path changed (L94), otherwise a human merges.',
     }),
   });
   if (response.status !== 201) return null;
@@ -403,7 +445,7 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   const snapshot = await getSnapshot();
   const signals = getLedgerSignals(new Date(nowMs - LEDGER_WINDOW_MS).toISOString());
   const candidates = evaluateIncidentCandidates({ snapshot, signals, nowMs });
-  const publishRun = getPublishAllStatus();
+  const publishRun = (dependencies.getPublishStatus ?? getPublishAllStatus)();
   if (publishRun.state === 'stopped') {
     candidates.push({
       id: 'PUBLISH_RUN_STOPPED',
@@ -415,6 +457,9 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
         ? `: ${publishRun.stopReason}` : ''}. Items after the stop were not attempted; `
         + 'the next scheduled run retries, but a repeat points at something systemic.',
     });
+  }
+  if (publishRun.state === 'finished' || publishRun.state === 'stopped') {
+    candidates.push(...publishBlockCandidates(publishRun.items));
   }
 
   const state = loadState(stateFile);
@@ -451,9 +496,13 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
     warn(`[Incidents] NEW ${candidate.severity} ${candidate.id}`);
   }
 
-  // Diagnose + escalate new criticals (bounded: one per cycle to cap spend).
+  // Diagnose + escalate new criticals and self-heal publish blocks
+  // (bounded: one per cycle to cap spend). A publish block is a warning for
+  // the operator (no email, no red banner) but still goes to the fix agent.
+  const escalates = (incident: Incident): boolean =>
+    incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED';
   const needsDiagnosis = active.find((incident) =>
-    incident.severity === 'critical' && incident.diagnosisState === 'none');
+    escalates(incident) && incident.diagnosisState === 'none');
   if (needsDiagnosis) {
     needsDiagnosis.diagnosisState = 'pending';
     try {

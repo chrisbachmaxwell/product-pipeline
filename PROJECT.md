@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: Self-Healing Publish Path (L94)
+
+Items Publish-All could not publish now raise a `PUBLISH_ITEM_BLOCKED` incident, grouped by root cause. The incident is diagnosed and opened as a GitHub issue, and the fix agent opens an `incident-fix` PR. That PR auto-merges once CI passes, unless it touches a protected path (safety boundary, ceremonies, credentials, order import, dependencies, policy), which still needs a human merge.
+
 ### 2026-10-07: Required Specifics That Don't Fit Publish as "Does not apply" (L93)
 
 The item-specifics agent now answers a required eBay aspect that doesn't exist for the item (e.g. Focal Length on a teleconverter), or that it can't settle, with "Does not apply" instead of leaving it for manual entry. Selection-only aspects use it only when eBay's list offers it.
