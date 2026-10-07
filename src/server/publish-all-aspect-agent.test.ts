@@ -106,6 +106,84 @@ describe('publish-all item-specifics agent', () => {
   });
 });
 
+describe('publish-all draft from an older identity (incident #169)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+
+  it('rebases a draft saved under an older SKU, then publishes the new revision', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') {
+          return argv.includes(REVISION)
+            ? { json: { code: 'CREATE_IDENTITY_MISMATCH' } }
+            : { json: { status: 'preview', manifestDigest: MANIFEST } };
+        }
+        return { json: { status: 'created-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    // The rebase is bound to the stale revision and keeps the operator's overrides.
+    const saved = saves[0] as { expectedRevisionDigest: string; draft: { itemSpecifics: string } };
+    expect(saved.expectedRevisionDigest).toBe(REVISION);
+    expect(JSON.parse(saved.draft.itemSpecifics)).toEqual({ Brand: ['Canon'] });
+    const preflights = calls.filter((argv) => argv[1] === 'preflight-create');
+    expect(preflights).toHaveLength(2);
+    expect(preflights[1]).toContain(SAVED);
+    const dispatch = calls.find((argv) => argv[1] === 'dispatch-create');
+    expect(dispatch).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('skips with an actionable reason when the rebase save is refused', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const base = dependencies({}, saves, calls);
+    const { run } = startPublishAllRun('test', {
+      ...base,
+      getCategoryAspects: noMissingAspects,
+      draftService: {
+        get: base.draftService!.get,
+        save: async () => { throw Object.assign(new Error('stale'), { code: 'LISTING_DRAFT_STALE' }); },
+      },
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        return { json: { code: 'CREATE_IDENTITY_MISMATCH' } };
+      },
+    });
+    await run;
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(0);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('skipped');
+    expect(item.reason).toContain('older SKU');
+  });
+
+  it('rebases only once: a mismatch that survives the rebase fails without looping', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        return { json: { code: 'CREATE_IDENTITY_MISMATCH' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect(calls.filter((argv) => argv[1] === 'preflight-create')).toHaveLength(2);
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(0);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('failed');
+    expect(item.reason).toBe('Preflight refused 4426B002-U317: CREATE_IDENTITY_MISMATCH');
+  });
+});
+
 describe('publish-all progress reporting', () => {
   it('names the step in progress and clears the item once it is recorded', async () => {
     arm();
