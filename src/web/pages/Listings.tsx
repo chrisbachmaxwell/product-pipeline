@@ -328,6 +328,10 @@ const Listings: React.FC = () => {
                                 {row.readyToListGaps?.includes('condition') && (
                                   <Badge tone="warning">Add condition tag in Shopify</Badge>
                                 )}
+                                {row.lifecycleStatus === 'not_listed'
+                                  && row.shopify?.productTags?.some((tag) => tag.trim().toLowerCase() === 'ebay-hold') && (
+                                  <Badge tone="info">On hold (ebay-hold tag)</Badge>
+                                )}
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>
                             </IndexTable.Cell>

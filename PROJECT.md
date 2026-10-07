@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-10-06. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-07. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-07: `ebay-hold` Shopify Tag Keeps a Product Off eBay (L90)
+
+A product tagged `ebay-hold` in Shopify is never ready-to-list, so Publish All, the publish schedule, and listing prep all skip it; the Listings page shows an "On hold" badge. Removing the tag returns it to the queue on the next catalog refresh. First use: the Contax G2 Pro Kit (TLA200-U288).
 
 ### 2026-10-06: Listing Prep — eBay Details Filled When a Product Appears, Not on Publish Day (L89)
 
