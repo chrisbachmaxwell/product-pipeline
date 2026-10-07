@@ -35,6 +35,7 @@ import {
   listingStatusLabel,
   listingStatusTone,
   verifiedListingImageUrl,
+  formatElapsed,
 } from '../operator-ui';
 
 const PAGE_SIZE = 25;
@@ -69,6 +70,8 @@ const Listings: React.FC = () => {
     state: 'idle' | 'running' | 'finished' | 'stopped';
     totalReady: number;
     currentSku: string | null;
+    currentStep?: string | null;
+    stepStartedAtUtc?: string | null;
     stopReason: string | null;
     items: Array<{ sku: string; title: string; status: string; listingId?: string; reason?: string }>;
   };
@@ -152,13 +155,21 @@ const Listings: React.FC = () => {
             tone={publishAll.state === 'stopped' ? 'critical'
               : publishAll.state === 'running' ? 'info' : 'success'}
             title={publishAll.state === 'running'
-              ? `Publishing ${publishAll.items.length + 1} of ${publishAll.totalReady}`
-                + (publishAll.currentSku ? ` — ${publishAll.currentSku}` : '')
+              ? (publishAll.currentSku
+                ? `Publishing ${publishAll.items.length + 1} of ${publishAll.totalReady} — ${publishAll.currentSku}`
+                : `Publishing — ${publishAll.items.length} of ${publishAll.totalReady} done`)
               : publishAll.state === 'stopped'
                 ? 'Publish-all stopped'
                 : `Publish-all finished — ${publishAll.items.filter((item) => item.status === 'published').length} published`}
           >
             <BlockStack gap="100">
+              {publishAllRunning && publishAll.currentStep && (
+                <Text as="p" fontWeight="semibold">
+                  {publishAll.currentStep}
+                  {publishAll.stepStartedAtUtc
+                    ? ` — ${formatElapsed(publishAll.stepStartedAtUtc)}` : ''}
+                </Text>
+              )}
               {publishAll.stopReason && <Text as="p">{publishAll.stopReason}</Text>}
               {publishAll.items.slice(-8).map((item) => (
                 <Text as="p" variant="bodySm" key={item.sku}>

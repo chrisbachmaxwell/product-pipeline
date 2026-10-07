@@ -373,3 +373,12 @@ export const verifiedListingImageUrl = (value: string | null): string | null => 
     return null;
   }
 };
+
+/** "45s" / "3m 05s" since an ISO timestamp, for the live publish banner. */
+export const formatElapsed = (sinceUtc: string, nowMs: number = Date.now()): string => {
+  const started = Date.parse(sinceUtc);
+  if (!Number.isFinite(started)) return '';
+  const seconds = Math.max(0, Math.floor((nowMs - started) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+};

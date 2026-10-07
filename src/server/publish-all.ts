@@ -62,6 +62,10 @@ export type PublishAllStatus = Readonly<{
   startedBy: string | null;
   totalReady: number;
   currentSku: string | null;
+  /** Plain-language description of what the run is doing right now. */
+  currentStep: string | null;
+  /** When currentStep began, so the UI can show how long it has taken. */
+  stepStartedAtUtc: string | null;
   items: readonly PublishAllItem[];
   /** Set when an unknown failure shape stopped the run. */
   stopReason: string | null;
@@ -74,13 +78,16 @@ type MutableStatus = {
   startedBy: string | null;
   totalReady: number;
   currentSku: string | null;
+  currentStep: string | null;
+  stepStartedAtUtc: string | null;
   items: PublishAllItem[];
   stopReason: string | null;
 };
 
 const status: MutableStatus = {
   state: 'idle', startedAtUtc: null, finishedAtUtc: null, startedBy: null,
-  totalReady: 0, currentSku: null, items: [], stopReason: null,
+  totalReady: 0, currentSku: null, currentStep: null, stepStartedAtUtc: null,
+  items: [], stopReason: null,
 };
 
 export function getPublishAllStatus(): PublishAllStatus {
@@ -261,10 +268,22 @@ export function startPublishAllRun(
   status.startedBy = startedBy;
   status.totalReady = 0;
   status.currentSku = null;
+  status.currentStep = 'Loading your store';
+  status.stepStartedAtUtc = now();
   status.items = [];
   status.stopReason = null;
 
-  const record = (item: PublishAllItem): void => { status.items.push(item); };
+  const step = (label: string | null): void => {
+    status.currentStep = label;
+    status.stepStartedAtUtc = label === null ? null : now();
+  };
+  // Recording an item ends it: the banner must not keep showing a finished
+  // SKU as "current" during the pause before the next one.
+  const record = (item: PublishAllItem): void => {
+    status.items.push(item);
+    status.currentSku = null;
+    step('Pausing before the next item (Shopify rate limit)');
+  };
 
   const cleanupFailedCreate = async (input: {
     catalogId: string; sku: string; revisionDigest: string;
@@ -351,8 +370,11 @@ export function startPublishAllRun(
           && row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true);
       for (const row of wedged.slice(0, 10)) {
         status.currentSku = row.shopify.sku;
+        step('Cleaning up leftover eBay data from an earlier attempt');
         await sweepResidue(row);
       }
+      status.currentSku = null;
+      if (wedged.length > 0) step('Reloading your store');
       const freshSnapshot = wedged.length > 0 ? await getSnapshot() : snapshot;
       const ready = freshSnapshot.rows
         .filter((row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
@@ -367,10 +389,12 @@ export function startPublishAllRun(
           : ''));
 
       let consecutiveUnknown = 0;
-      for (const row of ready) {
+      for (const [index, row] of ready.entries()) {
         const sku = row.shopify.sku;
         const title = row.shopify.title;
+        const isLast = index === ready.length - 1;
         status.currentSku = sku;
+        step('Preparing the draft');
         if (!SKU_GRAMMAR.test(sku)) {
           record({ sku, title, status: 'skipped', reason: 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).' });
           continue;
@@ -397,7 +421,7 @@ export function startPublishAllRun(
           }
         } catch (error) {
           record({ sku, title, status: 'skipped', reason: `The draft could not be prepared (${error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : 'unavailable'}) — open the item and save it once.` });
-          await sleep(45_000);
+          if (!isLast) await sleep(45_000);
           continue;
         }
 
@@ -426,6 +450,7 @@ export function startPublishAllRun(
               let missing = missingAspects.map((aspect) => aspect.name);
               if (missing.length > 0 && fillAspects !== null) {
                 const description = dto.sections.content.description;
+                step(`Agent is writing missing item specifics (${missing.join(', ')})`);
                 const result = await fillAspects({
                   title: dto.sections.listing.title.draft ?? title,
                   description: description?.draft ?? description?.shopify ?? null,
@@ -458,7 +483,7 @@ export function startPublishAllRun(
               if (missing.length > 0) {
                 record({ sku, title, status: 'skipped',
                   reason: `eBay requires ${missing.join(', ')} for this category${agentNote ? ` (${agentNote.replace(/\.$/, '')}; the rest were not certain)` : ''} — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
-                await sleep(15_000);
+                if (!isLast) await sleep(15_000);
                 continue;
               }
             }
@@ -472,7 +497,11 @@ export function startPublishAllRun(
         let skipReason: string | null = null;
         let stop: string | null = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
-          if (attempt > 0) await sleep(90_000);
+          if (attempt > 0) {
+            step('eBay check hit a temporary error — retrying in 90s');
+            await sleep(90_000);
+          }
+          step('Checking the listing with eBay (preflight)');
           const values = { catalogId: row.id, sku, revisionDigest };
           const preflight = await runStep(substituteArgv(preflightArgv, values));
           const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
@@ -511,7 +540,7 @@ export function startPublishAllRun(
         }
         if (skipReason !== null) {
           record({ sku, title, status: 'skipped', reason: skipReason });
-          await sleep(20_000);
+          if (!isLast) await sleep(20_000);
           continue;
         }
         if (stop !== null || manifestDigest === null) {
@@ -528,12 +557,14 @@ export function startPublishAllRun(
             warn(`[Publish All] stopped: ${status.stopReason}`);
             return;
           }
-          await sleep(45_000);
+          if (!isLast) await sleep(45_000);
           continue;
         }
         consecutiveUnknown = 0;
 
+        step('Pausing 40s before publishing (Shopify rate limit)');
         await sleep(40_000);
+        step('Publishing to eBay');
         const values = { catalogId: row.id, sku, revisionDigest, manifestDigest };
         const dispatched = await runStep(substituteArgv(dispatchArgv, values));
         const dispatchStatus = typeof dispatched.json?.status === 'string'
@@ -549,6 +580,7 @@ export function startPublishAllRun(
           && typeof dispatched.json?.jobId === 'string'
           && typeof dispatched.json?.attemptId === 'string') {
           for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
+            step('Confirming the listing is live on eBay');
             await sleep(10_000 + attempt * 10_000);
             const reconciled = await runStep(substituteArgv(reconcileArgv, {
               catalogId: row.id, sku, revisionDigest,
@@ -579,7 +611,7 @@ export function startPublishAllRun(
               : `The publish did not complete (${dispatchStatus}).`,
           });
         }
-        await sleep(60_000);
+        if (!isLast) await sleep(60_000);
       }
       status.state = 'finished';
       const published = status.items.filter((item) => item.status === 'published').length;
@@ -591,6 +623,7 @@ export function startPublishAllRun(
       warn(`[Publish All] crashed: ${status.stopReason}`);
     } finally {
       status.currentSku = null;
+      step(null);
       status.finishedAtUtc = now();
       releasePublishLock();
     }

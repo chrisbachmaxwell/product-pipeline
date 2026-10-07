@@ -105,3 +105,26 @@ describe('publish-all item-specifics agent', () => {
     expect(getPublishAllStatus().totalReady).toBe(0);
   });
 });
+
+describe('publish-all progress reporting', () => {
+  it('names the step in progress and clears the item once it is recorded', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const seen: Array<{ sku: string | null; step: string | null }> = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
+      sleep: async () => {
+        const current = getPublishAllStatus();
+        seen.push({ sku: current.currentSku, step: current.currentStep });
+      },
+    }, saves, calls));
+    await run;
+    expect(seen).toContainEqual({ sku: '4426B002-U317', step: 'Pausing 40s before publishing (Shopify rate limit)' });
+    // The only item is the last one: no trailing pause after it is recorded.
+    expect(seen.some((entry) => entry.sku === null)).toBe(false);
+    const done = getPublishAllStatus();
+    expect(done.state).toBe('finished');
+    expect(done.currentStep).toBeNull();
+  });
+});

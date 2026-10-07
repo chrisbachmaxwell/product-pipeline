@@ -10,7 +10,10 @@
  *
  * Accuracy guards (a wrong aspect is a wrong public listing):
  * - only the category's REQUIRED aspects that are missing are requested
- * - the model must mark each value confident; unsure → left for a human
+ * - the model must mark each value confident; an aspect it cannot settle
+ *   (or that does not exist for this kind of item, e.g. Focal Length on a
+ *   teleconverter) gets eBay's sanctioned "Does not apply" rather than a
+ *   guess, so publishing never waits on manual entry (operator, 2026-10-07)
  * - SELECTION_ONLY aspects must match one of eBay's own values exactly
  * - names/values obey the draft validator's bounds (≤65 chars)
  * - any transport/parse failure fills nothing (the gate's skip stands)
@@ -39,6 +42,7 @@ export type AspectFillResult = Readonly<{
 export type AspectModelCall = (system: string, user: string, schema: object) => Promise<string>;
 
 const MAX_VALUE = 65;
+export const DOES_NOT_APPLY = 'Does not apply';
 const MAX_DESCRIPTION = 6_000;
 
 const SYSTEM = 'You fill in eBay item specifics for a used camera-gear store. '
@@ -46,9 +50,11 @@ const SYSTEM = 'You fill in eBay item specifics for a used camera-gear store. '
   + 'using its title and description and well-established product facts for the '
   + 'named model (e.g. a lens model\'s mount, focal length, maximum aperture, and '
   + 'focus type). When the aspect lists allowed values, answer with one of them '
-  + 'exactly as written. Set confident to false whenever the item text and the '
-  + 'named model do not settle the value — a wrong value misdescribes a real '
-  + 'listing, and an unsure aspect is left for a person to fill.';
+  + 'exactly as written. When an aspect does not exist for this kind of item '
+  + '(e.g. Focal Length on a teleconverter or a camera strap), answer '
+  + '"Does not apply" with confident true. Set confident to false whenever the '
+  + 'item text and the named model do not settle the value — a wrong value '
+  + 'misdescribes a real listing; an unsure aspect is published as "Does not apply".';
 
 const SCHEMA = {
   type: 'object',
@@ -124,6 +130,18 @@ export function acceptAspectAnswer(request: AspectFillRequest, answerJson: strin
       value = aspect.values.find((allowed) => allowed.toLowerCase() === answer.value.toLowerCase());
     }
     if (value !== undefined) filled[aspect.name] = [value];
+  }
+  // Anything still unanswered gets eBay's "Does not apply" instead of
+  // blocking the publish: always for free-text aspects, and for
+  // selection-only aspects when eBay's own list offers it.
+  for (const aspect of request.missing) {
+    if (filled[aspect.name] !== undefined) continue;
+    const offered = aspect.values.find((allowed) => allowed.toLowerCase() === DOES_NOT_APPLY.toLowerCase());
+    if (aspect.mode !== 'SELECTION_ONLY' || aspect.values.length === 0) {
+      filled[aspect.name] = [DOES_NOT_APPLY];
+    } else if (offered !== undefined) {
+      filled[aspect.name] = [offered];
+    }
   }
   const unresolved = request.missing.map((aspect) => aspect.name)
     .filter((name) => filled[name] === undefined);
