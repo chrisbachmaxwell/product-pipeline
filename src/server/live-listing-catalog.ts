@@ -1,5 +1,11 @@
 import { deriveCondition } from '../shared/condition-tags.js';
 
+/** The Shopify tag that holds a product back from eBay listing. */
+export const EBAY_HOLD_TAG = 'ebay-hold';
+export function isEbayHold(tags: readonly string[] | undefined): boolean {
+  return (tags ?? []).some((tag) => tag.trim().toLowerCase() === EBAY_HOLD_TAG);
+}
+
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
 export type ListingAttentionReason =
@@ -509,7 +515,11 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     // should be on eBay" — no tagging step. (An earlier iteration required
     // a `ready` tag; that gate is gone, tags remain captured for future
     // use.)
+    // Operator escape hatch (2026-10-07): a Shopify `ebay-hold` tag keeps an
+    // otherwise-ready product off eBay — out of Publish All, the schedule,
+    // and listing prep — until the tag is removed.
     const readyToList = variant.productStatus.toUpperCase() === 'ACTIVE'
+      && !isEbayHold(variant.productTags)
       && variant.available !== null && variant.available > 0
       && activeMatches.length === 0
       && inventoryItems.length === 0

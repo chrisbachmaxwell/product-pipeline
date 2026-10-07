@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { writerQuarantineMiddleware } from '../../safety/writer-quarantine.js';
 import { listingDraftJsonParser, listingDraftJsonErrorHandler } from './listing-drafts.js';
 import { createListingPublishAllRouter } from './listing-publish-all.js';
-import { getPublishAllStatus, tryAcquirePublishLock, releasePublishLock } from '../publish-all.js';
+import { getPublishAllStatus, tryAcquirePublishLock, releasePublishLock, } from '../publish-all.js';
 const CATALOG_ID = 'shopify-variant:gid://shopify/ProductVariant/55484011184419';
 const REVISION = `sha256:${'b'.repeat(64)}`;
 const MANIFEST = `sha256:${'c'.repeat(64)}`;
@@ -56,8 +56,11 @@ function harness(options) {
         },
         getCategoryAspects: async () => ({
             available: true,
-            aspects: [{ name: 'Brand', required: true }],
+            aspects: options.aspects ?? [{ name: 'Brand', required: true }],
         }),
+        autofill: options.autofill ?? (async () => ({
+            status: 'unavailable', filled: [], stillMissing: [], revisionDigest: null,
+        })),
         findUnresolvedCreate: () => null,
         latestRevisionDigest: () => REVISION,
         runStep: async (argv) => {
@@ -103,6 +106,62 @@ afterEach(() => {
     releasePublishLock();
 });
 describe('listing publish-all route', () => {
+    it('lets Claude fill required aspects at the gate, then publishes from the new revision', async () => {
+        armEnv();
+        const NEW_REVISION = `sha256:${'f'.repeat(64)}`;
+        const autofillCalls = [];
+        const h = harness({
+            kind: 'shopify_session',
+            aspects: [{ name: 'Brand', required: true }, { name: 'Mount', required: true }],
+            autofill: async (_id, extra) => {
+                autofillCalls.push(extra);
+                return { status: 'filled', filled: ['Mount'], stillMissing: [], revisionDigest: NEW_REVISION };
+            },
+        });
+        expect((await request(h.app, 'POST', {})).status).toBe(202);
+        await waitForFinish();
+        expect(getPublishAllStatus().items).toEqual([expect.objectContaining({ status: 'published' })]);
+        expect(autofillCalls).toEqual([undefined]);
+        expect(h.calls[0].join(' ')).toContain(NEW_REVISION);
+    });
+    it('skips with only the aspects a person still has to fill', async () => {
+        armEnv();
+        const h = harness({
+            kind: 'shopify_session',
+            aspects: [{ name: 'Mount', required: true }, { name: 'Focal Length', required: true }],
+            autofill: async () => ({
+                status: 'incomplete', filled: ['Mount'], stillMissing: ['Focal Length'], revisionDigest: REVISION,
+            }),
+        });
+        await request(h.app, 'POST', {});
+        await waitForFinish();
+        const [item] = getPublishAllStatus().items;
+        expect(item.status).toBe('skipped');
+        expect(item.reason).toContain('eBay requires Focal Length for this category');
+        expect(item.reason).not.toContain('Mount');
+        expect(h.calls).toEqual([]);
+    });
+    it('fills the aspect eBay names in a publish refusal so the next run can publish', async () => {
+        armEnv();
+        const autofillCalls = [];
+        const h = harness({
+            kind: 'shopify_session',
+            dispatchJson: {
+                status: 'dispatch-failed',
+                dispatchFailureEbayErrorMessages: ['The item specific Focus Type is missing. Add Focus Type to this listing.'],
+            },
+            autofill: async (_id, extra) => {
+                autofillCalls.push(extra);
+                return { status: 'filled', filled: ['Focus Type'], stillMissing: [], revisionDigest: REVISION };
+            },
+        });
+        await request(h.app, 'POST', {});
+        await waitForFinish();
+        const [item] = getPublishAllStatus().items;
+        expect(item.status).toBe('failed');
+        expect(item.reason).toContain('Filled Focus Type from the product listing');
+        expect(autofillCalls).toEqual([['Focus Type']]);
+    });
     it('starts a run, publishes each ready item through the ceremonies, reports progress', async () => {
         armEnv();
         const h = harness({ kind: 'shopify_session' });

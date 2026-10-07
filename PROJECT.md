@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-07. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,14 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-07: `ebay-hold` Shopify Tag Keeps a Product Off eBay (L90)
+
+A product tagged `ebay-hold` in Shopify is never ready-to-list, so Publish All, the publish schedule, and listing prep all skip it; the Listings page shows an "On hold" badge. Removing the tag returns it to the queue on the next catalog refresh. First use: the Contax G2 Pro Kit (TLA200-U288).
+
+### 2026-10-06: Listing Prep — eBay Details Filled When a Product Appears, Not on Publish Day (L89)
+
+New `src/server/listing-autofill.ts` + `src/server/listing-prep.ts`: for every not-yet-listed product, Claude fills the eBay item specifics the title derivers cannot (taxonomy-required aspects, plus best-effort Brand/Model/Type), validated against eBay's taxonomy (SELECTION_ONLY values must match eBay's list exactly) and saved as a LOCAL draft revision that keeps every operator draft leaf. Runs on Shopify `products/create|update` webhooks (3-min debounce) and hourly (`LISTING_PREP_INTERVAL_MINUTES`, `off` disables); stands aside while a publish run holds the lock; one Claude attempt per item per source state per day. Publish All now tries the autofill before skipping at the required-aspect gate, and after an eBay 25002 refusal fills the named aspect so the next run publishes. `GET /api/listing-prep` + a Listings-page banner list the products that still need a person and exactly which fields. Model `LISTING_AUTOFILL_MODEL` (default `claude-opus-5-5`, effort low, structured output); key from Settings → Connections. Zero provider writes.
 
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 

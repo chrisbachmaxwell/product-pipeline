@@ -1,6 +1,8 @@
+import { type AutofillResult } from './listing-autofill.js';
 import { type StepRunner } from './order-import-trigger.js';
 export declare function tryAcquirePublishLock(): boolean;
 export declare function releasePublishLock(): void;
+export declare function isPublishLockHeld(): boolean;
 export type PublishAllItem = Readonly<{
     sku: string;
     title: string;
@@ -83,6 +85,8 @@ export type PublishAllDependencies = Readonly<{
         aspects: ReadonlyArray<{
             name: string;
             required: boolean;
+            mode?: 'FREE_TEXT' | 'SELECTION_ONLY';
+            values?: readonly string[];
         }>;
     }>;
     findUnresolvedCreate?: (sku: string) => Readonly<{
@@ -92,6 +96,8 @@ export type PublishAllDependencies = Readonly<{
         evidenceDigest: string;
     }> | null;
     latestRevisionDigest?: (catalogId: string) => string | null;
+    /** Claude fills missing item specifics into the draft (listing-autofill). */
+    autofill?: (catalogId: string, extraAspects?: readonly string[]) => Promise<AutofillResult>;
 }>;
 /**
  * Start a publish-all run in the background. Returns false when another

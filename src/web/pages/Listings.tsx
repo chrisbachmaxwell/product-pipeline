@@ -114,6 +114,21 @@ const Listings: React.FC = () => {
     }
   };
 
+  // Listing prep: not-yet-listed products whose eBay details Claude could
+  // not fill from the product listing — the employee's to-do before publish.
+  type ListingPrepStatus = {
+    items: Array<{ catalogId: string; sku: string; title: string; state: string; missing: string[] }>;
+  };
+  const [prep, setPrep] = useState<ListingPrepStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiClient.get<ListingPrepStatus>('/listing-prep')
+      .then((next) => { if (!cancelled) setPrep(next); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  const needsDetails = prep?.items.filter((item) => item.state === 'needs_input') ?? [];
+
   const valid = isLiveCatalogResponse(listings.data);
   const rows = valid ? listings.data?.data ?? [] : [];
   const total = valid ? listings.data?.total ?? 0 : 0;
@@ -167,6 +182,24 @@ const Listings: React.FC = () => {
                     : `${item.status === 'failed' ? '✗' : '⏭'} ${item.sku} — ${item.reason ?? item.status}`}
                 </Text>
               ))}
+            </BlockStack>
+          </Banner>
+        )}
+        {needsDetails.length > 0 && (
+          <Banner tone="warning" title={`${needsDetails.length} new ${needsDetails.length === 1 ? 'product needs' : 'products need'} details before eBay`}>
+            <BlockStack gap="100">
+              <Text as="p" variant="bodySm">
+                Everything else was filled in automatically from the product listing. Open each item and add what eBay asks for.
+              </Text>
+              {needsDetails.slice(0, 10).map((item) => (
+                <Text as="p" variant="bodySm" key={item.catalogId}>
+                  <Link to={`/listings/${encodeURIComponent(item.catalogId)}`}>{item.sku}</Link>
+                  {` — ${item.title}: needs ${item.missing.join(', ')}`}
+                </Text>
+              ))}
+              {needsDetails.length > 10 && (
+                <Text as="p" variant="bodySm">{`…and ${needsDetails.length - 10} more`}</Text>
+              )}
             </BlockStack>
           </Banner>
         )}
@@ -294,6 +327,10 @@ const Listings: React.FC = () => {
                                 </Badge>
                                 {row.readyToListGaps?.includes('condition') && (
                                   <Badge tone="warning">Add condition tag in Shopify</Badge>
+                                )}
+                                {row.lifecycleStatus === 'not_listed'
+                                  && row.shopify?.productTags?.some((tag) => tag.trim().toLowerCase() === 'ebay-hold') && (
+                                  <Badge tone="info">On hold (ebay-hold tag)</Badge>
                                 )}
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>

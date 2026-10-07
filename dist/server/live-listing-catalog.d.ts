@@ -1,3 +1,6 @@
+/** The Shopify tag that holds a product back from eBay listing. */
+export declare const EBAY_HOLD_TAG = "ebay-hold";
+export declare function isEbayHold(tags: readonly string[] | undefined): boolean;
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 export type ListingAttentionReason = 'shopify_product_not_active' | 'shopify_sku_missing' | 'shopify_sku_duplicate' | 'shopify_sku_near_collision' | 'ebay_sku_near_collision' | 'ebay_multiple_active_matches' | 'ebay_unpublished_artifact' | 'ebay_inventory_coverage_unavailable' | 'ebay_active_without_shopify_variant' | 'ebay_active_without_sku' | 'shopify_inventory_not_positive' | 'source_snapshot_stale' | 'source_refresh_failed';
 export type CapturedShopifyVariant = Readonly<{

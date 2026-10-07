@@ -268,6 +268,18 @@ describe('live listing catalog truth reducer', () => {
     expect(built.summary.readyToList).toBe(2);
   });
 
+  it('keeps an ebay-hold tagged product out of the ready queue', () => {
+    const built = snapshot({ variants: [
+      variant({ productTags: ['used', ' eBay-Hold '] }),
+      variant({ variantId: 'gid://shopify/ProductVariant/2', sku: 'UNTAGGED' }),
+    ] });
+    const held = built.rows.find((row) => row.shopify?.sku === 'SAFE-SKU')!;
+    const other = built.rows.find((row) => row.shopify?.sku === 'UNTAGGED')!;
+    expect(held).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: false });
+    expect(other).toMatchObject({ readyToList: true });
+    expect(built.summary.readyToList).toBe(1);
+  });
+
   it('never marks a ready-tagged row without positive known stock readyToList', () => {
     const zero = snapshot({ variants: [variant({ productTags: ['ready'], available: 0 })] });
     expect(zero.rows.some((row) => row.readyToList === true)).toBe(false);

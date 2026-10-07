@@ -14,6 +14,8 @@ export declare function createShopifyWebhookRouter(dependencies?: Readonly<{
     notifyInventoryChanged?: () => boolean;
     /** Price alignment; off unless PRICE_SWEEP_ARGV. */
     notifyPriceChanged?: () => boolean;
+    /** Listing prep (eBay item specifics) for new/edited products; local drafts only. */
+    notifyProductChanged?: () => boolean;
 }>): Router;
 declare const _default: Router;
 export default _default;
