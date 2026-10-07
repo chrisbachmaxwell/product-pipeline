@@ -347,6 +347,10 @@ Test files: `src/services/__tests__/`
 
 Publish-All reused an item's latest saved draft even when the item's identity had changed since that draft was saved (most likely the Shopify SKU was renamed). The create ceremony compares identity before field values, so preflight refused with `CREATE_IDENTITY_MISMATCH`. Publish-All only auto-rebased on `CREATE_BASE_STALE`, so the item could never publish. Publish-All now rebases once on either code: it saves a new local revision that keeps the operator's overrides and binds to the current identity, then runs preflight again. If the rebase save is refused, the item is skipped with a reason the operator can act on. A mismatch that is still there after the rebase fails the item without looping. Fix in `src/server/publish-all.ts`; regression tests in `src/server/publish-all-aspect-agent.test.ts` fail when the fix is reverted. The ceremony and its identity check are unchanged.
 
+### 2026-10-07: Publish-All Re-checks Stuck Creates (L96)
+
+Each Publish-All run now runs the zero-write reconcile for any create left unresolved over an hour, even when it left nothing on eBay, so "unresolved for over an hour" warnings clear instead of lingering.
+
 ### 2026-10-07: Self-Healing Publish Path (L94)
 
 Items Publish-All could not publish now raise a `PUBLISH_ITEM_BLOCKED` incident, grouped by root cause. The incident is diagnosed and opened as a GitHub issue, and the fix agent opens an `incident-fix` PR. That PR auto-merges once CI passes, unless it touches a protected path (safety boundary, ceremonies, credentials, order import, dependencies, policy), which still needs a human merge.

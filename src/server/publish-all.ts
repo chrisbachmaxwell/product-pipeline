@@ -30,7 +30,10 @@ import { aspectFillerArmed, fillMissingAspects, type AspectFillRequest, type Asp
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
-import { findUnresolvedListingCreateFromArgv } from './migration-state-reader.js';
+import {
+  findUnresolvedListingCreateFromArgv,
+  readIncidentLedgerSignalsFromArgv,
+} from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from './order-import-trigger.js';
 
 const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -160,7 +163,12 @@ export type PublishAllDependencies = Readonly<{
     jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
   }> | null;
   latestRevisionDigest?: (catalogId: string) => string | null;
+  /** SKUs whose create dispatched but never resolved, older than an hour. */
+  agingUnresolvedCreateSkus?: () => ReadonlySet<string>;
 }>;
+
+/** A create unresolved this long is stuck, not in flight (watchdog L76). */
+const UNRESOLVED_CREATE_STUCK_MS = 60 * 60_000;
 
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -245,6 +253,14 @@ export function startPublishAllRun(
       ? fillMissingAspects(request)
       : { filled: {}, unresolved: request.missing.map((aspect) => aspect.name) });
   const excluded = excludedSkus();
+  const agingUnresolvedCreateSkus = dependencies.agingUnresolvedCreateSkus ?? (() => {
+    const signals = readIncidentLedgerSignalsFromArgv(
+      reconcileArgv, new Date(Date.now() - 24 * 60 * 60_000).toISOString());
+    const cutoff = Date.now() - UNRESOLVED_CREATE_STUCK_MS;
+    return new Set((signals?.unresolvedCreates ?? [])
+      .filter((create) => Date.parse(create.reservedAtUtc) < cutoff)
+      .map((create) => create.sku));
+  });
   const findUnresolvedCreate = dependencies.findUnresolvedCreate
     ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
@@ -364,13 +380,25 @@ export function startPublishAllRun(
     try {
       const draftService = await draftServicePromise;
       const snapshot = await getSnapshot();
+      // Sweep (a) rows carrying leftover eBay data and (b) rows whose create
+      // has sat unresolved over an hour with NO leftover data: nothing else
+      // ever reconciles those, so their watchdog warning would never clear.
+      // The reconcile ceremony is zero-write; it closes the job as missing
+      // or existing, and an unpublished offer goes through the recovery chain.
+      let stuckSkus: ReadonlySet<string> = new Set();
+      try {
+        stuckSkus = agingUnresolvedCreateSkus();
+      } catch {
+        // Best-effort; the watchdog keeps showing the warning.
+      }
       const wedged = snapshot.rows.filter(
         (row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.shopify !== null
-          && row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true);
+          && (row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true
+            || stuckSkus.has(row.shopify.sku)));
       for (const row of wedged.slice(0, 10)) {
         status.currentSku = row.shopify.sku;
-        step('Cleaning up leftover eBay data from an earlier attempt');
+        step('Re-checking an earlier publish attempt that never finished');
         await sweepResidue(row);
       }
       status.currentSku = null;
