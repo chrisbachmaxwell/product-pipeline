@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
 } from './incident-watchdog.js';
@@ -141,6 +142,28 @@ describe('runWatchdogOnce', () => {
     expect(issues).toHaveLength(1);
   });
 
+  it('sends a publish block to the fix agent without emailing the operator', async () => {
+    const stateFile = tempStateFile();
+    const issues: Incident[] = [];
+    let notified = 0;
+    await runWatchdogOnce({
+      stateFile,
+      now: () => NOW,
+      getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [], repeatedPriceFailures: [] }),
+      getPublishStatus: () => ({ state: 'finished', stopReason: null, items: [
+        { sku: 'X-1', title: 'X', status: 'failed', reason: 'Preflight refused X-1: CREATE_IDENTITY_MISMATCH' },
+      ] }),
+      diagnose: async () => 'WHAT HAPPENED: identity drift',
+      openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/2'; },
+      notify: async () => { notified += 1; },
+      learningsContext: () => '',
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ code: 'PUBLISH_ITEM_BLOCKED', severity: 'warning' });
+    expect(notified).toBe(0);
+  });
+
   it('clears incidents when the condition resolves and stays quiet unarmed', async () => {
     const stateFile = tempStateFile();
     let rows = [row('LEICA-1', 0, '147000000001')];
@@ -223,5 +246,28 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     });
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
+  });
+});
+
+describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
+  it('groups items by root cause and ignores published ones', () => {
+    const candidates = publishBlockCandidates([
+      { sku: 'A-1', status: 'published' },
+      { sku: '82-25-VND-ED2-U001', status: 'failed', reason: 'Preflight refused 82-25-VND-ED2-U001: CREATE_IDENTITY_MISMATCH' },
+      { sku: 'B-2', status: 'failed', reason: 'Preflight refused B-2: CREATE_IDENTITY_MISMATCH' },
+      { sku: 'C-3', status: 'skipped', reason: 'eBay requires Mount for this category (Item specifics written by the agent: Type = Zoom; the rest were not certain) — open the item.' },
+      { sku: 'D-4', status: 'skipped', reason: 'eBay requires Focal Length, Type for this category — open the item.' },
+    ]);
+    expect(candidates.map((candidate) => candidate.id)).toEqual([
+      'PUBLISH_ITEM_BLOCKED:CREATE_IDENTITY_MISMATCH',
+      'PUBLISH_ITEM_BLOCKED:eBay requires <aspects> for this category — open the item.',
+    ]);
+    expect(candidates[0]).toMatchObject({ severity: 'warning', sku: '82-25-VND-ED2-U001' });
+    expect(candidates[0]!.title).toContain('2 items');
+    expect(candidates[0]!.detail).toContain('B-2: Preflight refused B-2: CREATE_IDENTITY_MISMATCH');
+  });
+
+  it('is silent when every item published', () => {
+    expect(publishBlockCandidates([{ sku: 'A-1', status: 'published' }])).toEqual([]);
   });
 });
