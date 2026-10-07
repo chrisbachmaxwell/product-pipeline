@@ -510,7 +510,14 @@ export function startPublishAllRun(
             manifestDigest = digest;
             break;
           }
-          if (code === 'CREATE_BASE_STALE' && attempt === 0) {
+          // Both codes mean the stored draft predates the item's current
+          // state. CREATE_IDENTITY_MISMATCH is the identity half (incident
+          // #169): a draft saved before the Shopify SKU was renamed keeps
+          // the old SKU forever, and the ceremony checks identity before
+          // values, so without this rebase the item could never publish.
+          // The rebase keeps the operator's overrides and re-binds them to
+          // the item's current identity; preflight then re-checks everything.
+          if ((code === 'CREATE_BASE_STALE' || code === 'CREATE_IDENTITY_MISMATCH') && attempt === 0) {
             try {
               const dto = await draftService.get(row.id);
               const payload = draftPayload(dto, {});
@@ -519,7 +526,9 @@ export function startPublishAllRun(
               revisionDigest = saved.revision.revisionDigest;
               continue;
             } catch {
-              skipReason = 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
+              skipReason = code === 'CREATE_IDENTITY_MISMATCH'
+                ? 'The saved draft belongs to an older SKU for this item and could not be refreshed — check the SKU is not used by another product, then open the item and save it once.'
+                : 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
               break;
             }
           }
