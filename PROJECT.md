@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: `no-ebay` Shopify Hold Tag (L90)
+
+Tag a Shopify product `no-ebay` to keep it off eBay: it leaves the ready queue (Publish-All, schedule and box runner skip it), the restock sweep never relists it, and Listings shows a "Held: no-ebay tag" badge. Delete the tag to release it on the next catalog refresh. Items already live on eBay are not ended by the tag.
+
 ### 2026-10-07: Item-Specifics Agent for Publish-All; SKU Exclusions (L89)
 
 Publish-All's required-aspect gate now asks an item-specifics agent (`src/server/aspect-filler.ts`, Claude via the Settings → Connections key) to fill the missing required eBay aspects before skipping. Only confident values are kept, and selection-only values must be eBay's own. They are saved as a local draft revision and then go through the unchanged per-item create ceremony; anything still uncertain skips with the remaining names. `PUBLISH_EXCLUDE_SKUS` (comma-separated) keeps chosen SKUs out of in-app Publish-All runs and, via `scripts/publish-ready.sh`, out of the box runner.

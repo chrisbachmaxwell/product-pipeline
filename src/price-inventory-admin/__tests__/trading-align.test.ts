@@ -890,6 +890,48 @@ describe('trading-model price/inventory alignment dispatch', () => {
     expect(lastJson(world.stdout)).toMatchObject({ relisted: 0 });
   });
 
+  it('never relists a restocked product that carries the no-ebay hold tag', async () => {
+    const world = createTradingWorld();
+    const beliefPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'relist-beliefs-')), 'beliefs.sqlite',
+    );
+    await world.run(establishArguments('inventory', world.migrationDatabasePath));
+    world.setWorkspace(tradingWorkspace({ shopifyAvailable: 0, ebayQuantity: 1 }));
+    await world.run(['align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'quantity', '--confirm-sweep',
+      '--end-at-zero', '--belief-store', beliefPath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({ status: 'swept', aligned: 1 });
+
+    const restocked = JSON.parse(JSON.stringify(
+      tradingWorkspace({ shopifyAvailable: 2, ebayQuantity: 2, shopifyPrice: '119.95' }),
+    )) as ListingWorkspaceDto;
+    (restocked.catalog as { ebay: unknown }).ebay = {
+      sku: SKU, state: 'not_listed', listingId: null, offerId: null, url: null,
+      activeMatchCount: 0, inventoryItemCount: 0, offerCount: 0,
+      unpublishedArtifactCount: 0,
+    };
+    (restocked.catalog as { lifecycleStatus: string }).lifecycleStatus = 'not_listed';
+    (restocked.catalog.shopify as { productTags?: string[] }).productTags = ['no-ebay'];
+    (restocked as { ebayDetail: unknown }).ebayDetail = null;
+    (restocked.mapping as { state: string; listingId: string | null }).state = 'shopify_only';
+    (restocked.mapping as { listingId: string | null }).listingId = null;
+    world.setWorkspace(restocked);
+
+    await world.run(['align-sweep',
+      '--migration-store', world.migrationDatabasePath,
+      '--confirm-scope', deriveScopeKey(MIGRATION_SCOPE),
+      '--field', 'quantity', '--confirm-sweep',
+      '--end-at-zero', '--relist-on-restock', '--belief-store', beliefPath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({ relisted: 0 });
+    expect(world.requests.some((request) =>
+      request.headers?.['X-EBAY-API-CALL-NAME'] === 'RelistFixedPriceItem'
+      || request.body.includes('RelistFixedPriceItemRequest'))).toBe(false);
+  });
+
   it('reports a provider-rejected sweep dispatch as FAILED with its code, never as aligned', async () => {
     // Production 2026-09-08: eight consecutive eBay rejections (Trading
     // refuses an available-quantity-0 revision unless the account's

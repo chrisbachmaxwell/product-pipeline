@@ -52,6 +52,8 @@ export interface AuthoritativeListingItem {
   readyToList?: boolean;
   /** Ready rows missing something publish requires (today: 'condition'). */
   readyToListGaps?: Array<'condition'>;
+  /** Product carries the `no-ebay` Shopify tag; kept off eBay until removed. */
+  heldFromEbay?: boolean;
   lastVerifiedAtUtc: string;
   audit: {
     verified: boolean;
