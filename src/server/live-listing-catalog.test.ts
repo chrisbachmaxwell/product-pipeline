@@ -268,6 +268,15 @@ describe('live listing catalog truth reducer', () => {
     expect(built.summary.readyToList).toBe(2);
   });
 
+  it('keeps a no-ebay tagged product out of the ready queue until the tag is removed', () => {
+    const held = snapshot({ variants: [variant({ productTags: ['lens', 'no-ebay'] })] });
+    expect(held.rows[0]).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: false, heldFromEbay: true });
+    expect(held.summary.readyToList).toBe(0);
+    const released = snapshot({ variants: [variant({ productTags: ['lens'] })] });
+    expect(released.rows[0]).toMatchObject({ readyToList: true });
+    expect(released.rows[0]).not.toHaveProperty('heldFromEbay');
+  });
+
   it('never marks a ready-tagged row without positive known stock readyToList', () => {
     const zero = snapshot({ variants: [variant({ productTags: ['ready'], available: 0 })] });
     expect(zero.rows.some((row) => row.readyToList === true)).toBe(false);

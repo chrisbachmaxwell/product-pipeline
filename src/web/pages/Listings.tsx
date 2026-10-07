@@ -295,6 +295,9 @@ const Listings: React.FC = () => {
                                 {row.readyToListGaps?.includes('condition') && (
                                   <Badge tone="warning">Add condition tag in Shopify</Badge>
                                 )}
+                                {row.heldFromEbay && (
+                                  <Badge>Held: no-ebay tag</Badge>
+                                )}
                                 {attention && <Text as="span" variant="bodySm" tone="critical">{attention}</Text>}
                               </BlockStack>
                             </IndexTable.Cell>
@@ -348,6 +351,9 @@ const Listings: React.FC = () => {
                               </InlineStack>
                               {row.readyToListGaps?.includes('condition') && (
                                 <Badge tone="warning">Add condition tag in Shopify</Badge>
+                              )}
+                              {row.heldFromEbay && (
+                                <Badge>Held: no-ebay tag</Badge>
                               )}
                               {attention && <Text as="p" variant="bodySm" tone="critical">{attention}</Text>}
                               <InlineStack align="space-between" blockAlign="center">

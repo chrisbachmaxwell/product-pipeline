@@ -26,6 +26,7 @@
  * - runs are bounded (MAX_ITEMS) and single-flight, sharing the same lock
  *   as the one-item publish route
  */
+import { aspectFillerArmed, fillMissingAspects, type AspectFillRequest, type AspectFillResult } from './aspect-filler.js';
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
@@ -119,7 +120,10 @@ type DraftServiceLike = {
         category: { draft: string | null; shopify: string | null };
         conditionDescription: { draft: string | null; shopify: string | null };
       };
-      content: { itemSpecifics: { draft: string | null; shopify: string | null } };
+      content: {
+        itemSpecifics: { draft: string | null; shopify: string | null };
+        description?: { draft: string | null; shopify: string | null };
+      };
     };
   }>;
   save: (request: unknown, actor: string) => Promise<{
@@ -136,8 +140,15 @@ export type PublishAllDependencies = Readonly<{
   maxItems?: number;
   getCategoryAspects?: (categoryId: string) => Promise<{
     available: boolean;
-    aspects: ReadonlyArray<{ name: string; required: boolean }>;
+    aspects: ReadonlyArray<{
+      name: string;
+      required: boolean;
+      mode?: 'FREE_TEXT' | 'SELECTION_ONLY';
+      values?: readonly string[];
+    }>;
   }>;
+  /** Item-specifics agent; null disables it. Default: armed when a Claude key is connected. */
+  fillAspects?: ((request: AspectFillRequest) => Promise<AspectFillResult>) | null;
   findUnresolvedCreate?: (sku: string) => Readonly<{
     jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
   }> | null;
@@ -147,11 +158,18 @@ export type PublishAllDependencies = Readonly<{
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms); });
 
+/** Operator per-deploy exclusions: never publish these SKUs (comma-separated). */
+function excludedSkus(): ReadonlySet<string> {
+  return new Set((process.env.PUBLISH_EXCLUDE_SKUS ?? '')
+    .split(',').map((sku) => sku.trim()).filter((sku) => sku.length > 0));
+}
+
 function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrides: {
   conditionDescription?: string | null;
+  itemSpecifics?: string;
 }): Record<string, unknown> {
   let specifics: string | null = null;
-  const raw = dto.sections.content.itemSpecifics.draft;
+  const raw = overrides.itemSpecifics ?? dto.sections.content.itemSpecifics.draft;
   if (raw) {
     // The create manifest demands alphabetically sorted specifics keys.
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -214,6 +232,12 @@ export function startPublishAllRun(
   const getCategoryAspects = dependencies.getCategoryAspects
     ?? (async (categoryId: string) => (await import('./ebay-category-aspects.js'))
       .getEbayCategoryAspects(categoryId));
+  const fillAspects = dependencies.fillAspects !== undefined
+    ? dependencies.fillAspects
+    : async (request: AspectFillRequest): Promise<AspectFillResult> => (await aspectFillerArmed()
+      ? fillMissingAspects(request)
+      : { filled: {}, unresolved: request.missing.map((aspect) => aspect.name) });
+  const excluded = excludedSkus();
   const findUnresolvedCreate = dependencies.findUnresolvedCreate
     ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
@@ -333,7 +357,8 @@ export function startPublishAllRun(
       const ready = freshSnapshot.rows
         .filter((row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.readyToList === true && row.shopify !== null
-          && !row.shopify.sku.startsWith('PIPELINE-TEST'))
+          && !row.shopify.sku.startsWith('PIPELINE-TEST')
+          && !excluded.has(row.shopify.sku))
         .slice(0, maxItems);
       status.totalReady = ready.length;
       info(`[Publish All] ${startedBy}: ${ready.length} ready`
@@ -379,8 +404,11 @@ export function startPublishAllRun(
         // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
         // 25002 refusal at a time, and each refusal burns an intent and
         // strands an unpublished offer. Check the category's complete
-        // required list BEFORE any ceremony and skip with every missing
-        // name in ONE message an employee can act on.
+        // required list BEFORE any ceremony. The item-specifics agent
+        // (aspect-filler.ts) writes what it is confident of into the local
+        // draft; whatever is still missing skips with every name in ONE
+        // message an employee can act on.
+        let agentNote: string | null = null;
         try {
           const dto = await draftService.get(row.id);
           const categoryId = dto.sections.listing.category.draft
@@ -390,15 +418,46 @@ export function startPublishAllRun(
           if (categoryId !== null) {
             const taxonomy = await getCategoryAspects(categoryId);
             if (taxonomy.available) {
-              const present = new Set(Object.keys(
-                specificsRaw ? JSON.parse(specificsRaw) as Record<string, unknown> : {},
-              ).map((name) => name.toLowerCase()));
-              const missing = taxonomy.aspects
-                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()))
-                .map((aspect) => aspect.name);
+              const existing = specificsRaw
+                ? JSON.parse(specificsRaw) as Record<string, string[]> : {};
+              const present = new Set(Object.keys(existing).map((name) => name.toLowerCase()));
+              const missingAspects = taxonomy.aspects
+                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()));
+              let missing = missingAspects.map((aspect) => aspect.name);
+              if (missing.length > 0 && fillAspects !== null) {
+                const description = dto.sections.content.description;
+                const result = await fillAspects({
+                  title: dto.sections.listing.title.draft ?? title,
+                  description: description?.draft ?? description?.shopify ?? null,
+                  categoryId,
+                  existing,
+                  missing: missingAspects.map((aspect) => ({
+                    name: aspect.name,
+                    mode: aspect.mode ?? 'FREE_TEXT',
+                    values: aspect.values ?? [],
+                  })),
+                });
+                const written = Object.entries(result.filled);
+                if (written.length > 0) {
+                  try {
+                    const payload = draftPayload(dto, {
+                      itemSpecifics: JSON.stringify({ ...existing, ...result.filled }),
+                    });
+                    (payload as { catalogId: unknown }).catalogId = row.id;
+                    const saved = await draftService.save(payload, 'publish-all-aspect-agent');
+                    revisionDigest = saved.revision.revisionDigest;
+                    missing = result.unresolved;
+                    agentNote = `Item specifics written by the agent: ${written
+                      .map(([name, values]) => `${name} = ${values.join(', ')}`).join('; ')}.`;
+                    info(`[Publish All] aspect agent filled ${written.length} for ${sku}`);
+                  } catch {
+                    // Save refused: fall through and skip with the full list.
+                  }
+                }
+              }
               if (missing.length > 0) {
                 record({ sku, title, status: 'skipped',
-                  reason: `eBay requires ${missing.join(', ')} for this category — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
+                  reason: `eBay requires ${missing.join(', ')} for this category${agentNote ? ` (${agentNote.replace(/\.$/, '')}; the rest were not certain)` : ''} — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
                 await sleep(15_000);
                 continue;
               }
@@ -499,7 +558,7 @@ export function startPublishAllRun(
           }
         }
         if (published && listingId !== null) {
-          record({ sku, title, status: 'published', listingId });
+          record({ sku, title, status: 'published', listingId, ...(agentNote ? { reason: agentNote } : {}) });
           info(`[Publish All] ${sku} live as ${listingId}`);
         } else if (dispatched.json?.code === 'CREATE_INTENT_ALREADY_RECORDED') {
           record({ sku, title, status: 'skipped', reason: 'A previous attempt already used this draft — open the item and publish from there.' });

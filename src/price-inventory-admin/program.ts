@@ -69,6 +69,7 @@ import {
   TradingAlignDispatchError,
   type TradingAlignDispatchAdapter,
 } from './trading-dispatch-adapter.js';
+import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
 
 const APPROVAL_TTL_MS = 10 * 60_000;
 
@@ -1422,6 +1423,8 @@ export function buildPriceInventoryAdminProgram(
               && row.shopify !== null
               && typeof row.shopify.available === 'number' && row.shopify.available > 0
               && /^[0-9]+(?:[.][0-9]+)?$/u.test(row.shopify.price?.amount ?? '')
+              // The operator's `no-ebay` hold tag: never relist a held product.
+              && !hasEbayHoldTag(row.shopify.productTags)
               && beliefs.endedFor(row.ebay.sku) !== null);
             for (const row of restockRows) {
               if (relisted >= RELIST_HARD_CAP) break;

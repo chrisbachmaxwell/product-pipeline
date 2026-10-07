@@ -343,6 +343,14 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: `no-ebay` Shopify Hold Tag (L90)
+
+Tag a Shopify product `no-ebay` to keep it off eBay: it leaves the ready queue (Publish-All, schedule and box runner skip it), the restock sweep never relists it, and Listings shows a "Held: no-ebay tag" badge. Delete the tag to release it on the next catalog refresh. Items already live on eBay are not ended by the tag.
+
+### 2026-10-07: Item-Specifics Agent for Publish-All; SKU Exclusions (L89)
+
+Publish-All's required-aspect gate now asks an item-specifics agent (`src/server/aspect-filler.ts`, Claude via the Settings → Connections key) to fill the missing required eBay aspects before skipping. Only confident values are kept, and selection-only values must be eBay's own. They are saved as a local draft revision and then go through the unchanged per-item create ceremony; anything still uncertain skips with the remaining names. `PUBLISH_EXCLUDE_SKUS` (comma-separated) keeps chosen SKUs out of in-app Publish-All runs and, via `scripts/publish-ready.sh`, out of the box runner.
+
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 
 First fully-quiet weekend (3/3 orders imported, zero incidents, agent pipeline correctly idle). Monday audit decoded the 16437396 zombie (2-unit drift, rejection reason now loud-logged, capture pending), published the Hasselblad XCD 45P (147605742950) via the runner after a one-field Mount fill, and identified the sold-before-listing pattern (a7R V entered and left the ready queue within an hour). L85 is the session-close handoff snapshot: working/verified systems, operator-held outstanding items, unproven-live write paths, and the ops laws that bite.

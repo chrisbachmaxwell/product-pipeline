@@ -1,4 +1,5 @@
 import { deriveCondition } from '../shared/condition-tags.js';
+import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
 
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
@@ -175,6 +176,11 @@ export type LiveListingCatalogRow = Readonly<{
    * these with a callout, not to have them hidden (2026-09-11).
    */
   readyToListGaps?: readonly 'condition'[];
+  /**
+   * Present (true) only when the product carries the operator's `no-ebay`
+   * Shopify tag: it is kept out of the ready queue until the tag is removed.
+   */
+  heldFromEbay?: true;
   lastVerifiedAtUtc: string;
   audit: Readonly<{
     verified: boolean;
@@ -508,8 +514,11 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     // operator's rule, 2026-09-10: "if an item goes active in Shopify it
     // should be on eBay" — no tagging step. (An earlier iteration required
     // a `ready` tag; that gate is gone, tags remain captured for future
-    // use.)
-    const readyToList = variant.productStatus.toUpperCase() === 'ACTIVE'
+    // use.) The one tag that DOES gate it is the operator's `no-ebay`
+    // hold (2026-10-07): tagged products stay off eBay until untagged.
+    const heldFromEbay = hasEbayHoldTag(variant.productTags);
+    const readyToList = !heldFromEbay
+      && variant.productStatus.toUpperCase() === 'ACTIVE'
       && variant.available !== null && variant.available > 0
       && activeMatches.length === 0
       && inventoryItems.length === 0
@@ -524,6 +533,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     return [Object.freeze({
       id: `shopify-variant:${variant.variantId}`,
       ...(readyToListGaps ? { readyToListGaps } : {}),
+      ...(heldFromEbay ? { heldFromEbay: true as const } : {}),
       shopify: Object.freeze({
         ...variant,
         productTags: Object.freeze([...(variant.productTags ?? [])]),
