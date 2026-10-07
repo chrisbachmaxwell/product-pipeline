@@ -6,6 +6,7 @@ import type {
   AuthoritativeListingsResponse,
 } from './hooks/useAuthoritativeListings';
 import {
+  formatElapsed,
   formatListingPrice,
   formatListingQuantity,
   formatVerifiedAt,
@@ -541,5 +542,14 @@ describe('stocked listings operator UI', () => {
     expect(source).toContain('Price · synced from Shopify');
     expect(source).toContain('Quantity · synced from Shopify');
     expect(source).not.toMatch(/<Badge[^>]*>Marketplace Connect<\/Badge>/u);
+  });
+});
+
+describe('formatElapsed', () => {
+  it('shows seconds, then minutes with padded seconds', () => {
+    const now = Date.parse('2026-10-07T18:10:00Z');
+    expect(formatElapsed('2026-10-07T18:09:15Z', now)).toBe('45s');
+    expect(formatElapsed('2026-10-07T18:06:55Z', now)).toBe('3m 05s');
+    expect(formatElapsed('not a date', now)).toBe('');
   });
 });

@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: Publish-All Shows Its Current Step (L92)
+
+The Publish-All banner now shows what the run is doing right now and for how long (agent writing specifics, eBay check, rate-limit pause, publishing, confirming). It no longer shows a finished item as current during the pause between items. The run skips the 60-second pause after the last item.
+
 ### 2026-10-07: `no-ebay` Shopify Hold Tag (L90)
 
 Tag a Shopify product `no-ebay` to keep it off eBay: it leaves the ready queue (Publish-All, schedule and box runner skip it), the restock sweep never relists it, and Listings shows a "Held: no-ebay tag" badge. Delete the tag to release it on the next catalog refresh. Items already live on eBay are not ended by the tag.
