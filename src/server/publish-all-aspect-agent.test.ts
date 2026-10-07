@@ -206,3 +206,32 @@ describe('publish-all progress reporting', () => {
     expect(done.currentStep).toBeNull();
   });
 });
+
+describe('publish-all stuck-create sweep', () => {
+  it('reconciles a create stuck over an hour even when eBay holds no leftover data', async () => {
+    arm();
+    process.env.PUBLISH_RECONCILE_ARGV = JSON.stringify(['cli.js', 'reconcile-create',
+      '--sku', '{sku}', '--job-id', '{jobId}', '--attempt-id', '{attemptId}']);
+    process.env.PUBLISH_RECOVER_ARGV = JSON.stringify(['cli.js', 'recover-create', '--sku', '{sku}']);
+    process.env.PUBLISH_RECOVER_RECONCILE_ARGV = JSON.stringify(['cli.js', 'recover-reconcile', '--sku', '{sku}']);
+    try {
+      const saves: unknown[] = [];
+      const calls: string[][] = [];
+      const { run } = startPublishAllRun('test', dependencies({
+        fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
+        agingUnresolvedCreateSkus: () => new Set(['4426B002-U317']),
+        findUnresolvedCreate: () => ({
+          jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+          intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
+        }),
+      }, saves, calls));
+      await run;
+      expect(calls[0]).toEqual(['cli.js', 'reconcile-create', '--sku', '4426B002-U317',
+        '--job-id', 'listing-create-job:1', '--attempt-id', 'listing-create-attempt:1']);
+    } finally {
+      delete process.env.PUBLISH_RECONCILE_ARGV;
+      delete process.env.PUBLISH_RECOVER_ARGV;
+      delete process.env.PUBLISH_RECOVER_RECONCILE_ARGV;
+    }
+  });
+});
