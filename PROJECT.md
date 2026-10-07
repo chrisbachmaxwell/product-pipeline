@@ -343,9 +343,9 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
-### 2026-10-07: Ready-Queue Runner Per-Run SKU Exclusions
+### 2026-10-07: Item-Specifics Agent for Publish-All; SKU Exclusions (L89)
 
-`scripts/publish-ready.sh` accepts `PUBLISH_EXCLUDE_SKUS=SKU1,SKU2` (validated locally against the eBay SKU grammar, passed to the box as an env var) and `scripts/publish-ready.mjs` drops those rows from the ready queue for that run, logging `EXCLUDED`. Lets the operator publish "everything ready except X" without editing `NEVER_PUBLISH`. No ceremony, approval, or writer path changed.
+Publish-All's required-aspect gate now asks an item-specifics agent (`src/server/aspect-filler.ts`, Claude via the Settings → Connections key) to fill the missing required eBay aspects before skipping. Only confident values are kept, and selection-only values must be eBay's own. They are saved as a local draft revision and then go through the unchanged per-item create ceremony; anything still uncertain skips with the remaining names. `PUBLISH_EXCLUDE_SKUS` (comma-separated) keeps chosen SKUs out of in-app Publish-All runs and, via `scripts/publish-ready.sh`, out of the box runner.
 
 ### 2026-09-28 → 2026-09-29: Quiet Weekend, Monday Audit, Handoff (L84-L85)
 
