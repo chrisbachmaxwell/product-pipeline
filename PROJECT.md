@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-07: Required Specifics That Don't Fit Publish as "Does not apply" (L93)
+
+The item-specifics agent now answers a required eBay aspect that doesn't exist for the item (e.g. Focal Length on a teleconverter), or that it can't settle, with "Does not apply" instead of leaving it for manual entry. Selection-only aspects use it only when eBay's list offers it.
+
 ### 2026-10-07: Publish-All Shows Its Current Step (L92)
 
 The Publish-All banner now shows what the run is doing right now and for how long (agent writing specifics, eBay check, rate-limit pause, publishing, confirming). It no longer shows a finished item as current during the pause between items. The run skips the 60-second pause after the last item.
