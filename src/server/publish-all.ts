@@ -22,6 +22,9 @@
  * - known-benign blockers (missing condition, eBay-illegal SKU, missing
  *   required field, already-listed) are per-item skips with reasons the
  *   UI shows; unknown failure shapes STOP the run loudly (L65)
+ * - the ceremony's catch-all refusal (LISTING_LIFECYCLE_DENIED) is re-checked
+ *   in-process: an item gone from the catalog drops out, any other is
+ *   retried once at the end of the run before it fails (incident #173)
  * - a failed dispatch runs the residue-recovery chain so nothing wedges
  * - runs are bounded (MAX_ITEMS) and single-flight, sharing the same lock
  *   as the one-item publish route
@@ -417,10 +420,16 @@ export function startPublishAllRun(
           : ''));
 
       let consecutiveUnknown = 0;
-      for (const [index, row] of ready.entries()) {
+      // Items whose preflight said nothing about the item itself are re-queued
+      // once at the end of the run (incident #173); see the uninformative-
+      // refusal handling below.
+      const queue = [...ready];
+      const deferred = new Set<string>();
+      for (let index = 0; index < queue.length; index += 1) {
+        const row = queue[index]!;
         const sku = row.shopify.sku;
         const title = row.shopify.title;
-        const isLast = index === ready.length - 1;
+        const isLast = index === queue.length - 1;
         status.currentSku = sku;
         step('Preparing the draft');
         if (!SKU_GRAMMAR.test(sku)) {
@@ -524,6 +533,7 @@ export function startPublishAllRun(
         let manifestDigest: string | null = null;
         let skipReason: string | null = null;
         let stop: string | null = null;
+        let uninformative = false;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (attempt > 0) {
             step('eBay check hit a temporary error — retrying in 90s');
@@ -533,6 +543,7 @@ export function startPublishAllRun(
           const values = { catalogId: row.id, sku, revisionDigest };
           const preflight = await runStep(substituteArgv(preflightArgv, values));
           const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
+          uninformative = preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED';
           const digest = preflight.json?.manifestDigest;
           if (typeof digest === 'string' && DIGEST.test(digest)) {
             manifestDigest = digest;
@@ -569,7 +580,7 @@ export function startPublishAllRun(
             skipReason = 'Already listed on eBay.';
             break;
           }
-          if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
+          if (uninformative && attempt < 2) {
             continue;
           }
           stop = `Preflight refused ${sku}: ${code ?? 'no summary'}`;
@@ -579,6 +590,43 @@ export function startPublishAllRun(
           record({ sku, title, status: 'skipped', reason: skipReason });
           if (!isLast) await sleep(20_000);
           continue;
+        }
+        // LISTING_LIFECYCLE_DENIED is the ceremony's catch-all, not a verdict
+        // on the item: it is what the ceremony prints when its OWN fresh store
+        // capture cannot produce this row (L63 — usually Shopify throttling
+        // the full capture, or the item leaving the catalog mid-run). A draft
+        // rebase cannot help (identity/base drift have their own codes), and
+        // three quick retries were not enough for 5803C012-U230 (incident
+        // #173). Ask the in-process workspace what is true of the item now:
+        // gone from the catalog → it is no longer publishable, nothing to fix;
+        // otherwise re-queue it ONCE behind the rest of the run, by which time
+        // the rate budget has recovered. A second refusal fails as before.
+        if (stop !== null && uninformative) {
+          let recheckCode: string | null = null;
+          try {
+            await draftService.get(row.id);
+          } catch (error) {
+            recheckCode = error instanceof Error && 'code' in error
+              ? String((error as { code: unknown }).code) : 'unavailable';
+          }
+          if (recheckCode === 'LISTING_DRAFT_NOT_FOUND') {
+            status.totalReady -= 1;
+            status.currentSku = null;
+            info(`[Publish All] ${sku} left the ready queue during the run; not published`);
+            if (!isLast) await sleep(20_000);
+            continue;
+          }
+          // Three uninformative refusals in a row are systemic (the capture
+          // itself is down), so the third falls through and stops the run.
+          if (!deferred.has(sku) && consecutiveUnknown < 2) {
+            deferred.add(sku);
+            queue.push(row);
+            consecutiveUnknown += 1;
+            status.currentSku = null;
+            step('eBay could not read this item right now — it will be retried at the end of the run');
+            await sleep(120_000);
+            continue;
+          }
         }
         if (stop !== null || manifestDigest === null) {
           // One unknown refusal must not starve the queue behind it

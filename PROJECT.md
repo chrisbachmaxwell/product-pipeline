@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-08. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-08: Publish-All Re-checks the Ceremony's Catch-All Refusal (L97, incident #173)
+
+`5803C012-U230` failed Publish-All with `LISTING_LIFECYCLE_DENIED`, which the listing-lifecycle ceremony prints for any error it has no code for. In preflight that is almost always the ceremony's own fresh workspace read failing for the row (`ListingWorkspaceReaderError`: Shopify throttling the full capture, or the item leaving the catalog mid-run). It says nothing about the draft. Publish-All tried three times 90s apart and then recorded an unknown failure. It now asks the in-process draft service about the item. If the item is no longer in the catalog, it drops out of the run instead of failing. Otherwise it is re-queued once behind the rest of the run, and only a second refusal fails it, with the same code. Three such refusals in a row still stop the run as systemic. Fix in `src/server/publish-all.ts`. Regression tests in `src/server/publish-all-catch-all.test.ts`: three of the four fail when the fix is reverted, and the fourth guards the systemic stop. The ceremony is unchanged, and no protected path is touched.
 
 ### 2026-10-07: Publish-All Rebases Drafts Saved Under an Older SKU (L95, incident #169)
 
