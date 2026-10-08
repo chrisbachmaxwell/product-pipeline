@@ -19,6 +19,8 @@
  * - missing drafts get a pure-inherit save (auto-defaults fill everything
  *   derivable, including title-marker conditions, L69)
  * - CREATE_BASE_STALE auto-rebases the draft and retries (L69)
+ * - a dispatch refused for a reason a fresh preflight can
+ *   clear is re-checked and re-dispatched once (L97)
  * - known-benign blockers (missing condition, eBay-illegal SKU, missing
  *   required field, already-listed) are per-item skips with reasons the
  *   UI shows; unknown failure shapes STOP the run loudly (L65)
@@ -40,6 +42,21 @@ const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_ITEMS = 30;
+/**
+ * dispatch-create refusals a fresh preflight can clear: a transient capture
+ * failure, or the item/draft moving between preflight and dispatch. The
+ * generic code can also follow a provider write; the open-create ledger
+ * check at the retry site excludes that case.
+ */
+const DISPATCH_RECHECK_CODES: ReadonlySet<string> = new Set([
+  'LISTING_LIFECYCLE_DENIED',
+  'CREATE_BASE_STALE',
+  'CREATE_IDENTITY_MISMATCH',
+  'CREATE_DRAFT_REVISION_MISMATCH',
+  'CREATE_MANIFEST_DIGEST_MISMATCH',
+  'CREATE_DRAFT_STORE_UNAVAILABLE',
+  'no code',
+]);
 
 /** One publish at a time process-wide — shared with the one-item route. */
 let publishLockHeld = false;
@@ -521,60 +538,66 @@ export function startPublishAllRun(
         }
 
         // Preflight with auto-rebase + transient retry (3 attempts).
-        let manifestDigest: string | null = null;
-        let skipReason: string | null = null;
-        let stop: string | null = null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          if (attempt > 0) {
-            step('eBay check hit a temporary error — retrying in 90s');
-            await sleep(90_000);
-          }
-          step('Checking the listing with eBay (preflight)');
-          const values = { catalogId: row.id, sku, revisionDigest };
-          const preflight = await runStep(substituteArgv(preflightArgv, values));
-          const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
-          const digest = preflight.json?.manifestDigest;
-          if (typeof digest === 'string' && DIGEST.test(digest)) {
-            manifestDigest = digest;
-            break;
-          }
-          // Both codes mean the stored draft predates the item's current
-          // state. CREATE_IDENTITY_MISMATCH is the identity half (incident
-          // #169): a draft saved before the Shopify SKU was renamed keeps
-          // the old SKU forever, and the ceremony checks identity before
-          // values, so without this rebase the item could never publish.
-          // The rebase keeps the operator's overrides and re-binds them to
-          // the item's current identity; preflight then re-checks everything.
-          if ((code === 'CREATE_BASE_STALE' || code === 'CREATE_IDENTITY_MISMATCH') && attempt === 0) {
-            try {
-              const dto = await draftService.get(row.id);
-              const payload = draftPayload(dto, {});
-              (payload as { catalogId: unknown }).catalogId = row.id;
-              const saved = await draftService.save(payload, 'publish-all-rebase');
-              revisionDigest = saved.revision.revisionDigest;
-              continue;
-            } catch {
-              skipReason = code === 'CREATE_IDENTITY_MISMATCH'
-                ? 'The saved draft belongs to an older SKU for this item and could not be refreshed — check the SKU is not used by another product, then open the item and save it once.'
-                : 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
+        const runPreflight = async (): Promise<{
+          manifestDigest: string | null; skipReason: string | null; stop: string | null;
+        }> => {
+          let manifestDigest: string | null = null;
+          let skipReason: string | null = null;
+          let stop: string | null = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (attempt > 0) {
+              step('eBay check hit a temporary error — retrying in 90s');
+              await sleep(90_000);
+            }
+            step('Checking the listing with eBay (preflight)');
+            const values = { catalogId: row.id, sku, revisionDigest };
+            const preflight = await runStep(substituteArgv(preflightArgv, values));
+            const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
+            const digest = preflight.json?.manifestDigest;
+            if (typeof digest === 'string' && DIGEST.test(digest)) {
+              manifestDigest = digest;
               break;
             }
-          }
-          if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
-            const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
-            skipReason = `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+            // Both codes mean the stored draft predates the item's current
+            // state. CREATE_IDENTITY_MISMATCH is the identity half (incident
+            // #169): a draft saved before the Shopify SKU was renamed keeps
+            // the old SKU forever, and the ceremony checks identity before
+            // values, so without this rebase the item could never publish.
+            // The rebase keeps the operator's overrides and re-binds them to
+            // the item's current identity; preflight then re-checks everything.
+            if ((code === 'CREATE_BASE_STALE' || code === 'CREATE_IDENTITY_MISMATCH') && attempt === 0) {
+              try {
+                const dto = await draftService.get(row.id);
+                const payload = draftPayload(dto, {});
+                (payload as { catalogId: unknown }).catalogId = row.id;
+                const saved = await draftService.save(payload, 'publish-all-rebase');
+                revisionDigest = saved.revision.revisionDigest;
+                continue;
+              } catch {
+                skipReason = code === 'CREATE_IDENTITY_MISMATCH'
+                  ? 'The saved draft belongs to an older SKU for this item and could not be refreshed — check the SKU is not used by another product, then open the item and save it once.'
+                  : 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
+                break;
+              }
+            }
+            if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
+              const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
+              skipReason = `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+              break;
+            }
+            if (code === 'CREATE_TARGET_ALREADY_LISTED') {
+              skipReason = 'Already listed on eBay.';
+              break;
+            }
+            if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
+              continue;
+            }
+            stop = `Preflight refused ${sku}: ${code ?? 'no summary'}`;
             break;
           }
-          if (code === 'CREATE_TARGET_ALREADY_LISTED') {
-            skipReason = 'Already listed on eBay.';
-            break;
-          }
-          if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
-            continue;
-          }
-          stop = `Preflight refused ${sku}: ${code ?? 'no summary'}`;
-          break;
-        }
+          return { manifestDigest, skipReason, stop };
+        };
+        let { manifestDigest, skipReason, stop } = await runPreflight();
         if (skipReason !== null) {
           record({ sku, title, status: 'skipped', reason: skipReason });
           if (!isLast) await sleep(20_000);
@@ -599,16 +622,53 @@ export function startPublishAllRun(
         }
         consecutiveUnknown = 0;
 
-        step('Pausing 40s before publishing (Shopify rate limit)');
-        await sleep(40_000);
-        step('Publishing to eBay');
-        const values = { catalogId: row.id, sku, revisionDigest, manifestDigest };
-        const dispatched = await runStep(substituteArgv(dispatchArgv, values));
+        // Dispatch re-derives the whole target from a FRESH store capture, so
+        // it can refuse what preflight accepted 40s earlier: a throttled or
+        // failed capture (LISTING_LIFECYCLE_DENIED) or Shopify changing in
+        // the gap (CREATE_BASE_STALE …). Incident #172: two items failed as
+        // "denied" with no retry and no code. A refusal from this set is
+        // re-checked once from preflight (which rebases a stale draft) and
+        // dispatched again. That is safe: one manifest is one intent forever,
+        // so an unchanged draft can only replay-deny, and a create that left
+        // a job open on the ledger is never retried here.
+        let dispatched: Awaited<ReturnType<StepRunner>> = { json: null };
+        let deniedCode: string | null = null;
+        for (let pass = 0; pass < 2; pass += 1) {
+          step('Pausing 40s before publishing (Shopify rate limit)');
+          await sleep(40_000);
+          step('Publishing to eBay');
+          dispatched = await runStep(substituteArgv(dispatchArgv, {
+            catalogId: row.id, sku, revisionDigest, manifestDigest,
+          }));
+          deniedCode = dispatched.json?.status === 'denied'
+            ? (typeof dispatched.json.code === 'string' ? dispatched.json.code : 'no code')
+            : null;
+          if (pass > 0 || deniedCode === null || !DISPATCH_RECHECK_CODES.has(deniedCode)
+            || findUnresolvedCreate(sku) !== null) break;
+          warn(`[Publish All] dispatch refused ${sku}: ${deniedCode}; re-checking once`);
+          step(`eBay publish was refused (${deniedCode}) — re-checking in 60s`);
+          await sleep(60_000);
+          const again = await runPreflight();
+          if (again.manifestDigest === null) {
+            ({ skipReason, stop } = again);
+            break;
+          }
+          manifestDigest = again.manifestDigest;
+        }
+        if (deniedCode !== null && (skipReason !== null || stop !== null)) {
+          record({ sku, title, status: skipReason !== null ? 'skipped' : 'failed',
+            reason: skipReason ?? `${stop} (after dispatch refused: ${deniedCode})` });
+          if (!isLast) await sleep(20_000);
+          continue;
+        }
         const dispatchStatus = typeof dispatched.json?.status === 'string'
           ? dispatched.json.status : 'no-summary';
         const listingId = typeof dispatched.json?.listingId === 'string'
           ? dispatched.json.listingId : null;
-        let published = dispatchStatus === 'created-and-reconciled' && listingId !== null;
+        // The ceremony reports 'dispatched-and-reconciled'; older box-script
+        // runners said 'created-and-reconciled'. Accept both.
+        let published = (dispatchStatus === 'dispatched-and-reconciled'
+          || dispatchStatus === 'created-and-reconciled') && listingId !== null;
         // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
         // capture. With a listing id in hand, reconcile patiently before
         // declaring failure — the first proving run marked 11 LIVE listings
@@ -631,6 +691,8 @@ export function startPublishAllRun(
           info(`[Publish All] ${sku} live as ${listingId}`);
         } else if (dispatched.json?.code === 'CREATE_INTENT_ALREADY_RECORDED') {
           record({ sku, title, status: 'skipped', reason: 'A previous attempt already used this draft — open the item and publish from there.' });
+        } else if (deniedCode === 'CREATE_TARGET_ALREADY_LISTED') {
+          record({ sku, title, status: 'skipped', reason: 'Already listed on eBay.' });
         } else {
           const rawMessages = dispatched.json?.dispatchFailureEbayErrorMessages;
           const providerMessage = Array.isArray(rawMessages) && typeof rawMessages[0] === 'string'
@@ -645,7 +707,11 @@ export function startPublishAllRun(
             sku, title, status: 'failed',
             reason: providerMessage
               ? `eBay refused the listing: ${providerMessage}`
-              : `The publish did not complete (${dispatchStatus}).`,
+              : deniedCode !== null
+                // Carry the ceremony's code: it names the gate that refused
+                // and is what the watchdog groups incidents by.
+                ? `The publish did not complete (denied: ${deniedCode}).`
+                : `The publish did not complete (${dispatchStatus}).`,
           });
         }
         if (!isLast) await sleep(60_000);
