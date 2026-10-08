@@ -235,3 +235,116 @@ describe('publish-all stuck-create sweep', () => {
     }
   });
 });
+
+describe('publish-all dispatch refused after a clean preflight (incident #172)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const denied = (code: string) => ({ json: { command: 'dispatch-create', status: 'denied', code } });
+
+  it('re-checks a transient dispatch refusal once, then publishes', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    let dispatches = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        dispatches += 1;
+        return dispatches === 1
+          ? denied('LISTING_LIFECYCLE_DENIED')
+          // The ceremony's real success status.
+          : { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'preflight-create', 'dispatch-create', 'preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]).toMatchObject({ status: 'published', listingId: '147000000001' });
+  });
+
+  it('rebases when Shopify changed between preflight and dispatch, then dispatches the new revision', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    let preflights = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') {
+          preflights += 1;
+          return preflights === 2
+            ? { json: { code: 'CREATE_BASE_STALE' } }
+            : { json: { status: 'preview', manifestDigest: MANIFEST } };
+        }
+        return argv.includes(REVISION)
+          ? denied('CREATE_BASE_STALE')
+          : { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    const dispatches = calls.filter((argv) => argv[1] === 'dispatch-create');
+    expect(dispatches).toHaveLength(2);
+    expect(dispatches[1]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('re-checks only once and records the refusal code when it persists', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return denied('LISTING_LIFECYCLE_DENIED');
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(2);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('failed');
+    expect(item.reason).toBe('The publish did not complete (denied: LISTING_LIFECYCLE_DENIED).');
+  });
+
+  it('never re-dispatches while the ledger holds an open create for the SKU', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      findUnresolvedCreate: () => ({
+        jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+        intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: MANIFEST,
+      }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return denied('LISTING_LIFECYCLE_DENIED');
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('failed');
+  });
+
+  it('does not re-check a refusal no preflight can clear', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return denied('CREATE_OWNERSHIP_NOT_ESTABLISHED');
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.reason).toContain('CREATE_OWNERSHIP_NOT_ESTABLISHED');
+  });
+});
