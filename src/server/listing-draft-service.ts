@@ -387,6 +387,18 @@ function money(value: { value?: string; amount?: string; currency: string } | nu
 function quantity(value: number | null): string | null {
   return Number.isSafeInteger(value) && value! >= 0 ? String(value) : null;
 }
+/**
+ * The Shopify SOURCE quantity: what can still be sold. Shopify's available
+ * goes negative when an item is oversold (a second sale, a POS or draft-order
+ * sale past zero); eBay has no negative quantity, and the sellable amount is
+ * zero. Serializing -1 as null made the alignment plan deny
+ * PLAN_SOURCE_VALUE_INVALID, so the --end-at-zero sweep skipped exactly the
+ * sold listing the watchdog was paging about (incident #176, L98). Unknown
+ * (null) stock stays null and still fails closed.
+ */
+function sourceQuantity(value: number | null): string | null {
+  return Number.isSafeInteger(value) ? quantity(Math.max(0, value!)) : null;
+}
 
 type Values = Record<ListingFieldName, string | null>;
 type Basis = Readonly<{
@@ -479,7 +491,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     condition: defaults?.conditionId ?? null,
     condition_description: defaults?.conditionDescription ?? null,
     price: money(shopify.price),
-    quantity: quantity(shopify.available),
+    quantity: sourceQuantity(shopify.available),
     // Description and images now come from Shopify, which is where the
     // merchandising actually lives. Before this they were hardcoded null, so
     // a NEW listing had no basis for either field (there is no eBay side to
