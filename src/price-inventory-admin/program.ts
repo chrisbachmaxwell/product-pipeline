@@ -627,6 +627,7 @@ export function buildPriceInventoryAdminProgram(
     // target's management model.
     let dispatchFailed = false;
     let dispatchFailureCode: string | null = null;
+    let clearedBestOfferThresholds: readonly string[] = [];
     const identity = target.basis.identity;
     const after = target.derived.manifest.after;
     try {
@@ -660,7 +661,7 @@ export function buildPriceInventoryAdminProgram(
         });
       } else {
         const tradingAdapter = createTradingAdapter();
-        await tradingAdapter.reviseInventoryStatus(target.field === 'price'
+        const revised = await tradingAdapter.reviseInventoryStatus(target.field === 'price'
           ? {
             listingId: identity.ebayListingId as string,
             field: 'price',
@@ -671,6 +672,8 @@ export function buildPriceInventoryAdminProgram(
             field: 'quantity',
             quantity: tradingQuantityToWrite(target, parseAlignmentQuantity(after)),
           });
+        // L99: a Best Offer threshold refusal costs one follow-up call.
+        clearedBestOfferThresholds = revised?.clearedBestOfferThresholds ?? [];
       }
     } catch (error) {
       // The code must survive: swallowing it here is how eight consecutive
@@ -724,7 +727,8 @@ export function buildPriceInventoryAdminProgram(
       effect: reconciliation.effect,
       resolution: reconciliation.resolution,
       reconciliationRunId: reconciliation.runId,
-      externalCommerceWritesAttempted: 1,
+      ...(clearedBestOfferThresholds.length > 0 ? { clearedBestOfferThresholds } : {}),
+      externalCommerceWritesAttempted: clearedBestOfferThresholds.length > 0 ? 2 : 1,
     };
   }
 
