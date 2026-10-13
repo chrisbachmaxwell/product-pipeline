@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { getPublishAllStatus, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
+import { fitEbayTitle, getPublishAllStatus, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
 
 const CATALOG_ID = 'shopify-variant:gid://shopify/ProductVariant/55484011184419';
 const REVISION = `sha256:${'b'.repeat(64)}`;
@@ -346,5 +346,86 @@ describe('publish-all dispatch refused after a clean preflight (incident #172)',
     await run;
     expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
     expect(getPublishAllStatus().items[0]!.reason).toContain('CREATE_OWNERSHIP_NOT_ESTABLISHED');
+  });
+});
+
+describe('publish-all title over eBay\'s 80 characters (incident #180)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const LONG = 'Fujifilm Fujinon EBC 180mm f/5.6 Large Format View Camera Lens with Copal 1 Shutter (#005) *USED*';
+
+  function withTitle(base: PublishAllDependencies, shopifyTitle: string, draftTitle: string | null = null): PublishAllDependencies {
+    return {
+      ...base,
+      getSnapshot: async () => ({ rows: [{
+        id: CATALOG_ID, readyToList: true, shopify: { sku: 'FUJIEBC180MM-U005', title: shopifyTitle },
+      }] }),
+      draftService: {
+        get: async () => {
+          const dto = await base.draftService!.get(CATALOG_ID);
+          return { ...dto, sections: { ...dto.sections, listing: {
+            ...dto.sections.listing, title: { draft: draftTitle, shopify: shopifyTitle },
+          } } };
+        },
+        save: base.draftService!.save,
+      },
+    };
+  }
+
+  it('shortens a long store title into the draft, then publishes that revision', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withTitle(
+      dependencies({ getCategoryAspects: noMissingAspects }, saves, calls), LONG));
+    await run;
+    expect(saves).toHaveLength(1);
+    const saved = saves[0] as { expectedRevisionDigest: string; draft: { title: string; itemSpecifics: string } };
+    expect(saved.draft.title.length).toBeLessThanOrEqual(80);
+    expect(saved.draft.title).toBe(fitEbayTitle(LONG));
+    expect(saved.expectedRevisionDigest).toBe(REVISION);
+    // The operator's other overrides survive the save.
+    expect(JSON.parse(saved.draft.itemSpecifics)).toEqual({ Brand: ['Canon'] });
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(calls[0]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('leaves a title that already fits, and an operator title, untouched', async () => {
+    arm();
+    for (const [shopify, draft] of [['Canon RF 24-105mm f/4-7.1 IS STM Lens', null], [LONG, 'Fujinon EBC 180mm f/5.6']] as const) {
+      const saves: unknown[] = [];
+      const calls: string[][] = [];
+      const { run } = startPublishAllRun('test', withTitle(
+        dependencies({ getCategoryAspects: noMissingAspects }, saves, calls), shopify, draft));
+      await run;
+      expect(saves).toHaveLength(0);
+      expect(calls[0]).toContain(REVISION);
+      expect(getPublishAllStatus().items[0]!.status).toBe('published');
+      releasePublishLock();
+    }
+  });
+
+  it('skips a title-less item with its own reason and never calls a ceremony', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withTitle(
+      dependencies({ getCategoryAspects: noMissingAspects }, saves, calls), '   '));
+    await run;
+    expect(calls).toHaveLength(0);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('skipped');
+    expect(item.reason).toContain('no title in Shopify');
+  });
+
+  it('fits titles to whole words without store markers', () => {
+    expect(fitEbayTitle('Canon EF 50mm f/1.8 *USED*')).toBe('Canon EF 50mm f/1.8 *USED*');
+    const fitted = fitEbayTitle(LONG)!;
+    expect(fitted).toBe('Fujifilm Fujinon EBC 180mm f/5.6 Large Format View Camera Lens with Copal 1');
+    expect(fitted.length).toBeLessThanOrEqual(80);
+    const unbroken = fitEbayTitle('X'.repeat(120))!;
+    expect(unbroken).toHaveLength(80);
+    expect(fitEbayTitle('  ')).toBeNull();
+    expect(fitEbayTitle(null)).toBeNull();
   });
 });

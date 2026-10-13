@@ -143,7 +143,7 @@ type DraftServiceLike = {
     base: { sourceDigest: string; ebayDigest: string };
     sections: {
       listing: {
-        title: { draft: string | null };
+        title: { draft: string | null; shopify?: string | null };
         category: { draft: string | null; shopify: string | null };
         conditionDescription: { draft: string | null; shopify: string | null };
       };
@@ -196,9 +196,42 @@ function excludedSkus(): ReadonlySet<string> {
     .split(',').map((sku) => sku.trim()).filter((sku) => sku.length > 0));
 }
 
+/** eBay's hard title limit; the create manifest denies anything longer. */
+const EBAY_TITLE_MAX = 80;
+
+/**
+ * Fit a store title into eBay's 80 characters (incident #180). The create
+ * manifest refuses a longer title as `CREATE_REQUIRED_FIELD_MISSING: title`,
+ * and the draft inherits the Shopify title verbatim, so every long store
+ * title skipped on every run. A title that already fits is returned
+ * unchanged. A longer one first loses the store-only markers (`(#123)`
+ * inventory suffixes, `*USED*`-style banners; condition is its own eBay
+ * field), then is cut at the last whole word. Returns null when there is no
+ * usable text at all.
+ */
+export function fitEbayTitle(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const collapsed = raw.replace(/\s+/gu, ' ').trim();
+  if (collapsed.length === 0) return null;
+  if (collapsed.length <= EBAY_TITLE_MAX) return collapsed;
+  const stripped = collapsed
+    .replace(/\(#\s*\d{1,12}\s*\)/gu, ' ')
+    .replace(/\*[^*\n]{1,40}\*/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const text = stripped.length > 0 ? stripped : collapsed;
+  if (text.length <= EBAY_TITLE_MAX) return text;
+  const cut = text.slice(0, EBAY_TITLE_MAX + 1);
+  const boundary = cut.lastIndexOf(' ');
+  const words = boundary >= EBAY_TITLE_MAX / 2 ? cut.slice(0, boundary) : text.slice(0, EBAY_TITLE_MAX);
+  const tidy = words.replace(/[\s,;:/&+(\-–—]+$/u, '').trim();
+  return tidy.length > 0 ? tidy : text.slice(0, EBAY_TITLE_MAX).trim();
+}
+
 function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrides: {
   conditionDescription?: string | null;
   itemSpecifics?: string;
+  title?: string;
 }): Record<string, unknown> {
   let specifics: string | null = null;
   const raw = overrides.itemSpecifics ?? dto.sections.content.itemSpecifics.draft;
@@ -216,7 +249,7 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
     expectedRevisionDigest: dto.revision?.revisionDigest ?? null,
     base: { sourceDigest: dto.base.sourceDigest, ebayDigest: dto.base.ebayDigest },
     draft: {
-      title: dto.sections.listing.title.draft,
+      title: overrides.title ?? dto.sections.listing.title.draft,
       category: null,
       condition: null,
       conditionDescription: overrides.conditionDescription !== undefined
@@ -470,6 +503,34 @@ export function startPublishAllRun(
           continue;
         }
 
+        // TITLE FIT (incident #180): the draft inherits the Shopify title,
+        // and the create manifest refuses one over 80 characters. A long
+        // store title is shortened into a local draft override (the
+        // operator's own override, if any, always fits and is kept). A
+        // title-less item skips with a reason that names the real fix.
+        try {
+          const dto = await draftService.get(row.id);
+          if (dto.sections.listing.title.draft === null) {
+            const inherited = dto.sections.listing.title.shopify ?? title;
+            const fitted = fitEbayTitle(inherited);
+            if (fitted === null) {
+              record({ sku, title, status: 'skipped',
+                reason: 'The item has no title in Shopify — add one there and it will publish next run.' });
+              if (!isLast) await sleep(15_000);
+              continue;
+            }
+            if (inherited.length > EBAY_TITLE_MAX) {
+              const payload = draftPayload(dto, { title: fitted });
+              (payload as { catalogId: unknown }).catalogId = row.id;
+              const saved = await draftService.save(payload, 'publish-all-title-fit');
+              revisionDigest = saved.revision.revisionDigest;
+              info(`[Publish All] shortened the ${inherited.length}-character title for ${sku} to fit eBay`);
+            }
+          }
+        } catch {
+          // Save refused: preflight still names the field if it matters.
+        }
+
         // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
         // 25002 refusal at a time, and each refusal burns an intent and
         // strands an unpublished offer. Check the category's complete
@@ -582,7 +643,9 @@ export function startPublishAllRun(
             }
             if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
               const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
-              skipReason = `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+              skipReason = field === 'title'
+                ? 'eBay needs a title of 1–80 characters and the draft title could not be shortened automatically — open the item and edit the eBay title.'
+                : `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
               break;
             }
             if (code === 'CREATE_TARGET_ALREADY_LISTED') {
