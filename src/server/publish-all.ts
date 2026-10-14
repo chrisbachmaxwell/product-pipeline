@@ -667,24 +667,35 @@ export function startPublishAllRun(
                 break;
               }
             }
-            // A title refusal with no operator title means the fit has not
-            // landed in the revision preflight read (incident #182). Save it
-            // once from a fresh read and check again.
+            // A title refusal means the STORED revision's title is not one
+            // eBay accepts (incident #182: the fit had not landed). Incident
+            // #184: the manifest checks the title BEFORE base freshness, so
+            // a revision that inherited a long store title which has since
+            // been shortened in Shopify reports `title`, never
+            // CREATE_BASE_STALE. The fresh read then shows a title that
+            // fits, so a fit-only repair saved nothing and the item skipped
+            // forever. The repair is therefore a refresh save: from a fresh
+            // read it re-inherits the current store title (or carries the
+            // fit), tried twice, and preflight checks again.
             if (code === 'CREATE_REQUIRED_FIELD_MISSING' && preflight.json?.field === 'title'
               && !titleRepaired) {
               titleRepaired = true;
-              try {
-                const dto = await draftService.get(row.id);
-                if (fittedTitleOverride(dto) !== null) {
+              let repaired = false;
+              for (let repair = 0; repair < 2 && !repaired; repair += 1) {
+                try {
+                  const dto = await draftService.get(row.id);
                   const payload = draftPayload(dto, {});
                   (payload as { catalogId: unknown }).catalogId = row.id;
                   const saved = await draftService.save(payload, 'publish-all-title-fit');
                   revisionDigest = saved.revision.revisionDigest;
-                  continue;
+                  repaired = true;
+                } catch (error) {
+                  const refused = error instanceof Error && 'code' in error
+                    ? String((error as { code: unknown }).code) : 'unavailable';
+                  warn(`[Publish All] title repair for ${sku} was refused (${refused})${repair === 0 ? '; retrying' : ''}`);
                 }
-              } catch {
-                // Fall through to the operator reason below.
               }
+              if (repaired) continue;
             }
             if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
               const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';

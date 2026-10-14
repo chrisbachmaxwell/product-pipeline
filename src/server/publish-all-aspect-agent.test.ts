@@ -495,6 +495,59 @@ describe('publish-all title over eBay\'s 80 characters (incident #180)', () => {
     expect(getPublishAllStatus().items[0]!.status).toBe('published');
   });
 
+  // Incident #184: the stored revision inherited a long store title that has
+  // since been shortened in Shopify. The manifest checks the title before
+  // base freshness, so preflight says `title` (never CREATE_BASE_STALE), and
+  // the fresh read shows a title that fits — the fit-only repair saved
+  // nothing and the item skipped on every run.
+  it('refreshes a revision whose long inherited title was shortened in Shopify (incident #184)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const SHORT = 'Fujifilm Fujinon EBC 180mm f/5.6 Large Format Lens';
+    const { run } = startPublishAllRun('test', refusingSaves(withTitle(dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') {
+          return argv.includes(SAVED)
+            ? { json: { status: 'preview', manifestDigest: MANIFEST } }
+            : { json: { status: 'denied', code: 'CREATE_REQUIRED_FIELD_MISSING', field: 'title' } };
+        }
+        return { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls), SHORT), 1));
+    await run;
+    // One refused refresh (logged, retried), then a re-inheriting save.
+    expect(saves).toHaveLength(1);
+    const saved = saves[0] as { expectedRevisionDigest: string; draft: { title: string | null; itemSpecifics: string } };
+    expect(saved.draft.title).toBeNull();
+    expect(saved.expectedRevisionDigest).toBe(REVISION);
+    expect(JSON.parse(saved.draft.itemSpecifics)).toEqual({ Brand: ['Canon'] });
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'preflight-create', 'dispatch-create']);
+    expect(calls[2]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('skips with the title reason when the refresh cannot land', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', refusingSaves(withTitle(dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        return { json: { status: 'denied', code: 'CREATE_REQUIRED_FIELD_MISSING', field: 'title' } };
+      },
+    }, saves, calls), 'Fujinon EBC 180mm f/5.6'), 2));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create']);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('skipped');
+    expect(item.reason).toContain('1–80 characters');
+  });
+
   it('fits titles to whole words without store markers', () => {
     expect(fitEbayTitle('Canon EF 50mm f/1.8 *USED*')).toBe('Canon EF 50mm f/1.8 *USED*');
     const fitted = fitEbayTitle(LONG)!;
