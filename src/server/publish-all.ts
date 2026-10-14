@@ -228,6 +228,22 @@ export function fitEbayTitle(raw: string | null | undefined): string | null {
   return tidy.length > 0 ? tidy : text.slice(0, EBAY_TITLE_MAX).trim();
 }
 
+/**
+ * The shortened title Publish-All must carry in ANY draft save it makes, or
+ * null when none is needed (an operator title exists, or the store title
+ * already fits). Incident #182: the fit lived only in one dedicated save
+ * whose refusal was swallowed, and every other Publish-All save (first
+ * draft, stale rebase, aspect agent) wrote the title back to "inherit", so
+ * a single refused save left the item skipping on every run.
+ */
+function fittedTitleOverride(dto: Awaited<ReturnType<DraftServiceLike['get']>>): string | null {
+  const title = dto.sections.listing.title;
+  if (title.draft !== null) return null;
+  const inherited = title.shopify;
+  if (typeof inherited !== 'string' || inherited.length <= EBAY_TITLE_MAX) return null;
+  return fitEbayTitle(inherited);
+}
+
 function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrides: {
   conditionDescription?: string | null;
   itemSpecifics?: string;
@@ -249,7 +265,7 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
     expectedRevisionDigest: dto.revision?.revisionDigest ?? null,
     base: { sourceDigest: dto.base.sourceDigest, ebayDigest: dto.base.ebayDigest },
     draft: {
-      title: overrides.title ?? dto.sections.listing.title.draft,
+      title: overrides.title ?? dto.sections.listing.title.draft ?? fittedTitleOverride(dto),
       category: null,
       condition: null,
       conditionDescription: overrides.conditionDescription !== undefined
@@ -508,27 +524,36 @@ export function startPublishAllRun(
         // store title is shortened into a local draft override (the
         // operator's own override, if any, always fits and is kept). A
         // title-less item skips with a reason that names the real fix.
-        try {
-          const dto = await draftService.get(row.id);
-          if (dto.sections.listing.title.draft === null) {
+        // Incident #182: one refused save (e.g. LISTING_DRAFT_STALE when the
+        // store basis moved between read and save) used to be swallowed, so
+        // the fit never landed. The save is tried twice from a fresh read,
+        // and every later Publish-All save carries the fit as well.
+        let titleless = false;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const dto = await draftService.get(row.id);
+            if (dto.sections.listing.title.draft !== null) break;
             const inherited = dto.sections.listing.title.shopify ?? title;
             const fitted = fitEbayTitle(inherited);
-            if (fitted === null) {
-              record({ sku, title, status: 'skipped',
-                reason: 'The item has no title in Shopify — add one there and it will publish next run.' });
-              if (!isLast) await sleep(15_000);
-              continue;
-            }
-            if (inherited.length > EBAY_TITLE_MAX) {
-              const payload = draftPayload(dto, { title: fitted });
-              (payload as { catalogId: unknown }).catalogId = row.id;
-              const saved = await draftService.save(payload, 'publish-all-title-fit');
-              revisionDigest = saved.revision.revisionDigest;
-              info(`[Publish All] shortened the ${inherited.length}-character title for ${sku} to fit eBay`);
-            }
+            if (fitted === null) { titleless = true; break; }
+            if (inherited.length <= EBAY_TITLE_MAX) break;
+            const payload = draftPayload(dto, { title: fitted });
+            (payload as { catalogId: unknown }).catalogId = row.id;
+            const saved = await draftService.save(payload, 'publish-all-title-fit');
+            revisionDigest = saved.revision.revisionDigest;
+            info(`[Publish All] shortened the ${inherited.length}-character title for ${sku} to fit eBay`);
+            break;
+          } catch (error) {
+            const code = error instanceof Error && 'code' in error
+              ? String((error as { code: unknown }).code) : 'unavailable';
+            warn(`[Publish All] title fit for ${sku} was refused (${code})${attempt === 0 ? '; retrying' : ''}`);
           }
-        } catch {
-          // Save refused: preflight still names the field if it matters.
+        }
+        if (titleless) {
+          record({ sku, title, status: 'skipped',
+            reason: 'The item has no title in Shopify — add one there and it will publish next run.' });
+          if (!isLast) await sleep(15_000);
+          continue;
         }
 
         // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
@@ -605,6 +630,7 @@ export function startPublishAllRun(
           let manifestDigest: string | null = null;
           let skipReason: string | null = null;
           let stop: string | null = null;
+          let titleRepaired = false;
           for (let attempt = 0; attempt < 3; attempt += 1) {
             if (attempt > 0) {
               step('eBay check hit a temporary error — retrying in 90s');
@@ -639,6 +665,25 @@ export function startPublishAllRun(
                   ? 'The saved draft belongs to an older SKU for this item and could not be refreshed — check the SKU is not used by another product, then open the item and save it once.'
                   : 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
                 break;
+              }
+            }
+            // A title refusal with no operator title means the fit has not
+            // landed in the revision preflight read (incident #182). Save it
+            // once from a fresh read and check again.
+            if (code === 'CREATE_REQUIRED_FIELD_MISSING' && preflight.json?.field === 'title'
+              && !titleRepaired) {
+              titleRepaired = true;
+              try {
+                const dto = await draftService.get(row.id);
+                if (fittedTitleOverride(dto) !== null) {
+                  const payload = draftPayload(dto, {});
+                  (payload as { catalogId: unknown }).catalogId = row.id;
+                  const saved = await draftService.save(payload, 'publish-all-title-fit');
+                  revisionDigest = saved.revision.revisionDigest;
+                  continue;
+                }
+              } catch {
+                // Fall through to the operator reason below.
               }
             }
             if (code === 'CREATE_REQUIRED_FIELD_MISSING') {

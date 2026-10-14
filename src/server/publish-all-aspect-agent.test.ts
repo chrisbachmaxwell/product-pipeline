@@ -418,6 +418,83 @@ describe('publish-all title over eBay\'s 80 characters (incident #180)', () => {
     expect(item.reason).toContain('no title in Shopify');
   });
 
+  // Incident #182: the fit save was refused once (swallowed), and every
+  // other Publish-All save wrote the title back to inherit, so the item
+  // skipped "could not be shortened" on every run.
+  function refusingSaves(base: PublishAllDependencies, refusals: number): PublishAllDependencies {
+    let left = refusals;
+    return { ...base, draftService: { get: base.draftService!.get, save: async (payload, actor) => {
+      if (left > 0) {
+        left -= 1;
+        throw Object.assign(new Error('stale'), { code: 'LISTING_DRAFT_STALE' });
+      }
+      return base.draftService!.save(payload, actor);
+    } } };
+  }
+
+  it('retries a refused title-fit save from a fresh read (incident #182)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', refusingSaves(withTitle(
+      dependencies({ getCategoryAspects: noMissingAspects }, saves, calls), LONG), 1));
+    await run;
+    expect((saves[0] as { draft: { title: string } }).draft.title).toBe(fitEbayTitle(LONG));
+    expect(calls[0]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('repairs the title once when preflight still refuses it (incident #182)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const base = withTitle(dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') {
+          return argv.includes(SAVED)
+            ? { json: { status: 'preview', manifestDigest: MANIFEST } }
+            : { json: { status: 'denied', code: 'CREATE_REQUIRED_FIELD_MISSING', field: 'title' } };
+        }
+        return { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls), LONG);
+    const { run } = startPublishAllRun('test', refusingSaves(base, 2));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect((saves[0] as { draft: { title: string } }).draft.title).toBe(fitEbayTitle(LONG));
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('keeps the fitted title in a stale-base rebase save (incident #182)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    let preflights = 0;
+    const base = withTitle(dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') {
+          preflights += 1;
+          return preflights === 1
+            ? { json: { status: 'denied', code: 'CREATE_BASE_STALE' } }
+            : { json: { status: 'preview', manifestDigest: MANIFEST } };
+        }
+        return { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+      },
+    }, saves, calls), LONG);
+    const { run } = startPublishAllRun('test', base);
+    await run;
+    expect(saves.length).toBeGreaterThanOrEqual(2);
+    for (const saved of saves) {
+      expect((saved as { draft: { title: string } }).draft.title).toBe(fitEbayTitle(LONG));
+    }
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
   it('fits titles to whole words without store markers', () => {
     expect(fitEbayTitle('Canon EF 50mm f/1.8 *USED*')).toBe('Canon EF 50mm f/1.8 *USED*');
     const fitted = fitEbayTitle(LONG)!;
