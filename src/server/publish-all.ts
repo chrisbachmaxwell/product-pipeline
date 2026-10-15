@@ -133,9 +133,12 @@ type SnapshotRow = {
   id: string;
   readyToList?: boolean;
   readyToListGaps?: readonly string[];
-  shopify: { sku: string; title: string } | null;
+  shopify: { sku: string; title: string; imageCount?: number } | null;
   audit?: { attentionReasons?: readonly string[] };
 };
+
+/** An operator override leaf the Publish-All saves must carry, not drop. */
+type OverrideLeaf = { draft: string | null } | undefined;
 
 type DraftServiceLike = {
   get: (catalogId: string) => Promise<{
@@ -145,11 +148,19 @@ type DraftServiceLike = {
       listing: {
         title: { draft: string | null; shopify?: string | null };
         category: { draft: string | null; shopify: string | null };
+        condition?: OverrideLeaf;
         conditionDescription: { draft: string | null; shopify: string | null };
       };
       content: {
         itemSpecifics: { draft: string | null; shopify: string | null };
         description?: { draft: string | null; shopify: string | null };
+        images?: OverrideLeaf;
+      };
+      delivery?: {
+        fulfillmentPolicyId?: OverrideLeaf;
+        paymentPolicyId?: OverrideLeaf;
+        returnPolicyId?: OverrideLeaf;
+        merchantLocation?: OverrideLeaf;
       };
     };
   }>;
@@ -198,6 +209,7 @@ function excludedSkus(): ReadonlySet<string> {
 
 /** eBay's hard title limit; the create manifest denies anything longer. */
 const EBAY_TITLE_MAX = 80;
+const NO_SHOPIFY_PHOTOS = 'The item has no photos in Shopify — add at least one there and it will publish next run.';
 
 /**
  * Fit a store title into eBay's 80 characters (incident #180). The create
@@ -258,6 +270,12 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
     for (const key of Object.keys(parsed).sort()) sorted[key] = parsed[key];
     specifics = JSON.stringify(sorted);
   }
+  // Incident #186 (L102): these used to be written as `null` (inherit), so
+  // every Publish-All save (first draft, rebase, title fit, aspect agent,
+  // refresh) silently dropped an operator's photo, description, category,
+  // condition or policy override — an image override added to fix "eBay
+  // requires images" was undone by the next run's save.
+  const { listing, content, delivery } = dto.sections;
   return {
     schemaVersion: 1,
     action: 'save_local_draft',
@@ -266,18 +284,18 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
     base: { sourceDigest: dto.base.sourceDigest, ebayDigest: dto.base.ebayDigest },
     draft: {
       title: overrides.title ?? dto.sections.listing.title.draft ?? fittedTitleOverride(dto),
-      category: null,
-      condition: null,
+      category: listing.category.draft ?? null,
+      condition: listing.condition?.draft ?? null,
       conditionDescription: overrides.conditionDescription !== undefined
         ? overrides.conditionDescription
         : dto.sections.listing.conditionDescription.draft,
-      description: null,
-      images: null,
+      description: content.description?.draft ?? null,
+      images: content.images?.draft ?? null,
       itemSpecifics: specifics,
-      fulfillmentPolicyId: null,
-      paymentPolicyId: null,
-      returnPolicyId: null,
-      merchantLocation: null,
+      fulfillmentPolicyId: delivery?.fulfillmentPolicyId?.draft ?? null,
+      paymentPolicyId: delivery?.paymentPolicyId?.draft ?? null,
+      returnPolicyId: delivery?.returnPolicyId?.draft ?? null,
+      merchantLocation: delivery?.merchantLocation?.draft ?? null,
     },
   };
 }
@@ -555,6 +573,18 @@ export function startPublishAllRun(
           if (!isLast) await sleep(15_000);
           continue;
         }
+        // eBay requires at least one photo. The store sweep counts each
+        // product's media, so a product with none skips here, before any
+        // ceremony, with the one fix that works (an operator photo override
+        // in the draft still publishes).
+        if (row.shopify.imageCount === 0) {
+          const dto = await draftService.get(row.id).catch(() => null);
+          if (!dto?.sections.content.images?.draft) {
+            record({ sku, title, status: 'skipped', reason: NO_SHOPIFY_PHOTOS });
+            if (!isLast) await sleep(15_000);
+            continue;
+          }
+        }
 
         // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
         // 25002 refusal at a time, and each refusal burns an intent and
@@ -630,7 +660,7 @@ export function startPublishAllRun(
           let manifestDigest: string | null = null;
           let skipReason: string | null = null;
           let stop: string | null = null;
-          let titleRepaired = false;
+          let refreshed = false;
           for (let attempt = 0; attempt < 3; attempt += 1) {
             if (attempt > 0) {
               step('eBay check hit a temporary error — retrying in 90s');
@@ -677,22 +707,30 @@ export function startPublishAllRun(
             // forever. The repair is therefore a refresh save: from a fresh
             // read it re-inherits the current store title (or carries the
             // fit), tried twice, and preflight checks again.
-            if (code === 'CREATE_REQUIRED_FIELD_MISSING' && preflight.json?.field === 'title'
-              && !titleRepaired) {
-              titleRepaired = true;
+            // Incident #186: the same ordering hides staleness behind EVERY
+            // required field, not only the title. A draft saved while the
+            // store's photos could not be read (the per-product content read
+            // is best-effort) or before the photos were uploaded holds no
+            // images forever and reports `images`, never CREATE_BASE_STALE.
+            // So any missing-field refusal gets this one refresh; a true
+            // no-op refresh is refused by the draft service's duplicate guard.
+            const missingField = typeof preflight.json?.field === 'string' ? preflight.json.field : 'field';
+            if (code === 'CREATE_REQUIRED_FIELD_MISSING' && !refreshed) {
+              refreshed = true;
               let repaired = false;
               for (let repair = 0; repair < 2 && !repaired; repair += 1) {
                 try {
                   const dto = await draftService.get(row.id);
                   const payload = draftPayload(dto, {});
                   (payload as { catalogId: unknown }).catalogId = row.id;
-                  const saved = await draftService.save(payload, 'publish-all-title-fit');
+                  const saved = await draftService.save(payload,
+                    missingField === 'title' ? 'publish-all-title-fit' : 'publish-all-refresh');
                   revisionDigest = saved.revision.revisionDigest;
                   repaired = true;
                 } catch (error) {
                   const refused = error instanceof Error && 'code' in error
                     ? String((error as { code: unknown }).code) : 'unavailable';
-                  warn(`[Publish All] title repair for ${sku} was refused (${refused})${repair === 0 ? '; retrying' : ''}`);
+                  warn(`[Publish All] ${missingField} repair for ${sku} was refused (${refused})${repair === 0 ? '; retrying' : ''}`);
                 }
               }
               if (repaired) continue;
@@ -701,7 +739,11 @@ export function startPublishAllRun(
               const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
               skipReason = field === 'title'
                 ? 'eBay needs a title of 1–80 characters and the draft title could not be shortened automatically — open the item and edit the eBay title.'
-                : `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+                : field === 'images'
+                  ? row.shopify.imageCount === 0
+                    ? NO_SHOPIFY_PHOTOS
+                    : 'eBay needs 1–24 photos and the store\'s photos could not be read into the draft (only https://cdn.shopify.com images are used) — it retries next run; if this repeats, open the item and check Photos.'
+                  : `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
               break;
             }
             if (code === 'CREATE_TARGET_ALREADY_LISTED') {
