@@ -559,3 +559,107 @@ describe('publish-all title over eBay\'s 80 characters (incident #180)', () => {
     expect(fitEbayTitle(null)).toBeNull();
   });
 });
+
+// Incident #186: the create manifest checks every required field BEFORE base
+// freshness, so a draft saved while the store's photos could not be read (or
+// before they were uploaded) reported `images` on every run, never
+// CREATE_BASE_STALE, and Publish-All only refreshed for `title`.
+describe('publish-all draft without images (incident #186)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const PHOTOS = JSON.stringify(['https://cdn.shopify.com/s/files/1/a.jpg']);
+
+  function withImages(base: PublishAllDependencies, imageCount: number | undefined, imageOverride: string | null = null): PublishAllDependencies {
+    return {
+      ...base,
+      getSnapshot: async () => ({ rows: [{
+        id: CATALOG_ID, readyToList: true,
+        shopify: { sku: 'SEL100400GM-U665', title: 'Sony FE 100-400mm f/4.5-5.6 GM OSS Lens', imageCount },
+      }] }),
+      draftService: {
+        get: async () => {
+          const dto = await base.draftService!.get(CATALOG_ID);
+          return { ...dto, sections: { ...dto.sections, content: {
+            ...dto.sections.content, images: { draft: imageOverride },
+          } } };
+        },
+        save: base.draftService!.save,
+      },
+    };
+  }
+
+  const deniesImagesUntilSaved = (calls: string[][]): PublishAllDependencies['runStep'] => async (argv) => {
+    calls.push([...argv]);
+    if (argv[1] === 'preflight-create') {
+      return argv.includes(SAVED)
+        ? { json: { status: 'preview', manifestDigest: MANIFEST } }
+        : { json: { status: 'denied', code: 'CREATE_REQUIRED_FIELD_MISSING', field: 'images' } };
+    }
+    return { json: { status: 'dispatched-and-reconciled', listingId: '147000000001' } };
+  };
+
+  it('refreshes a stored revision that predates the store photos, then publishes it', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withImages(dependencies({
+      getCategoryAspects: noMissingAspects, runStep: deniesImagesUntilSaved(calls),
+    }, saves, calls), 6));
+    await run;
+    expect(saves).toHaveLength(1);
+    const saved = saves[0] as { expectedRevisionDigest: string; draft: { images: string | null } };
+    expect(saved.expectedRevisionDigest).toBe(REVISION);
+    expect(saved.draft.images).toBeNull(); // re-inherits the store photos
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'preflight-create', 'dispatch-create']);
+    expect(calls[2]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('carries an operator photo override through every Publish-All save', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withImages(dependencies({
+      getCategoryAspects: noMissingAspects, runStep: deniesImagesUntilSaved(calls),
+    }, saves, calls), 0, PHOTOS));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect((saves[0] as { draft: { images: string | null } }).draft.images).toBe(PHOTOS);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
+  });
+
+  it('skips a product with no photos in Shopify before any ceremony', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withImages(dependencies({
+      getCategoryAspects: noMissingAspects, runStep: deniesImagesUntilSaved(calls),
+    }, saves, calls), 0));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('skipped');
+    expect(item.reason).toContain('no photos in Shopify');
+  });
+
+  it('names an unreadable photo set, not a missing one, when the refresh cannot fix it', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withImages(dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        return { json: { status: 'denied', code: 'CREATE_REQUIRED_FIELD_MISSING', field: 'images' } };
+      },
+    }, saves, calls), 6));
+    await run;
+    // The refresh landed but preflight still refused: one refresh only, no loop.
+    expect(saves).toHaveLength(1);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'preflight-create']);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('skipped');
+    expect(item.reason).toContain('could not be read');
+    expect(item.reason).not.toContain('does not have it yet');
+  });
+});
