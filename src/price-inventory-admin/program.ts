@@ -66,7 +66,9 @@ import {
 } from './dispatch-adapter.js';
 import {
   createTradingAlignDispatchAdapter,
+  planBestOfferAdjustment,
   TradingAlignDispatchError,
+  type BestOfferThresholds,
   type TradingAlignDispatchAdapter,
 } from './trading-dispatch-adapter.js';
 import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
@@ -248,6 +250,36 @@ export function tradingQuantityToWrite(
   if (commerce?.availableQuantityBasis !== 'total_minus_sold') return availableAfter;
   if (!Number.isSafeInteger(sold) || (sold as number) < 0) return availableAfter;
   return availableAfter + (sold as number);
+}
+
+/**
+ * L103: the Best Offer thresholds a Trading price write must carry, or null
+ * for the plain ReviseInventoryStatus path. Reads eBay (GetItem, read-only)
+ * only when the fresh workspace does not already say Best Offer is off. A
+ * failed read falls back to the plain path, which is the pre-L103 behavior.
+ */
+async function planTradingBestOfferAdjustment(
+  tradingAdapter: TradingAlignDispatchAdapter,
+  target: DerivedTarget,
+  listingId: string,
+  newPrice: { value: string; currency: string },
+): Promise<{
+  autoAccept: BestOfferThresholds['autoAccept'];
+  minimum: BestOfferThresholds['minimum'];
+} | null> {
+  const commerce = target.basis.workspace?.ebayDetail?.actual.commerce;
+  if (commerce?.bestOfferEnabled === false) return null;
+  let thresholds: BestOfferThresholds | null = null;
+  try {
+    thresholds = await tradingAdapter.readBestOfferThresholds({ listingId });
+  } catch {
+    thresholds = null;
+  }
+  return planBestOfferAdjustment({
+    thresholds,
+    previousPrice: commerce?.price ?? null,
+    newPrice,
+  });
 }
 
 function ensureIdentity(
@@ -627,6 +659,7 @@ export function buildPriceInventoryAdminProgram(
     // target's management model.
     let dispatchFailed = false;
     let dispatchFailureCode: string | null = null;
+    let bestOfferAdjustment: Awaited<ReturnType<typeof planTradingBestOfferAdjustment>> = null;
     const identity = target.basis.identity;
     const after = target.derived.manifest.after;
     try {
@@ -658,19 +691,30 @@ export function buildPriceInventoryAdminProgram(
         await createTradingAdapter().endFixedPriceItem({
           listingId: identity.ebayListingId as string,
         });
-      } else {
+      } else if (target.field === 'price') {
         const tradingAdapter = createTradingAdapter();
-        await tradingAdapter.reviseInventoryStatus(target.field === 'price'
-          ? {
-            listingId: identity.ebayListingId as string,
-            field: 'price',
-            price: parseAlignmentPrice(after),
-          }
-          : {
-            listingId: identity.ebayListingId as string,
-            field: 'quantity',
-            quantity: tradingQuantityToWrite(target, parseAlignmentQuantity(after)),
+        const listingId = identity.ebayListingId as string;
+        const price = parseAlignmentPrice(after);
+        // L103: eBay refuses (23004) a price at or below the listing's Best
+        // Offer Auto-Accept or Minimum price, and refuses it on every retry.
+        // When the new price crosses either line, the thresholds move with
+        // it in the same single write.
+        bestOfferAdjustment = await planTradingBestOfferAdjustment(
+          tradingAdapter, target, listingId, price,
+        );
+        if (bestOfferAdjustment !== null) {
+          await tradingAdapter.revisePriceWithBestOffer({
+            listingId, price, ...bestOfferAdjustment,
           });
+        } else {
+          await tradingAdapter.reviseInventoryStatus({ listingId, field: 'price', price });
+        }
+      } else {
+        await createTradingAdapter().reviseInventoryStatus({
+          listingId: identity.ebayListingId as string,
+          field: 'quantity',
+          quantity: tradingQuantityToWrite(target, parseAlignmentQuantity(after)),
+        });
       }
     } catch (error) {
       // The code must survive: swallowing it here is how eight consecutive
@@ -721,6 +765,7 @@ export function buildPriceInventoryAdminProgram(
       providerDispatchReported: !dispatchFailed,
       providerFailureCode: dispatchFailureCode,
       dispatchMode: endListing ? 'ended_at_zero' : 'revised',
+      bestOfferAdjusted: bestOfferAdjustment,
       effect: reconciliation.effect,
       resolution: reconciliation.resolution,
       reconciliationRunId: reconciliation.runId,

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  latestProviderRejection,
   publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
@@ -269,5 +270,32 @@ describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
 
   it('is silent when every item published', () => {
     expect(publishBlockCandidates([{ sku: 'A-1', status: 'published' }])).toEqual([]);
+  });
+});
+
+describe('latestProviderRejection (L103, incident #188)', () => {
+  const write = (entries: unknown[]): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rejections-'));
+    const file = path.join(dir, 'provider-rejections.json');
+    fs.writeFileSync(file, JSON.stringify(entries));
+    return file;
+  };
+
+  it("quotes this listing's rejection, never a later one from another listing", () => {
+    const file = write([
+      { call: 'ReviseInventoryStatus', listingId: '147531586972', reason: 'own reason', atUtc: 'a' },
+      { call: 'ReviseInventoryStatus', reason: 'Invalid AutoAccept price. 147436215816', atUtc: 'b' },
+    ]);
+    expect(latestProviderRejection('147531586972', file)).toBe('own reason');
+    // Older entries carry no listingId; eBay's text naming the item matches.
+    expect(latestProviderRejection('147436215816', file))
+      .toBe('Invalid AutoAccept price. 147436215816');
+  });
+
+  it("labels another listing's rejection when none is recorded for this one", () => {
+    const file = write([{ call: 'ReviseInventoryStatus', reason: 'other', atUtc: 'a' }]);
+    expect(latestProviderRejection('147531586972', file))
+      .toMatch(/^\(no rejection recorded for this listing yet; the latest on any listing was\) other$/u);
+    expect(latestProviderRejection(null, file)).toBe('other');
   });
 });
