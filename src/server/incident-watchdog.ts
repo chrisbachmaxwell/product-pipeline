@@ -216,7 +216,9 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    const listingId = row?.ebay?.listingId
+      ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
+    const reason = latestProviderRejection(listingId);
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -269,13 +271,32 @@ export function evaluateIncidentCandidates(input: {
 
 /** Latest sanitized provider rejection recorded by the Trading adapter
  * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+export function latestProviderRejection(
+  listingId: string | null,
+  file = '/data/product-pipeline/provider-rejections.json',
+): string | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(
-      '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+    const entries = parsed as Array<{ reason?: unknown; listingId?: unknown }>;
+    // L103: incident #188 quoted another listing's rejection (the last one
+    // recorded anywhere). Prefer an entry recorded for, or naming, THIS
+    // listing; otherwise say plainly that the quote may be another listing's.
+    if (listingId !== null) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index]!;
+        if (typeof entry.reason !== 'string') continue;
+        if (entry.listingId === listingId || entry.reason.includes(listingId)) {
+          return entry.reason.slice(0, 300);
+        }
+      }
+    }
+    const last = entries[entries.length - 1]!;
+    if (typeof last.reason !== 'string') return null;
+    return listingId === null
+      ? last.reason.slice(0, 300)
+      : `(no rejection recorded for this listing yet; the latest on any listing was) ${
+        last.reason.slice(0, 300)}`;
   } catch {
     return null;
   }
