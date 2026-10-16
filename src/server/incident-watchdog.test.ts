@@ -15,6 +15,7 @@ import {
   runWatchdogOnce,
   type Incident,
 } from './incident-watchdog.js';
+import { OPERATOR_DATA_SKIP_REASONS } from './publish-all.js';
 
 const NOW = Date.parse('2026-09-25T20:00:00.000Z');
 const FRESH = new Date(NOW - 60_000).toISOString();
@@ -164,6 +165,31 @@ describe('runWatchdogOnce', () => {
     expect(notified).toBe(0);
   });
 
+  it('shows a verified no-photos skip to the operator but never sends it to the fix agent (incident #194)', async () => {
+    const stateFile = tempStateFile();
+    let diagnosed = 0;
+    const issues: Incident[] = [];
+    await runWatchdogOnce({
+      stateFile,
+      now: () => NOW,
+      getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [], repeatedPriceFailures: [] }),
+      getPublishStatus: () => ({ state: 'finished', stopReason: null, items: [
+        { sku: 'SEL100400GM-U665', title: 'X', status: 'skipped', reason: OPERATOR_DATA_SKIP_REASONS[0] },
+      ] }),
+      diagnose: async () => { diagnosed += 1; return 'WHAT HAPPENED: no photos'; },
+      openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/3'; },
+      notify: async () => undefined,
+      learningsContext: () => '',
+    });
+    expect(getIncidents()).toEqual([expect.objectContaining({
+      code: 'PUBLISH_ITEM_BLOCKED', sku: 'SEL100400GM-U665', operatorOnly: true, diagnosisState: 'none',
+    })]);
+    expect(getIncidents()[0]!.detail).toContain('only you can change');
+    expect(diagnosed).toBe(0);
+    expect(issues).toHaveLength(0);
+  });
+
   it('clears incidents when the condition resolves and stays quiet unarmed', async () => {
     const stateFile = tempStateFile();
     let rows = [row('LEICA-1', 0, '147000000001')];
@@ -265,6 +291,15 @@ describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
     expect(candidates[0]).toMatchObject({ severity: 'warning', sku: '82-25-VND-ED2-U001' });
     expect(candidates[0]!.title).toContain('2 items');
     expect(candidates[0]!.detail).toContain('B-2: Preflight refused B-2: CREATE_IDENTITY_MISMATCH');
+  });
+
+  it('marks a group operator-only only when every item is verified store data', () => {
+    const [photos] = OPERATOR_DATA_SKIP_REASONS;
+    expect(publishBlockCandidates([{ sku: 'A-1', status: 'skipped', reason: photos }])[0])
+      .toMatchObject({ operatorOnly: true });
+    expect(publishBlockCandidates([
+      { sku: 'A-1', status: 'failed', reason: 'Preflight refused A-1: CREATE_IDENTITY_MISMATCH' },
+    ])[0]).toMatchObject({ operatorOnly: false });
   });
 
   it('is silent when every item published', () => {

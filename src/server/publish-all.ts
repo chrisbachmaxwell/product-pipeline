@@ -154,7 +154,7 @@ type DraftServiceLike = {
       content: {
         itemSpecifics: { draft: string | null; shopify: string | null };
         description?: { draft: string | null; shopify: string | null };
-        images?: OverrideLeaf;
+        images?: { draft: string | null; shopify?: string | null };
       };
       delivery?: {
         fulfillmentPolicyId?: OverrideLeaf;
@@ -210,6 +210,14 @@ function excludedSkus(): ReadonlySet<string> {
 /** eBay's hard title limit; the create manifest denies anything longer. */
 const EBAY_TITLE_MAX = 80;
 const NO_SHOPIFY_PHOTOS = 'The item has no photos in Shopify — add at least one there and it will publish next run.';
+const NO_SHOPIFY_TITLE = 'The item has no title in Shopify — add one there and it will publish next run.';
+
+/**
+ * Skip reasons that are verified store data only the operator can change
+ * (incident #194). No code change can publish these items, so the watchdog
+ * shows them to the operator but does not send them to the fix agent.
+ */
+export const OPERATOR_DATA_SKIP_REASONS: readonly string[] = Object.freeze([NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE]);
 
 /**
  * Fit a store title into eBay's 80 characters (incident #180). The create
@@ -568,18 +576,23 @@ export function startPublishAllRun(
           }
         }
         if (titleless) {
-          record({ sku, title, status: 'skipped',
-            reason: 'The item has no title in Shopify — add one there and it will publish next run.' });
+          record({ sku, title, status: 'skipped', reason: NO_SHOPIFY_TITLE });
           if (!isLast) await sleep(15_000);
           continue;
         }
         // eBay requires at least one photo. The store sweep counts each
         // product's media, so a product with none skips here, before any
         // ceremony, with the one fix that works (an operator photo override
-        // in the draft still publishes).
+        // in the draft still publishes). That count is captured once when
+        // the run starts, and a long run takes up to an hour, so photos
+        // added since then are missed (incident #194). The draft read is
+        // fresh for each item, so its store photos win over the count.
+        let photosKnownMissing = false;
         if (row.shopify.imageCount === 0) {
           const dto = await draftService.get(row.id).catch(() => null);
-          if (!dto?.sections.content.images?.draft) {
+          const images = dto?.sections.content.images;
+          photosKnownMissing = !images?.draft && !images?.shopify;
+          if (photosKnownMissing) {
             record({ sku, title, status: 'skipped', reason: NO_SHOPIFY_PHOTOS });
             if (!isLast) await sleep(15_000);
             continue;
@@ -740,7 +753,7 @@ export function startPublishAllRun(
               skipReason = field === 'title'
                 ? 'eBay needs a title of 1–80 characters and the draft title could not be shortened automatically — open the item and edit the eBay title.'
                 : field === 'images'
-                  ? row.shopify.imageCount === 0
+                  ? photosKnownMissing
                     ? NO_SHOPIFY_PHOTOS
                     : 'eBay needs 1–24 photos and the store\'s photos could not be read into the draft (only https://cdn.shopify.com images are used) — it retries next run; if this repeats, open the item and check Photos.'
                   : `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;

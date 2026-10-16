@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
 import { sendIncidentEmail } from './incident-email.js';
-import { getPublishAllStatus } from './publish-all.js';
+import { getPublishAllStatus, OPERATOR_DATA_SKIP_REASONS } from './publish-all.js';
 import { lastOrderImportFailure } from './order-import-trigger.js';
 import {
   readIncidentLedgerSignalsFromArgv,
@@ -49,6 +49,12 @@ export type Incident = {
   diagnosis: string | null;
   githubIssueUrl: string | null;
   notifiedAtUtc: string | null;
+  /**
+   * A publish block whose every item is verified store data only the
+   * operator can change (no photos, no title). Shown to the operator, never
+   * sent to the fix agent: no code change can publish it (incident #194).
+   */
+  operatorOnly?: boolean;
 };
 
 type SnapshotRow = {
@@ -75,11 +81,13 @@ export type WatchdogDependencies = Readonly<{
  * class is the first error code in the reason (CREATE_IDENTITY_MISMATCH,
  * …) or, without one, the reason with SKUs and listed names stripped.
  * Items the operator deliberately holds never reach the run (no-ebay tag,
- * L90), so everything here is something the pipeline failed to handle.
+ * L90). Skips for store data only the operator can fix (no photos, no
+ * title) are marked `operatorOnly`; everything else is something the
+ * pipeline failed to handle.
  */
 export function publishBlockCandidates(
   items: ReadonlyArray<{ sku: string; status: string; reason?: string }>,
-): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
+): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> {
   const groups = new Map<string, Array<{ sku: string; reason: string }>>();
   for (const item of items) {
     if (item.status !== 'failed' && item.status !== 'skipped') continue;
@@ -96,17 +104,24 @@ export function publishBlockCandidates(
     group.push({ sku: item.sku, reason });
     groups.set(reasonClass, group);
   }
-  return [...groups.entries()].map(([reasonClass, group]) => ({
-    id: `PUBLISH_ITEM_BLOCKED:${reasonClass}`,
-    severity: 'warning' as const,
-    code: 'PUBLISH_ITEM_BLOCKED' as const,
-    sku: group[0]!.sku,
-    title: `Publish All could not publish ${group.length === 1 ? group[0]!.sku : `${group.length} items`}: ${reasonClass}`,
-    detail: 'The last Publish All run skipped or failed these items for the same cause. '
-      + 'Find the root cause in the publish path and fix it so the next run publishes them '
-      + 'without manual work.\n'
-      + group.slice(0, 8).map((entry) => `- ${entry.sku}: ${entry.reason}`).join('\n'),
-  }));
+  return [...groups.entries()].map(([reasonClass, group]) => {
+    const operatorOnly = group.every((entry) => OPERATOR_DATA_SKIP_REASONS.includes(entry.reason));
+    return {
+      id: `PUBLISH_ITEM_BLOCKED:${reasonClass}`,
+      severity: 'warning' as const,
+      code: 'PUBLISH_ITEM_BLOCKED' as const,
+      sku: group[0]!.sku,
+      title: `Publish All could not publish ${group.length === 1 ? group[0]!.sku : `${group.length} items`}: ${reasonClass}`,
+      detail: (operatorOnly
+        ? 'The last Publish All run skipped these items because of store data only you can change. '
+          + 'Fix it in Shopify and the next run publishes them.\n'
+        : 'The last Publish All run skipped or failed these items for the same cause. '
+          + 'Find the root cause in the publish path and fix it so the next run publishes them '
+          + 'without manual work.\n')
+        + group.slice(0, 8).map((entry) => `- ${entry.sku}: ${entry.reason}`).join('\n'),
+      operatorOnly,
+    };
+  });
 }
 
 /**
@@ -500,7 +515,8 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   // (bounded: one per cycle to cap spend). A publish block is a warning for
   // the operator (no email, no red banner) but still goes to the fix agent.
   const escalates = (incident: Incident): boolean =>
-    incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED';
+    incident.severity === 'critical'
+    || (incident.code === 'PUBLISH_ITEM_BLOCKED' && incident.operatorOnly !== true);
   const needsDiagnosis = active.find((incident) =>
     escalates(incident) && incident.diagnosisState === 'none');
   if (needsDiagnosis) {

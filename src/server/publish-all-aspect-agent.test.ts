@@ -568,7 +568,7 @@ describe('publish-all draft without images (incident #186)', () => {
   const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
   const PHOTOS = JSON.stringify(['https://cdn.shopify.com/s/files/1/a.jpg']);
 
-  function withImages(base: PublishAllDependencies, imageCount: number | undefined, imageOverride: string | null = null): PublishAllDependencies {
+  function withImages(base: PublishAllDependencies, imageCount: number | undefined, imageOverride: string | null = null, imageSource: string | null = null): PublishAllDependencies {
     return {
       ...base,
       getSnapshot: async () => ({ rows: [{
@@ -579,7 +579,7 @@ describe('publish-all draft without images (incident #186)', () => {
         get: async () => {
           const dto = await base.draftService!.get(CATALOG_ID);
           return { ...dto, sections: { ...dto.sections, content: {
-            ...dto.sections.content, images: { draft: imageOverride },
+            ...dto.sections.content, images: { draft: imageOverride, shopify: imageSource },
           } } };
         },
         save: base.draftService!.save,
@@ -640,6 +640,18 @@ describe('publish-all draft without images (incident #186)', () => {
     const item = getPublishAllStatus().items[0]!;
     expect(item.status).toBe('skipped');
     expect(item.reason).toContain('no photos in Shopify');
+  });
+
+  it('publishes when the run-start photo count is 0 but the fresh read finds store photos (incident #194)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', withImages(dependencies({
+      getCategoryAspects: noMissingAspects,
+    }, saves, calls), 0, null, PHOTOS));
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('published');
   });
 
   it('names an unreadable photo set, not a missing one, when the refresh cannot fix it', async () => {
