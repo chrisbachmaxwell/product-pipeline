@@ -216,7 +216,11 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    const reason = providerRejectionFor(readProviderRejections(), [
+      failure.sku.replace(/^listing /, ''),
+      row?.shopify?.sku ?? null,
+      row?.ebay?.listingId ?? null,
+    ]);
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -267,18 +271,43 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+/** Sanitized provider rejections recorded by the Trading adapter (L87) —
+ * eBay's own words, safe for incidents and the fix agent. */
+function readProviderRejections(): unknown {
   try {
-    const parsed = JSON.parse(fs.readFileSync(
+    return JSON.parse(fs.readFileSync(
       '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The most recent recorded rejection that belongs to THIS incident's
+ * listing (L103). The ring is shared by every listing, and incident #190
+ * quoted listing 147436215816's Best Offer refusal under listing
+ * 147521467887. An entry matches by its `listingId` field, or (entries
+ * written before that field existed) when its text names one of the
+ * subject's identifiers — eBay echoes the ItemID and SKU in its errors.
+ * No match is null: never borrow another listing's reason.
+ */
+export function providerRejectionFor(
+  entries: unknown,
+  identifiers: ReadonlyArray<string | null>,
+): string | null {
+  if (!Array.isArray(entries)) return null;
+  const ids = identifiers.filter((id): id is string => typeof id === 'string' && id.length >= 3);
+  if (ids.length === 0) return null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { reason?: unknown; listingId?: unknown } | null;
+    if (entry === null || typeof entry !== 'object' || typeof entry.reason !== 'string') continue;
+    const reason = entry.reason;
+    const matches = typeof entry.listingId === 'string'
+      ? ids.includes(entry.listingId)
+      : ids.some((id) => new RegExp(`(^|[^A-Za-z0-9-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9-])`, 'u').test(reason));
+    if (matches) return reason.slice(0, 300);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */

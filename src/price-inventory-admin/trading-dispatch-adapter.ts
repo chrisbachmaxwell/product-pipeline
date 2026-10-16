@@ -8,7 +8,10 @@
  * price alignment) or a `Quantity` (a quantity alignment), never both. A
  * structural assertion on the serialized XML guarantees a price dispatch can
  * never contain a Quantity element and a quantity dispatch can never contain
- * a StartPrice element. Errors are redacted to fixed codes; no token, URL,
+ * a StartPrice element. The one exception (L103): when eBay refuses a price
+ * because a Best Offer threshold sits at or above it, exactly one follow-up
+ * ReviseFixedPriceItem carries the same StartPrice and deletes only the
+ * thresholds eBay named. Errors are redacted to fixed codes; no token, URL,
  * payload, or provider body is ever thrown or logged.
  *
  * This module is intentionally not imported by the server, webhooks,
@@ -24,6 +27,7 @@ const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
 const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
+const EBAY_TRADING_REVISE_CALL_NAME = 'ReviseFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -191,6 +195,71 @@ export function buildRelistFixedPriceItemXml(input: Readonly<{
   return xml;
 }
 
+export type BestOfferThreshold = 'autoAccept' | 'minimum';
+
+const BEST_OFFER_DELETED_FIELD: Readonly<Record<BestOfferThreshold, string>> = Object.freeze({
+  autoAccept: 'Item.ListingDetails.BestOfferAutoAcceptPrice',
+  minimum: 'Item.ListingDetails.MinimumBestOfferPrice',
+});
+
+/**
+ * Which Best Offer thresholds a refused price revise names as conflicting
+ * with the new Buy It Now price (L103). Reads only eBay's Errors blocks:
+ * error code 23004 or an "auto accept" message is the Auto-Accept price;
+ * a "minimum best offer" / "auto decline" message is the auto-decline
+ * floor. Any other refusal returns [] and stays an ordinary rejection.
+ */
+export function bestOfferThresholdConflicts(responseText: string): BestOfferThreshold[] {
+  const errors = (responseText.match(/<Errors>[\s\S]*?<\/Errors>/gu) ?? [])
+    .filter((block) => !/<SeverityCode>\s*Warning\s*<\/SeverityCode>/u.test(block));
+  const found = new Set<BestOfferThreshold>();
+  for (const block of errors) {
+    if (/<ErrorCode>\s*23004\s*<\/ErrorCode>/u.test(block) || /auto\s*-?\s*accept/iu.test(block)) {
+      found.add('autoAccept');
+    }
+    if (/minimum\s*best\s*offer|auto\s*-?\s*decline/iu.test(block)) found.add('minimum');
+  }
+  return (['autoAccept', 'minimum'] as const).filter((threshold) => found.has(threshold));
+}
+
+/**
+ * Serialize the one bounded ReviseFixedPriceItem recovery for a price that
+ * eBay refused because a Best Offer threshold sits at or above it (L103):
+ * the exact ItemID, the same StartPrice the refused revise carried, and a
+ * DeletedField for each named threshold — nothing else. Never a Quantity,
+ * never a second price, never any other deleted field.
+ */
+export function buildPriceWithBestOfferThresholdsClearedXml(input: Readonly<{
+  listingId: string;
+  price: Readonly<{ value: string; currency: string }>;
+  clear: readonly BestOfferThreshold[];
+}>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  if (!PRICE_AMOUNT.test(input.price.value) || Number(input.price.value) <= 0
+    || !CURRENCY.test(input.price.currency)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const clear = [...new Set(input.clear)];
+  if (clear.length === 0 || clear.some((threshold) => !(threshold in BEST_OFFER_DELETED_FIELD))) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + clear.map((threshold) => `<DeletedField>${BEST_OFFER_DELETED_FIELD[threshold]}</DeletedField>`).join('')
+    + '<Item>'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + `<StartPrice currencyID="${input.price.currency}">${input.price.value}</StartPrice>`
+    + '</Item>'
+    + '</ReviseFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || (xml.match(/<StartPrice /g) ?? []).length !== 1
+    || /<\/?Quantity\b/iu.test(xml)
+    || (xml.match(/<DeletedField>/g) ?? []).length !== clear.length) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -250,11 +319,12 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
-    await dispatchBoundedCallReturningBody(body, callName);
-  }
-
-  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
+  /** POST one bounded call and report whether eBay acknowledged it, keeping
+   * the raw body so a caller can read eBay's structured error codes. */
+  async function postAndCheckAck(
+    body: string,
+    callName: string,
+  ): Promise<Readonly<{ acknowledged: boolean; text: string }>> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
@@ -275,42 +345,96 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       ? parsed[`${callName}Response`]
       : null;
     const ack = isRecord(response) ? response.Ack : null;
-    if (ack !== 'Success' && ack !== 'Warning') {
-      // L84 (the L75 playbook): a bare TRADING_ALIGN_REJECTED hid eBay's
-      // reason for WEEKS of 16437396 churn. Surface the sanitized error
-      // text (token-shaped runs stripped, operator log only) so the next
-      // rejection diagnoses itself.
-      const errorText = /<Errors>[\s\S]{0,600}?<\/Errors>/u.exec(text)?.[0] ?? '';
-      const sanitized = errorText
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
-        .replace(/\s+/g, ' ')
-        .slice(0, 300);
-      console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
-      // L87: persist the sanitized reason so incidents (and the fix agent,
-      // which can never read server logs) receive eBay's own words.
+    return { acknowledged: ack === 'Success' || ack === 'Warning', text };
+  }
+
+  async function rejectWithReason(
+    text: string,
+    callName: string,
+    listingId: string | null,
+  ): Promise<never> {
+    // L84 (the L75 playbook): a bare TRADING_ALIGN_REJECTED hid eBay's
+    // reason for WEEKS of 16437396 churn. Surface the sanitized error
+    // text (token-shaped runs stripped, operator log only) so the next
+    // rejection diagnoses itself.
+    const errorText = /<Errors>[\s\S]{0,600}?<\/Errors>/u.exec(text)?.[0] ?? '';
+    const sanitized = errorText
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+      .replace(/\s+/g, ' ')
+      .slice(0, 300);
+    console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+    // L87: persist the sanitized reason so incidents (and the fix agent,
+    // which can never read server logs) receive eBay's own words. L103:
+    // each entry names its listing so an incident quotes ITS reason, not
+    // whichever listing happened to be rejected last.
+    try {
+      const fs = await import('node:fs');
+      const file = '/data/product-pipeline/provider-rejections.json';
+      let entries: Array<{ call: string; reason: string; atUtc: string; listingId?: string }> = [];
       try {
-        const fs = await import('node:fs');
-        const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
-        try {
-          const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
-          if (Array.isArray(parsed)) entries = parsed as typeof entries;
-        } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
-        fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
-      } catch { /* best effort */ }
-      deny('TRADING_ALIGN_REJECTED');
-    }
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+        if (Array.isArray(parsed)) entries = parsed as typeof entries;
+      } catch { /* fresh */ }
+      entries.push({
+        call: callName,
+        reason: sanitized,
+        atUtc: new Date().toISOString(),
+        ...(listingId !== null ? { listingId } : {}),
+      });
+      fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
+    } catch { /* best effort */ }
+    return deny('TRADING_ALIGN_REJECTED');
+  }
+
+  async function dispatchBoundedCallReturningBody(
+    body: string,
+    callName: string,
+    listingId: string | null = null,
+  ): Promise<string> {
+    const { acknowledged, text } = await postAndCheckAck(body, callName);
+    if (!acknowledged) await rejectWithReason(text, callName, listingId);
     return text;
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+    const { acknowledged, text } = await postAndCheckAck(
+      buildReviseInventoryStatusXml(input),
+      EBAY_TRADING_CALL_NAME,
+    );
+    if (acknowledged) return;
+    // L103 (incident #190): a price cut to or below a Best Offer threshold
+    // is refused (23004 "Auto Accept Price must be less than the Buy It Now
+    // price"), and ReviseInventoryStatus cannot touch Best Offer, so every
+    // sweep failed identically until the operator fixed it by hand. A
+    // threshold at or above the new Buy It Now price is already inert (a
+    // buyer simply buys at Buy It Now), so the one recovery is the same
+    // price with exactly the thresholds eBay named removed. Nothing is
+    // ever lowered to a computed value: no offer is auto-accepted at a
+    // price nobody chose.
+    const conflicts = input.field === 'price' ? bestOfferThresholdConflicts(text) : [];
+    if (conflicts.length === 0 || input.field !== 'price') {
+      return rejectWithReason(text, EBAY_TRADING_CALL_NAME, input.listingId);
+    }
+    await dispatchBoundedCallReturningBody(
+      buildPriceWithBestOfferThresholdsClearedXml({
+        listingId: input.listingId,
+        price: input.price,
+        clear: conflicts,
+      }),
+      EBAY_TRADING_REVISE_CALL_NAME,
+      input.listingId,
+    );
+    console.warn(`EBAY_TRADING_BEST_OFFER_CLEARED listing=${input.listingId} `
+      + `thresholds=${conflicts.join(',')} price=${input.price.value}`);
   }
 
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
-    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+    await dispatchBoundedCallReturningBody(
+      buildEndFixedPriceItemXml(input),
+      EBAY_TRADING_END_CALL_NAME,
+      input.listingId,
+    );
   }
 
   async function relistFixedPriceItem(input: Readonly<{
@@ -321,6 +445,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     const text = await dispatchBoundedCallReturningBody(
       buildRelistFixedPriceItemXml(input),
       EBAY_TRADING_RELIST_CALL_NAME,
+      input.listingId,
     );
     // The response's ItemID is the NEW listing eBay created.
     const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
