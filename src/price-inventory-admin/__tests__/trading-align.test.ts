@@ -18,11 +18,13 @@ import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
 import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.js';
 import type { LiveListingCatalogSnapshot } from '../../server/live-listing-catalog.js';
 import {
+  buildRevisePriceWithBestOfferXml,
   buildReviseInventoryStatusXml,
   createTradingAlignDispatchAdapter,
   TradingAlignDispatchError,
 } from '../trading-dispatch-adapter.js';
 import {
+  tradingBestOfferToWrite,
   buildPriceInventoryAdminProgram,
   type PriceInventoryAdminIo,
 } from '../program.js';
@@ -61,6 +63,8 @@ function tradingWorkspace(options: {
   ebayQuantity?: number;
   shopifyPrice?: string;
   ebayPrice?: string;
+  autoAcceptPrice?: string;
+  minimumOfferPrice?: string;
 } = {}): ListingWorkspaceDto {
   const shopifyAvailable = options.shopifyAvailable ?? 3;
   const ebayQuantity = options.ebayQuantity ?? 1;
@@ -123,7 +127,13 @@ function tradingWorkspace(options: {
         identifiers: { brand: 'Nikon', mpn: null, upc: [], ean: [], isbn: [], epid: null },
         commerce: { price: { value: ebayPrice, currency: 'USD' }, totalQuantity: ebayQuantity,
           soldQuantity: 0, availableQuantity: ebayQuantity,
-          availableQuantityBasis: 'reported', bestOfferEnabled: false },
+          availableQuantityBasis: 'reported',
+          bestOfferEnabled: options.autoAcceptPrice !== undefined
+            || options.minimumOfferPrice !== undefined,
+          bestOfferAutoAcceptPrice: options.autoAcceptPrice === undefined ? null
+            : { value: options.autoAcceptPrice, currency: 'USD' },
+          bestOfferMinimumPrice: options.minimumOfferPrice === undefined ? null
+            : { value: options.minimumOfferPrice, currency: 'USD' } },
         policies: { fulfillmentPolicyId: '6055555000', paymentPolicyId: '6066666000',
           returnPolicyId: '6077777000', paymentMethods: [], shippingType: null,
           domesticServices: [], internationalServices: [], returnsAccepted: true,
@@ -226,25 +236,41 @@ function createTradingWorld(): TradingWorld {
         { status: 200, headers: { 'Content-Type': 'text/xml' } },
       );
     }
-    if (responseAck === 'Success' && flipOnSuccess) {
+    // eBay's rule (L103, incident #191): a price-only revise that lands at
+    // or below the live Best Offer Auto Accept price is refused, 23004.
+    const body = String(init?.body ?? '');
+    const sentPrice = /<StartPrice currencyID="USD">([0-9.]+)<\/StartPrice>/u.exec(body)?.[1];
+    const liveAutoAccept = current.ebayDetail!.actual.commerce.bestOfferAutoAcceptPrice?.value;
+    const sentAutoAccept = /<BestOfferAutoAcceptPrice currencyID="USD">([0-9.]+)</u.exec(body)?.[1];
+    const effectiveAutoAccept = sentAutoAccept ?? liveAutoAccept;
+    const ack = sentPrice !== undefined && effectiveAutoAccept !== undefined
+      && Number(effectiveAutoAccept) >= Number(sentPrice) ? 'Failure' : responseAck;
+    if (ack === 'Success' && flipOnSuccess) {
       const shopify = current.catalog.shopify as {
         available: number;
         price: { amount: string };
       };
       const commerce = current.ebayDetail!.actual.commerce;
-      const priceDispatch = String(init?.body ?? '').includes('<StartPrice ');
+      const priceDispatch = body.includes('<StartPrice ');
       current = tradingWorkspace({
         shopifyAvailable: shopify.available,
         ebayQuantity: priceDispatch ? commerce.availableQuantity! : shopify.available,
         shopifyPrice: shopify.price.amount,
         ebayPrice: priceDispatch ? shopify.price.amount : commerce.price!.value,
+        autoAcceptPrice: sentAutoAccept ?? commerce.bestOfferAutoAcceptPrice?.value,
+        minimumOfferPrice: /<MinimumBestOfferPrice currencyID="USD">([0-9.]+)</u.exec(body)?.[1]
+          ?? commerce.bestOfferMinimumPrice?.value,
       });
     }
     return new Response(
       '<?xml version="1.0" encoding="UTF-8"?>'
-      + '<ReviseInventoryStatusResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
-      + `<Ack>${responseAck}</Ack>`
-      + '</ReviseInventoryStatusResponse>',
+      + `<${callName}Response xmlns="urn:ebay:apis:eBLBaseComponents">`
+      + `<Ack>${ack}</Ack>`
+      + (ack === 'Failure'
+        ? '<Errors><ShortMessage>Invalid AutoAccept price.</ShortMessage>'
+          + '<ErrorCode>23004</ErrorCode></Errors>'
+        : '')
+      + `</${callName}Response>`,
       { status: 200, headers: { 'Content-Type': 'text/xml' } },
     );
   };
@@ -495,6 +521,62 @@ describe('trading-model price/inventory alignment dispatch', () => {
     await world.run(['plan', ...targetArguments('price')]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
     expect(world.requests).toHaveLength(1);
+  });
+
+  it('lowers a colliding Best Offer Auto Accept price in the same one write (L103, #191)', async () => {
+    const world = createTradingWorld();
+    // eBay 179.95 with Auto Accept 159.95 / minimum 139.95; Shopify drops
+    // to 149.95 -- below Auto Accept, which eBay refuses (23004) for a
+    // price-only ReviseInventoryStatus on every retry.
+    world.setWorkspace(tradingWorkspace({
+      shopifyAvailable: 1, ebayQuantity: 1,
+      shopifyPrice: '149.95', ebayPrice: '179.95',
+      autoAcceptPrice: '159.95', minimumOfferPrice: '139.95',
+    }));
+    await world.run(establishArguments('price', world.migrationDatabasePath));
+    await world.run(['plan', ...targetArguments('price')]);
+    const manifestDigest = lastJson(world.stdout).manifestDigest as string;
+
+    await world.run(['dispatch', ...targetArguments('price'),
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({
+      status: 'dispatched-and-reconciled',
+      resolution: 'resolved_existing',
+      externalCommerceWritesAttempted: 1,
+    });
+    expect(world.requests).toHaveLength(1);
+    const request = world.requests[0]!;
+    expect(request.headers['X-EBAY-API-CALL-NAME']).toBe('ReviseFixedPriceItem');
+    // Ratio 149.95/179.95: 159.95 -> 133.28, 139.95 -> 116.61 (floored).
+    expect(request.body).toBe('<?xml version="1.0" encoding="utf-8"?>'
+      + '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item>'
+      + `<ItemID>${LISTING_ID}</ItemID><ListingDetails>`
+      + '<BestOfferAutoAcceptPrice currencyID="USD">133.28</BestOfferAutoAcceptPrice>'
+      + '<MinimumBestOfferPrice currencyID="USD">116.61</MinimumBestOfferPrice>'
+      + '</ListingDetails><StartPrice currencyID="USD">149.95</StartPrice>'
+      + '</Item></ReviseFixedPriceItemRequest>');
+    expect(request.body).not.toMatch(NO_QUANTITY);
+  });
+
+  it('keeps the price-only revise when the new price clears Best Offer thresholds', async () => {
+    const world = createTradingWorld();
+    world.setWorkspace(tradingWorkspace({
+      shopifyAvailable: 1, ebayQuantity: 1,
+      shopifyPrice: '169.95', ebayPrice: '179.95', autoAcceptPrice: '159.95',
+    }));
+    await world.run(establishArguments('price', world.migrationDatabasePath));
+    await world.run(['plan', ...targetArguments('price')]);
+    const manifestDigest = lastJson(world.stdout).manifestDigest as string;
+    await world.run(['dispatch', ...targetArguments('price'),
+      '--manifest-digest', manifestDigest,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({ status: 'dispatched-and-reconciled' });
+    expect(world.requests).toHaveLength(1);
+    expect(world.requests[0]!.headers['X-EBAY-API-CALL-NAME']).toBe('ReviseInventoryStatus');
+    expect(world.requests[0]!.body).not.toMatch(/BestOffer/u);
   });
 
   it('holds an unobserved effect open and resolves it through reconcile', async () => {
@@ -978,6 +1060,49 @@ describe('trading-model price/inventory alignment dispatch', () => {
     ]);
     expect(lastJson(world.stderr)).toMatchObject({ code: 'REALIGN_EXACT_TARGET_MISMATCH' });
     expect(world.requests).toHaveLength(0);
+  });
+
+  it('derives Best Offer adjustments only for a real collision (L103)', () => {
+    const target = (commerce: Record<string, unknown>) => ({
+      basis: { workspace: { ebayDetail: { actual: { commerce } } } },
+    }) as unknown as Parameters<typeof tradingBestOfferToWrite>[0];
+    const usd = (value: string) => ({ value, currency: 'USD' });
+    const newPrice = usd('100.00');
+    // Best Offer off: eBay does not enforce thresholds, so price-only.
+    expect(tradingBestOfferToWrite(target({ bestOfferEnabled: false, price: usd('120.00'),
+      bestOfferAutoAcceptPrice: usd('110.00') }), newPrice)).toBeNull();
+    // A minimum-only collision lowers only the minimum, by the price ratio.
+    expect(tradingBestOfferToWrite(target({ bestOfferEnabled: true, price: usd('125.00'),
+      bestOfferAutoAcceptPrice: null, bestOfferMinimumPrice: usd('100.00') }), newPrice))
+      .toEqual({ autoAcceptPrice: null, minimumPrice: usd('80.00') });
+    // Unknown old price: cap one cent below the new price / auto-accept.
+    expect(tradingBestOfferToWrite(target({ bestOfferEnabled: null, price: null,
+      bestOfferAutoAcceptPrice: usd('105.00'), bestOfferMinimumPrice: usd('102.00') }), newPrice))
+      .toEqual({ autoAcceptPrice: usd('99.99'), minimumPrice: usd('99.98') });
+    // Another currency is never mixed.
+    expect(tradingBestOfferToWrite(target({ bestOfferEnabled: true, price: usd('120.00'),
+      bestOfferAutoAcceptPrice: { value: '110.00', currency: 'CAD' } }), newPrice)).toBeNull();
+  });
+
+  it('refuses a Best Offer price revise that would break eBay\'s threshold rules (L103)', () => {
+    const price = { value: '149.95', currency: 'USD' };
+    const usd = (value: string) => ({ value, currency: 'USD' });
+    const build = (autoAcceptPrice: { value: string; currency: string } | null,
+      minimumPrice: { value: string; currency: string } | null) =>
+      () => buildRevisePriceWithBestOfferXml({
+        listingId: LISTING_ID, price, bestOffer: { autoAcceptPrice, minimumPrice },
+      });
+    expect(build(usd('149.95'), null)).toThrow(TradingAlignDispatchError);
+    expect(build(null, usd('150.00'))).toThrow(TradingAlignDispatchError);
+    expect(build(usd('120.00'), usd('120.00'))).toThrow(TradingAlignDispatchError);
+    expect(build({ value: '120.00', currency: 'CAD' }, null)).toThrow(TradingAlignDispatchError);
+    expect(build(null, null)).toThrow(TradingAlignDispatchError);
+    expect(() => buildRevisePriceWithBestOfferXml({
+      listingId: 'x1', price, bestOffer: { autoAcceptPrice: usd('120.00'), minimumPrice: null },
+    })).toThrow(TradingAlignDispatchError);
+    const onlyAuto = build(usd('149.94'), null)();
+    expect(onlyAuto).toContain('<BestOfferAutoAcceptPrice currencyID="USD">149.94</BestOfferAutoAcceptPrice>');
+    expect(onlyAuto).not.toMatch(/MinimumBestOfferPrice|<\/?Quantity\b/u);
   });
 
   it('serializes exactly one InventoryStatus and never cross-contaminates fields', () => {

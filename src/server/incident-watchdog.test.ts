@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  providerRejectionFor,
   publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
@@ -246,6 +247,46 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     });
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
+  });
+});
+
+describe('providerRejectionFor (L103, incident #191)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  function ring(entries: unknown[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rejections-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'provider-rejections.json');
+    fs.writeFileSync(file, JSON.stringify(entries));
+    return file;
+  }
+  const OTHER = ' Invalid AutoAccept price. 23004 Error 159.95 USD 147436215816 AFF050S-700-U029 RequestError ';
+
+  it('never quotes another listing\'s rejection as this listing\'s reason', () => {
+    const file = ring([{ call: 'ReviseInventoryStatus', reason: OTHER, atUtc: FRESH }]);
+    expect(providerRejectionFor('147559739906', file)).toEqual({ reason: OTHER, matched: false });
+  });
+  it('prefers the newest entry for this listing over a newer one for another', () => {
+    const own = 'Some other eBay reason 147559739906';
+    const file = ring([
+      { call: 'ReviseInventoryStatus', reason: 'older 147559739906', atUtc: FRESH },
+      { call: 'ReviseInventoryStatus', reason: own, atUtc: FRESH },
+      { call: 'ReviseInventoryStatus', reason: OTHER, atUtc: FRESH },
+    ]);
+    expect(providerRejectionFor('147559739906', file)).toEqual({ reason: own, matched: true });
+  });
+  it('matches the recorded listingId even when eBay\'s text omits the ItemID', () => {
+    const file = ring([
+      { call: 'ReviseFixedPriceItem', listingId: '147559739906', reason: 'no id here', atUtc: FRESH },
+      { call: 'ReviseInventoryStatus', reason: OTHER, atUtc: FRESH },
+    ]);
+    expect(providerRejectionFor('147559739906', file)).toEqual({ reason: 'no id here', matched: true });
+  });
+  it('does not match a listing id that is only a substring of another', () => {
+    const file = ring([{ call: 'ReviseInventoryStatus', reason: 'x 1147559739906 y', atUtc: FRESH }]);
+    expect(providerRejectionFor('147559739906', file)?.matched).toBe(false);
   });
 });
 

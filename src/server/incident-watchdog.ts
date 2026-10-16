@@ -216,7 +216,9 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    const listingId = row?.ebay?.listingId
+      ?? /^listing ([0-9]{1,19})$/u.exec(failure.sku)?.[1] ?? null;
+    const rejection = providerRejectionFor(listingId);
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -228,9 +230,15 @@ export function evaluateIncidentCandidates(input: {
       title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
       detail: 'Shopify price changes for this listing are NOT reaching eBay — the live '
         + 'listing may be selling at the old price. Set the price manually on eBay now. '
-        + (reason !== null
-          ? `eBay's own reason for the most recent rejection: ${reason}`
-          : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+        + (rejection === null
+          ? 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'
+          : rejection.matched
+            ? `eBay's own reason for the most recent rejection: ${rejection.reason}`
+            // L103: incident #191 quoted listing 147436215816's reason under
+            // listing 147559739906 -- say plainly when it is not this one's.
+            : 'eBay\'s reason for THIS listing was not recorded; the most recent '
+              + 'rejection on record belongs to another listing and may not apply: '
+              + rejection.reason),
     });
   }
 
@@ -267,15 +275,32 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+/** Sanitized provider rejection recorded by the Trading adapter (L87) —
+ * eBay's own words, safe for incidents and the fix agent. The ring is
+ * shared by every listing (L103), so prefer the newest entry for this
+ * listing (its recorded `listingId`, or the ItemID eBay echoes in the
+ * text); otherwise return the newest entry flagged `matched: false`. */
+export function providerRejectionFor(
+  listingId: string | null,
+  file = '/data/product-pipeline/provider-rejections.json',
+): { reason: string; matched: boolean } | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(
-      '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+    const entries = parsed.filter((entry): entry is { reason: string; listingId?: unknown } =>
+      typeof entry === 'object' && entry !== null
+      && typeof (entry as { reason?: unknown }).reason === 'string');
+    if (entries.length === 0) return null;
+    if (listingId !== null && /^[0-9]{1,19}$/u.test(listingId)) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index]!;
+        if (entry.listingId === listingId
+          || new RegExp(`(^|[^0-9])${listingId}([^0-9]|$)`, 'u').test(entry.reason)) {
+          return { reason: entry.reason.slice(0, 300), matched: true };
+        }
+      }
+    }
+    return { reason: entries[entries.length - 1]!.reason.slice(0, 300), matched: false };
   } catch {
     return null;
   }

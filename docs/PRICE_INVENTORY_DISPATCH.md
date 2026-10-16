@@ -48,6 +48,12 @@ writers live at once, and dispatch is denied unless the current owner is
   `ReviseInventoryStatus` carrying exactly ONE `InventoryStatus` element for
   Trading-model targets — each dispatched only from inside a reserved
   migration-store job under a live 10-minute single-use approval.
+  Exception (L103): a Trading price that would land at or below the live
+  listing's Best Offer Auto Accept or minimum offer price (eBay error 23004)
+  is sent instead as ONE `ReviseFixedPriceItem` carrying only the ItemID,
+  `ListingDetails` thresholds lowered by the old→new price ratio (rounded
+  down, kept strictly below the new price), and the `StartPrice`. It is
+  still one write and never carries a Quantity.
 - **Cross-field contamination is structurally impossible.** A price dispatch
   body is asserted (on the serialized form) to contain no quantity or
   availability key/element; a quantity dispatch body is asserted to contain
