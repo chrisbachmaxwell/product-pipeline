@@ -40,6 +40,7 @@ function getItemXml(overrides: Readonly<{
   sellerId?: string;
   imageUrl?: string;
   description?: string;
+  bestOfferThresholds?: string;
 }> = {}): string {
   return `<?xml version="1.0" encoding="utf-8"?>
     <GetItemResponse xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -64,7 +65,7 @@ function getItemXml(overrides: Readonly<{
         <SellingStatus><ListingStatus>Active</ListingStatus><CurrentPrice currencyID="USD">39.95</CurrentPrice><QuantitySold>0</QuantitySold></SellingStatus>
         <Quantity>1</Quantity><QuantityAvailable>1</QuantityAvailable>
         <BestOfferDetails><BestOfferEnabled>true</BestOfferEnabled></BestOfferDetails>
-        <ListingDetails><StartTime>2026-08-13T20:00:00.000Z</StartTime><EndTime>2026-09-12T20:00:00.000Z</EndTime><ViewItemURL>https://www.ebay.com/itm/${listingId}</ViewItemURL></ListingDetails>
+        <ListingDetails><StartTime>2026-08-13T20:00:00.000Z</StartTime><EndTime>2026-09-12T20:00:00.000Z</EndTime><ViewItemURL>https://www.ebay.com/itm/${listingId}</ViewItemURL>${overrides.bestOfferThresholds ?? ''}</ListingDetails>
         <SellerProfiles>
           <SellerShippingProfile><ShippingProfileID>101</ShippingProfileID></SellerShippingProfile>
           <SellerPaymentProfile><PaymentProfileID>102</PaymentProfileID></SellerPaymentProfile>
@@ -194,6 +195,30 @@ describe('enriched eBay listing detail reader', () => {
     expect(String(calls[1]!.init?.body)).toContain(`<ItemID>${listingId}</ItemID>`);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(/transient-secret|private@example|seller-private|PrivateNotes|BuyerRequirement|should-never-escape/i);
+  });
+
+  it('captures the Best Offer Auto Accept and minimum prices a price revise must clear (L103)', async () => {
+    const read = (thresholds: string) => createEnrichedListingDetailReader({
+      fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) =>
+        new Headers(init?.headers).get('X-EBAY-API-CALL-NAME') === 'GetUser'
+          ? xmlResponse(getUserXml())
+          : xmlResponse(getItemXml({ bestOfferThresholds: thresholds }))) as unknown as typeof fetch,
+      now: () => observedAt,
+    })(legacyRequest());
+    const set = await read('<BestOfferAutoAcceptPrice currencyID="USD">35.00</BestOfferAutoAcceptPrice>'
+      + '<MinimumBestOfferPrice currencyID="USD">30.00</MinimumBestOfferPrice>');
+    expect(set.actual!.commerce).toMatchObject({
+      bestOfferEnabled: true,
+      bestOfferAutoAcceptPrice: { value: '35.00', currency: 'USD' },
+      bestOfferMinimumPrice: { value: '30.00', currency: 'USD' },
+    });
+    const absent = await read('');
+    expect(absent.actual!.commerce).toMatchObject({
+      bestOfferAutoAcceptPrice: null, bestOfferMinimumPrice: null,
+    });
+    // A malformed optional threshold is unknown, never a failed listing read.
+    const malformed = await read('<BestOfferAutoAcceptPrice>oops</BestOfferAutoAcceptPrice>');
+    expect(malformed.actual!.commerce.bestOfferAutoAcceptPrice).toBeNull();
   });
 
   it('captures Inventory item and exact offer control without replacing public Trading actuals', async () => {

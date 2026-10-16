@@ -11,6 +11,14 @@
  * a StartPrice element. Errors are redacted to fixed codes; no token, URL,
  * payload, or provider body is ever thrown or logged.
  *
+ * L103: when a price alignment would land at or below the listing's Best
+ * Offer Auto Accept (or minimum offer) price, eBay refuses
+ * ReviseInventoryStatus (error 23004) on every retry. The ceremony then hands
+ * the price input a `bestOffer` adjustment, and the one write becomes ONE
+ * `ReviseFixedPriceItem` carrying exactly the ItemID, the StartPrice, and the
+ * lowered Best Offer thresholds -- still exactly one provider write, still
+ * never a Quantity.
+ *
  * This module is intentionally not imported by the server, webhooks,
  * schedulers, or any legacy sync path. Its single POST is reachable only
  * from the dispatch ceremony in `program.ts`, which requires a reserved
@@ -24,6 +32,7 @@ const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
 const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
+const EBAY_TRADING_REVISE_ITEM_CALL_NAME = 'ReviseFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -50,11 +59,19 @@ const deny = (code: ConstructorParameters<typeof TradingAlignDispatchError>[0]):
 
 type FetchLike = typeof fetch;
 
+/** Lowered Best Offer thresholds sent with a price (L103); a null side is
+ * left untouched on eBay. */
+export type TradingBestOfferAdjustment = Readonly<{
+  autoAcceptPrice: Readonly<{ value: string; currency: string }> | null;
+  minimumPrice: Readonly<{ value: string; currency: string }> | null;
+}>;
+
 export type TradingAlignInput =
   | Readonly<{
     listingId: string;
     field: 'price';
     price: Readonly<{ value: string; currency: string }>;
+    bestOffer?: TradingBestOfferAdjustment | null;
   }>
   | Readonly<{
     listingId: string;
@@ -131,6 +148,68 @@ export function buildReviseInventoryStatusXml(input: TradingAlignInput): string 
     deny('TRADING_ALIGN_PAYLOAD_INVALID');
   }
   if (input.field === 'quantity' && /<\/?StartPrice\b/iu.test(xml)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
+function validMoney(price: unknown): price is Readonly<{ value: string; currency: string }> {
+  return typeof price === 'object' && price !== null
+    && typeof (price as { value?: unknown }).value === 'string'
+    && PRICE_AMOUNT.test((price as { value: string }).value)
+    && Number((price as { value: string }).value) > 0
+    && typeof (price as { currency?: unknown }).currency === 'string'
+    && CURRENCY.test((price as { currency: string }).currency);
+}
+
+const cents = (value: string): number => Math.round(Number(value) * 100);
+
+/**
+ * Serialize the one bounded ReviseFixedPriceItem request for a price that
+ * collides with the listing's Best Offer thresholds (L103): the exact ItemID,
+ * the lowered `ListingDetails` thresholds, and the StartPrice -- nothing else.
+ * eBay's own rules are asserted before anything is sent: every threshold is
+ * strictly below the new price, the minimum strictly below the auto-accept,
+ * one currency throughout.
+ */
+export function buildRevisePriceWithBestOfferXml(input: Readonly<{
+  listingId: string;
+  price: Readonly<{ value: string; currency: string }>;
+  bestOffer: TradingBestOfferAdjustment;
+}>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  const { price, bestOffer } = input;
+  if (!validMoney(price)) deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  const { autoAcceptPrice, minimumPrice } = bestOffer ?? { autoAcceptPrice: null, minimumPrice: null };
+  if (autoAcceptPrice === null && minimumPrice === null) deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  for (const threshold of [autoAcceptPrice, minimumPrice]) {
+    if (threshold === null) continue;
+    if (!validMoney(threshold) || threshold.currency !== price.currency
+      || cents(threshold.value) >= cents(price.value)) {
+      deny('TRADING_ALIGN_PAYLOAD_INVALID');
+    }
+  }
+  if (autoAcceptPrice !== null && minimumPrice !== null
+    && cents(minimumPrice.value) >= cents(autoAcceptPrice.value)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + '<Item>'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + '<ListingDetails>'
+    + (autoAcceptPrice === null ? ''
+      : `<BestOfferAutoAcceptPrice currencyID="${autoAcceptPrice.currency}">${autoAcceptPrice.value}</BestOfferAutoAcceptPrice>`)
+    + (minimumPrice === null ? ''
+      : `<MinimumBestOfferPrice currencyID="${minimumPrice.currency}">${minimumPrice.value}</MinimumBestOfferPrice>`)
+    + '</ListingDetails>'
+    + `<StartPrice currencyID="${price.currency}">${price.value}</StartPrice>`
+    + '</Item>'
+    + '</ReviseFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || (xml.match(/<StartPrice /g) ?? []).length !== 1
+    || /<\/?Quantity\b/iu.test(xml)
+    || /<\/?(?:Title|Description|PictureDetails|ItemSpecifics|Variations)\b/iu.test(xml)) {
     deny('TRADING_ALIGN_PAYLOAD_INVALID');
   }
   return xml;
@@ -287,17 +366,24 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         .replace(/\s+/g, ' ')
         .slice(0, 300);
       console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+      // L103: the ring is global, so name the listing each reason belongs
+      // to -- an incident must never quote another listing's rejection.
+      const listingId = /<ItemID>([0-9]{1,19})<\/ItemID>/u.exec(body)?.[1] ?? null;
       // L87: persist the sanitized reason so incidents (and the fix agent,
       // which can never read server logs) receive eBay's own words.
       try {
         const fs = await import('node:fs');
         const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
+        let entries: Array<{
+          call: string; listingId?: string | null; reason: string; atUtc: string;
+        }> = [];
         try {
           const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
           if (Array.isArray(parsed)) entries = parsed as typeof entries;
         } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
+        entries.push({
+          call: callName, listingId, reason: sanitized, atUtc: new Date().toISOString(),
+        });
         fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
       } catch { /* best effort */ }
       deny('TRADING_ALIGN_REJECTED');
@@ -306,6 +392,14 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
+    if (input.field === 'price' && input.bestOffer) {
+      await dispatchBoundedCall(buildRevisePriceWithBestOfferXml({
+        listingId: input.listingId,
+        price: input.price,
+        bestOffer: input.bestOffer,
+      }), EBAY_TRADING_REVISE_ITEM_CALL_NAME);
+      return;
+    }
     await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
   }
 

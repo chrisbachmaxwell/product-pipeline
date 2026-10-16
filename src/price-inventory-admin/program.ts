@@ -68,6 +68,7 @@ import {
   createTradingAlignDispatchAdapter,
   TradingAlignDispatchError,
   type TradingAlignDispatchAdapter,
+  type TradingBestOfferAdjustment,
 } from './trading-dispatch-adapter.js';
 import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
 
@@ -248,6 +249,61 @@ export function tradingQuantityToWrite(
   if (commerce?.availableQuantityBasis !== 'total_minus_sold') return availableAfter;
   if (!Number.isSafeInteger(sold) || (sold as number) < 0) return availableAfter;
   return availableAfter + (sold as number);
+}
+
+/**
+ * L103 (incident #191): eBay refuses a Trading price revise that lands at or
+ * below the listing's Best Offer Auto Accept price ("The Best Offer Auto
+ * Accept Price must be less than the Buy It Now price", error 23004), or at
+ * or below its minimum offer price. ReviseInventoryStatus cannot touch those
+ * thresholds, so a Shopify price DROP past them was refused on every sweep
+ * and the live listing kept selling at the old price.
+ *
+ * When the live listing (the same GetItem read the manifest came from) has a
+ * threshold that the new price would collide with, return the thresholds
+ * lowered by the same ratio as the price (old eBay price -> new price),
+ * rounded down to the cent and capped one cent below the new price (and the
+ * minimum one cent below the auto-accept), so the seller's discount policy
+ * keeps its shape. Returns null -- the plain price-only revise -- whenever
+ * there is no collision, Best Offer is off, or anything is unknown or in a
+ * different currency.
+ */
+export function tradingBestOfferToWrite(
+  target: DerivedTarget,
+  priceAfter: Readonly<{ value: string; currency: string }>,
+): TradingBestOfferAdjustment | null {
+  const commerce = target.basis.workspace?.ebayDetail?.actual.commerce;
+  if (!commerce || commerce.bestOfferEnabled === false) return null;
+  const toCents = (money: Readonly<{ value: string; currency: string }> | null | undefined):
+    number | null => {
+    if (!money || money.currency !== priceAfter.currency) return null;
+    const amount = Math.round(Number(money.value) * 100);
+    return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
+  };
+  const fromCents = (amount: number) => Object.freeze({
+    value: (amount / 100).toFixed(2),
+    currency: priceAfter.currency,
+  });
+  const newPrice = toCents(priceAfter);
+  const autoAccept = toCents(commerce.bestOfferAutoAcceptPrice);
+  const minimum = toCents(commerce.bestOfferMinimumPrice);
+  if (newPrice === null || (autoAccept === null && minimum === null)) return null;
+  const collides = (autoAccept !== null && autoAccept >= newPrice)
+    || (minimum !== null && minimum >= newPrice);
+  if (!collides) return null;
+  const oldPrice = toCents(commerce.price);
+  const ratio = oldPrice !== null && oldPrice > newPrice ? newPrice / oldPrice : 1;
+  const nextAuto = autoAccept === null ? null
+    : Math.min(Math.floor(autoAccept * ratio), newPrice - 1);
+  const nextMinimum = minimum === null ? null
+    : Math.min(Math.floor(minimum * ratio), (nextAuto ?? newPrice) - 1);
+  if ((nextAuto !== null && nextAuto < 1) || (nextMinimum !== null && nextMinimum < 1)) {
+    return null;
+  }
+  return Object.freeze({
+    autoAcceptPrice: nextAuto === null ? null : fromCents(nextAuto),
+    minimumPrice: nextMinimum === null ? null : fromCents(nextMinimum),
+  });
 }
 
 function ensureIdentity(
@@ -665,6 +721,7 @@ export function buildPriceInventoryAdminProgram(
             listingId: identity.ebayListingId as string,
             field: 'price',
             price: parseAlignmentPrice(after),
+            bestOffer: tradingBestOfferToWrite(target, parseAlignmentPrice(after)),
           }
           : {
             listingId: identity.ebayListingId as string,

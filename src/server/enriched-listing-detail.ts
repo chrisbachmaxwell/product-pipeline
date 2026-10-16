@@ -138,6 +138,11 @@ export type ListingActualDetail = Readonly<{
     availableQuantity: number | null;
     availableQuantityBasis: 'reported' | 'total_minus_sold' | 'unavailable';
     bestOfferEnabled: boolean | null;
+    /** Trading `ListingDetails.BestOfferAutoAcceptPrice` (L103): eBay
+     * refuses any price revise that lands at or below it. */
+    bestOfferAutoAcceptPrice?: ListingMoney | null;
+    /** Trading `ListingDetails.MinimumBestOfferPrice` (L103). */
+    bestOfferMinimumPrice?: ListingMoney | null;
   }>;
   policies: Readonly<{
     fulfillmentPolicyId: string | null;
@@ -410,6 +415,16 @@ function money(value: unknown): ListingMoney | null {
   if (!/^-?(?:0|[1-9]\d*)(?:\.\d{1,8})?$/u.test(amount)
     || !/^[A-Z]{3}$/u.test(currency)) return fail('INVALID_RESPONSE');
   return Object.freeze({ value: amount, currency });
+}
+
+/** Best-effort money: a malformed optional amount is unknown, never a
+ * failure of the whole listing read. */
+function optionalMoney(value: unknown): ListingMoney | null {
+  try {
+    return money(value);
+  } catch {
+    return null;
+  }
 }
 
 function isoTime(value: unknown): string | null {
@@ -897,6 +912,10 @@ export function parseTradingItemDetail(
       price: money(variation?.StartPrice ?? sellingStatus.CurrentPrice),
       ...quantity,
       bestOfferEnabled: optionalBoolean(optionalRecord(item.BestOfferDetails)?.BestOfferEnabled),
+      bestOfferAutoAcceptPrice: optionalMoney(variation === null
+        ? listingDetails.BestOfferAutoAcceptPrice : undefined),
+      bestOfferMinimumPrice: optionalMoney(variation === null
+        ? listingDetails.MinimumBestOfferPrice : undefined),
     }),
     policies: tradingPolicyProjection(item),
     location: Object.freeze({
