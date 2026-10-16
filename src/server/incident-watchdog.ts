@@ -60,7 +60,28 @@ export type Incident = {
 type SnapshotRow = {
   shopify: { sku: string; title: string; available: number | null; productStatus: string } | null;
   ebay: { listingId: string | null } | null;
+  /** Catalog classification; the sell-out sweep scans only 'active' rows. */
+  lifecycleStatus?: string;
+  audit?: { attentionReasons: readonly string[] };
 };
+
+/**
+ * Why the sell-out guard may not have acted on an oversell row, from the
+ * catalog's own classification (incident #196, L104: the watchdog fires on
+ * any lifecycle, the --end-at-zero sweep only on 'active' — say which).
+ */
+function oversellGuardDetail(row: SnapshotRow): string {
+  if (row.lifecycleStatus === undefined) return '';
+  if (row.lifecycleStatus !== 'active') {
+    const reasons = row.audit?.attentionReasons ?? [];
+    return ` The catalog classifies this row '${row.lifecycleStatus}'`
+      + (reasons.length > 0 ? ` (reasons: ${reasons.join(', ')})` : '')
+      + ' — the --end-at-zero sweep selects only \'active\' rows, so it was never '
+      + 'attempted. Find where live-listing-catalog.ts adds those reasons.';
+  }
+  return ' The catalog classifies this row \'active\', so the sweep selected it: '
+    + 'look for this SKU\'s skip code in the "[Inventory Alignment]" summary log line.';
+}
 type Snapshot = { observedAtUtc: string; rows: readonly SnapshotRow[] };
 
 export type WatchdogDependencies = Readonly<{
@@ -177,7 +198,7 @@ export function evaluateIncidentCandidates(input: {
         title: `SOLD ITEM STILL BUYABLE ON EBAY: ${row.shopify.sku}`,
         detail: `Shopify shows 0 in stock but eBay listing ${row.ebay.listingId} is still live. `
           + 'Every minute risks a second sale. If this persists, end the listing on eBay '
-          + 'manually and check the sell-out guard.',
+          + 'manually and check the sell-out guard.' + oversellGuardDetail(row),
       });
     }
   }

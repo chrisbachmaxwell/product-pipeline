@@ -407,6 +407,29 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       && variant.productStatus.toUpperCase() !== 'ARCHIVED')
     .map((variant) => variant.sku));
   const nearShopify = nearCollisionSkus(input.shopifyVariants);
+  // Incident #196 (L104): SKU-ambiguity flags exist so a write never picks
+  // the wrong Shopify twin. When EVERY sellable Shopify holder of a SKU
+  // (exact or case-variant) has known stock <= 0, there is no twin to pick:
+  // nothing in Shopify can sell the item, so the one live eBay listing must
+  // end. Flagging it 'attention' hid exactly that listing from the
+  // --end-at-zero sweep (which scans only 'active' rows) while the watchdog,
+  // which ignores lifecycle, kept paging OVERSELL_EXPOSURE.
+  const sellableVariants = input.shopifyVariants.filter((variant) =>
+    variant.sku !== '' && variant.productStatus.toUpperCase() !== 'ARCHIVED');
+  const sellableByNormalizedSku = groupBy(sellableVariants, (variant) => normalizedSku(variant.sku));
+  const knownSoldOut = (variant: CapturedShopifyVariant): boolean =>
+    variant.available !== null && variant.available <= 0;
+  const soldOutEverywhere = (variant: CapturedShopifyVariant): boolean => knownSoldOut(variant)
+    && (sellableByNormalizedSku.get(normalizedSku(variant.sku)) ?? []).every(knownSoldOut);
+  // With exact-duplicate twins all sold out, exactly one keeps the eBay join
+  // (lowest variant id), so the listing is ended once, not by two rows.
+  const soldOutJoinHolder = new Map<string, string>();
+  for (const holder of sellableVariants) {
+    const current = soldOutJoinHolder.get(holder.sku);
+    if (current === undefined || holder.variantId.localeCompare(current) < 0) {
+      soldOutJoinHolder.set(holder.sku, holder.variantId);
+    }
+  }
   const ebaySkuValues = [
     ...input.ebayActiveListings,
     ...input.ebayInventoryItems,
@@ -432,18 +455,26 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       reasons.add('shopify_sku_missing');
       missingShopifySkuCount += 1;
     }
-    if (duplicateShopify.has(variant.sku)) reasons.add('shopify_sku_duplicate');
-    if (nearShopify.has(variant.sku)) reasons.add('shopify_sku_near_collision');
-    if (nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku)) {
-      reasons.add('ebay_sku_near_collision');
-    }
-
+    const soldOut = variant.sku !== '' && soldOutEverywhere(variant);
     const skuCanJoin = variant.sku !== ''
       && !(variant.productStatus.toUpperCase() === 'ARCHIVED'
-        && sellableSkuHolders.has(variant.sku));
+        && sellableSkuHolders.has(variant.sku))
+      && !(soldOut && duplicateShopify.has(variant.sku)
+        && soldOutJoinHolder.get(variant.sku) !== variant.variantId);
     const activeMatches = skuCanJoin ? activeBySku.get(variant.sku) ?? [] : [];
     const inventoryItems = skuCanJoin ? inventoryBySku.get(variant.sku) ?? [] : [];
     const offers = skuCanJoin ? offersBySku.get(variant.sku) ?? [] : [];
+    // A sold-out SKU with exactly one live listing has nothing to
+    // disambiguate (see soldOutEverywhere): the END target is the exact-SKU
+    // listing and no Shopify twin can sell. Every other case keeps its flag.
+    const ambiguityBlocksNothing = soldOut && activeMatches.length === 1;
+    if (!ambiguityBlocksNothing) {
+      if (duplicateShopify.has(variant.sku)) reasons.add('shopify_sku_duplicate');
+      if (nearShopify.has(variant.sku)) reasons.add('shopify_sku_near_collision');
+      if (nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku)) {
+        reasons.add('ebay_sku_near_collision');
+      }
+    }
     if (activeMatches.length > 1) {
       reasons.add('ebay_multiple_active_matches');
       ambiguousActiveMatchCount += 1;
