@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  providerRejectionFor,
   publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
@@ -246,6 +247,26 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     });
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
+  });
+});
+
+describe('providerRejectionFor (L103, incident #190)', () => {
+  const OTHER = { call: 'ReviseInventoryStatus', atUtc: FRESH,
+    reason: ' Invalid AutoAccept price. 23004 Error 159.95 USD 147436215816 AFF050S-700-U029 RequestError ' };
+  it('never quotes another listing\'s rejection', () => {
+    expect(providerRejectionFor([OTHER], ['147521467887', null, '147521467887'])).toBeNull();
+  });
+  it('matches by the recorded listingId first, then by ids eBay echoed in the text', () => {
+    const own = { call: 'ReviseInventoryStatus', atUtc: FRESH, listingId: '147521467887', reason: 'own reason' };
+    expect(providerRejectionFor([own, OTHER], ['147521467887'])).toBe('own reason');
+    expect(providerRejectionFor([OTHER], ['147436215816'])).toContain('AutoAccept');
+    expect(providerRejectionFor([OTHER], ['AFF050S-700-U029'])).toContain('AutoAccept');
+    // A SKU that is a prefix of another SKU in the text is not a match.
+    expect(providerRejectionFor([OTHER], ['AFF050S-700'])).toBeNull();
+  });
+  it('tolerates a missing or malformed ring', () => {
+    expect(providerRejectionFor(null, ['147521467887'])).toBeNull();
+    expect(providerRejectionFor([null, 7, { reason: 3 }], ['147521467887'])).toBeNull();
   });
 });
 
