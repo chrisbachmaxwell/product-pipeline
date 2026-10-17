@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-10-17. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-10-17: Trading Price Cuts Below the Best Offer Auto-Accept Now Reach eBay, and Price Incidents Quote Their Own Listing's Rejection (L105, incident #198)
+
+eBay refused every Trading price cut at or below a listing's Best Offer auto-accept or minimum price (error `23004`), because `ReviseInventoryStatus` cannot change Best Offer settings. The Trading alignment adapter now answers that rejection with one read-only `GetItem` and one `ReviseFixedPriceItem`. That call carries the same approved price plus the listing's existing thresholds, scaled by the price ratio and clamped to minimum < auto-accept < price. Rejections in `provider-rejections.json` are now keyed by listing, and `PRICE_SYNC_REJECTED` quotes only its own listing's reason. Before, it quoted the newest rejection of any listing; #198 quoted `147436215816`'s error for `147429532345`. Touches the protected `src/price-inventory-admin`, so a human merges. Regression: `src/price-inventory-admin/__tests__/best-offer-price-cut.test.ts` and `providerRejectionFor` cases in `src/server/incident-watchdog.test.ts`. Runbook: `docs/PRICE_INVENTORY_DISPATCH.md`.
 
 ### 2026-10-16: The Sell-Out Guard Reaches a Listing Whose SKU Twins Are All Sold Out, and Oversell Incidents Name the Blocking Classification (L104, incident #196)
 

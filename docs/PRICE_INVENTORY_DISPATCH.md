@@ -48,6 +48,16 @@ writers live at once, and dispatch is denied unless the current owner is
   `ReviseInventoryStatus` carrying exactly ONE `InventoryStatus` element for
   Trading-model targets — each dispatched only from inside a reserved
   migration-store job under a live 10-minute single-use approval.
+- **Best Offer price cuts (L105).** When eBay refuses a Trading price cut
+  because the listing's Best Offer auto-accept or minimum price is at or
+  above the new price (error `23004`, or any error naming Best Offer), the
+  same dispatch performs one read-only `GetItem` and then one
+  `ReviseFixedPriceItem` carrying the SAME approved `StartPrice` plus the
+  listing's existing thresholds scaled by new/old price (rounded down, then
+  clamped so minimum < auto-accept < price). It adds no Quantity and no
+  threshold the listing did not have, and logs
+  `EBAY_TRADING_BEST_OFFER_SCALED item=… autoAccept=old->new minimum=old->new`.
+  If no safe plan exists, the original rejection stands and is recorded.
 - **Cross-field contamination is structurally impossible.** A price dispatch
   body is asserted (on the serialized form) to contain no quantity or
   availability key/element; a quantity dispatch body is asserted to contain
