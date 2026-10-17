@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  providerRejectionFor,
   publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
@@ -272,6 +273,22 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     });
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
+  });
+});
+
+describe('providerRejectionFor (L105, #198)', () => {
+  const OTHER = { call: 'ReviseInventoryStatus', reason: ' Invalid AutoAccept price. 23004 Error 159.95 USD 147436215816 AFF050S-700-U029 RequestError ', atUtc: FRESH };
+  it("never quotes another listing's rejection", () => {
+    expect(providerRejectionFor([OTHER], ['147429532345'])).toBeNull();
+  });
+  it('matches by recorded listing id, or by eBay naming the item in legacy entries', () => {
+    expect(providerRejectionFor([OTHER], ['147436215816'])).toContain('23004');
+    expect(providerRejectionFor([
+      { call: 'ReviseInventoryStatus', listingId: '147429532345', reason: 'mine', atUtc: FRESH },
+      { ...OTHER, listingId: '147436215816' },
+    ], ['147429532345'])).toBe('mine');
+    // Prefix of a longer id is not a match.
+    expect(providerRejectionFor([OTHER], ['14743621581'])).toBeNull();
   });
 });
 

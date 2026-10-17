@@ -252,7 +252,12 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    // L105: the reason must be THIS listing's — incident #198 for
+    // 147429532345 quoted a rejection eBay returned for 147436215816.
+    const reason = providerRejectionFor(readProviderRejections(), [
+      failure.sku.replace(/^listing /, ''),
+      row?.ebay?.listingId ?? null,
+    ]);
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -266,7 +271,8 @@ export function evaluateIncidentCandidates(input: {
         + 'listing may be selling at the old price. Set the price manually on eBay now. '
         + (reason !== null
           ? `eBay's own reason for the most recent rejection: ${reason}`
-          : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+          : 'No eBay rejection reason is recorded for this listing; check the server log for '
+            + 'EBAY_TRADING_REJECTED lines naming it.'),
     });
   }
 
@@ -303,18 +309,39 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+function readProviderRejections(): unknown {
   try {
-    const parsed = JSON.parse(fs.readFileSync(
+    return JSON.parse(fs.readFileSync(
       '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Latest sanitized provider rejection recorded by the Trading adapter (L87)
+ * for one of `keys` (listing id or SKU) — eBay's own words, safe for
+ * incidents and the fix agent. An entry matches by its recorded `listingId`
+ * or, for entries written before L105 added it, by eBay naming the item or
+ * SKU in its error parameters. Another listing's rejection is never
+ * returned (L105).
+ */
+export function providerRejectionFor(
+  entries: unknown,
+  keys: ReadonlyArray<string | null | undefined>,
+): string | null {
+  if (!Array.isArray(entries)) return null;
+  const wanted = keys.filter((key): key is string => typeof key === 'string' && key.length >= 3);
+  if (wanted.length === 0) return null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { reason?: unknown; listingId?: unknown } | null;
+    if (entry === null || typeof entry !== 'object' || typeof entry.reason !== 'string') continue;
+    const matches = typeof entry.listingId === 'string'
+      ? wanted.includes(entry.listingId)
+      : wanted.some((key) => new RegExp(`(^|[^A-Za-z0-9-])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9-])`, 'u').test(entry.reason as string));
+    if (matches) return entry.reason.slice(0, 300);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
