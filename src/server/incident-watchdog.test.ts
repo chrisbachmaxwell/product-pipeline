@@ -273,6 +273,31 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
   });
+  it('quotes only the rejection that belongs to this listing (L105, #201)', () => {
+    const evaluate = (providerRejections: Array<{ listingId?: string; reason: string }>) =>
+      evaluateIncidentCandidates({
+        snapshot: { observedAtUtc: FRESH, rows: [row('', 1, '147429532345')] },
+        signals: {
+          oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+          repeatedEndFailures: [],
+          repeatedPriceFailures: [{ sku: 'listing 147429532345', count: 3, lastAtUtc: FRESH }],
+        },
+        nowMs: NOW,
+        providerRejections,
+      }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!.detail;
+    // #201 quoted another listing's error because it was merely the newest.
+    const other = evaluate([
+      { listingId: '147429532345', reason: 'own reason' },
+      { reason: 'Invalid AutoAccept price. 23004 159.95 USD 147436215816' },
+    ]);
+    expect(other).toContain('own reason');
+    expect(other).not.toContain('147436215816');
+    // Pre-L105 entries carry no listingId; eBay's parameters name the item.
+    expect(evaluate([{ reason: 'Invalid AutoAccept price. 23004 147429532345' }]))
+      .toContain('23004 147429532345');
+    expect(evaluate([{ reason: 'Invalid AutoAccept price. 23004 147436215816' }]))
+      .toContain('No recorded eBay reason names this listing');
+  });
 });
 
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {

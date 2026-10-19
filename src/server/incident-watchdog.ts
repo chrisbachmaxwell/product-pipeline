@@ -153,6 +153,8 @@ export function evaluateIncidentCandidates(input: {
   snapshot: Snapshot;
   signals: IncidentLedgerSignals | null;
   nowMs: number;
+  /** Tests inject the rejection ring; production reads the adapter's file. */
+  providerRejections?: readonly ProviderRejectionEntry[];
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
   const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> = [];
   const { snapshot, signals, nowMs } = input;
@@ -252,7 +254,14 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    // L105 (#201): the reason must be THIS listing's, never merely the
+    // newest rejection of any listing — #201 quoted 147436215816's error
+    // under 147429532345's incident.
+    const listingId = /^listing ([0-9]{1,19})$/u.exec(failure.sku)?.[1]
+      ?? row?.ebay?.listingId ?? null;
+    const reason = listingId === null
+      ? null
+      : latestProviderRejectionFor(listingId, input.providerRejections);
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -265,8 +274,9 @@ export function evaluateIncidentCandidates(input: {
       detail: 'Shopify price changes for this listing are NOT reaching eBay — the live '
         + 'listing may be selling at the old price. Set the price manually on eBay now. '
         + (reason !== null
-          ? `eBay's own reason for the most recent rejection: ${reason}`
-          : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+          ? `eBay's own reason for this listing's most recent rejection: ${reason}`
+          : 'No recorded eBay reason names this listing; check the server log for '
+            + 'EBAY_TRADING_REJECTED lines with its item id.'),
     });
   }
 
@@ -303,18 +313,35 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+export type ProviderRejectionEntry = { listingId?: unknown; reason?: unknown };
+
+function readProviderRejections(): readonly ProviderRejectionEntry[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(
       '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+    return Array.isArray(parsed) ? parsed as ProviderRejectionEntry[] : [];
   } catch {
-    return null;
+    return [];
   }
+}
+
+/** Latest sanitized provider rejection recorded by the Trading adapter
+ * (L87) for ONE listing — eBay's own words, safe for incidents and the fix
+ * agent. Entries written before L105 carry no listingId; they still match
+ * when eBay's error parameters name the item id. */
+function latestProviderRejectionFor(
+  listingId: string,
+  entries: readonly ProviderRejectionEntry[] = readProviderRejections(),
+): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (typeof entry?.reason !== 'string') continue;
+    const matches = entry.listingId === listingId
+      || (entry.listingId === undefined
+        && new RegExp(`(^|[^0-9])${listingId}([^0-9]|$)`, 'u').test(entry.reason));
+    if (matches) return entry.reason.slice(0, 300);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
