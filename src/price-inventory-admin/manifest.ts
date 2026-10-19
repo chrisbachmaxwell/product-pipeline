@@ -85,6 +85,19 @@ export function parseAlignmentQuantity(serialized: string): number {
   return quantity;
 }
 
+/**
+ * Best Offer floors a Trading price alignment must lower in the SAME revise
+ * (L105). eBay refuses a Buy It Now price at or below the listing's
+ * auto-accept or auto-decline (minimum) offer price with error 23004, and
+ * `ReviseInventoryStatus` cannot touch either, so without this every Shopify
+ * price drop to or below a floor is rejected forever. A null member means the
+ * listing has no such floor and none is written.
+ */
+export type BestOfferFloors = Readonly<{
+  autoAccept: ParsedAlignmentPrice | null;
+  minimum: ParsedAlignmentPrice | null;
+}>;
+
 export type AlignmentManifest = Readonly<{
   schemaVersion: 1;
   scope: typeof LISTING_DRAFT_SCOPE;
@@ -92,6 +105,8 @@ export type AlignmentManifest = Readonly<{
   field: AlignmentField;
   before: string | null;
   after: string;
+  /** Present only when the new price collides with a Best Offer floor. */
+  bestOfferFloors?: BestOfferFloors;
 }>;
 
 export type DerivedAlignmentManifest = Readonly<{
@@ -121,7 +136,10 @@ function buildManifest(input: {
   field: AlignmentField;
   before: string | null;
   after: string;
+  bestOfferFloors?: BestOfferFloors | null;
 }): DerivedAlignmentManifest {
+  // The floors key is added only when present, so every manifest without a
+  // Best Offer collision keeps its exact pre-L105 digest.
   const manifest: AlignmentManifest = Object.freeze({
     schemaVersion: 1 as const,
     scope: LISTING_DRAFT_SCOPE,
@@ -129,8 +147,138 @@ function buildManifest(input: {
     field: input.field,
     before: input.before,
     after: input.after,
+    ...(input.bestOfferFloors ? { bestOfferFloors: input.bestOfferFloors } : {}),
   });
   return Object.freeze({ manifest, manifestDigest: sha256Digest(manifest) });
+}
+
+type MoneyLike = Readonly<{ value: string; currency: string }> | null | undefined;
+
+/** Exact integer cents of a plain decimal amount; null for anything else. */
+function toCents(amount: string): number | null {
+  const match = /^([0-9]{1,10})(?:\.([0-9]{1,2}))?$/u.exec(amount);
+  if (!match) return null;
+  return Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0'));
+}
+
+function fromCents(cents: number, currency: string): ParsedAlignmentPrice {
+  return Object.freeze({
+    value: `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`,
+    currency,
+  });
+}
+
+/**
+ * Lower one Best Offer floor that would collide with the new price, keeping
+ * the seller's own ratio to the old price (e.g. auto-accept at 89% of BIN
+ * stays at 89% of the new BIN), and always strictly below `limitCents`.
+ */
+function lowerFloor(floorCents: number, oldCents: number | null, newCents: number,
+  limitCents: number): number {
+  const scaled = oldCents !== null && oldCents > floorCents
+    ? Math.floor((newCents * floorCents) / oldCents)
+    : limitCents - 1;
+  return Math.min(scaled, limitCents - 1);
+}
+
+/**
+ * Derive the Best Offer floors a Trading price alignment must write with the
+ * new price, or null when the new price leaves both floors strictly below it
+ * (the ordinary case: nothing extra is written). Pure and deterministic from
+ * the one workspace read, so plan and dispatch agree byte-for-byte.
+ *
+ * Fails closed to null (no adjustment, eBay keeps refusing loudly) on any
+ * value it cannot reason about exactly: a currency mismatch or a malformed
+ * amount. A floor that would have to drop to zero or below is refused the
+ * same way rather than written.
+ */
+export function deriveBestOfferFloors(input: {
+  oldPrice: MoneyLike;
+  newPrice: ParsedAlignmentPrice;
+  autoAccept: MoneyLike;
+  minimum: MoneyLike;
+}): BestOfferFloors | null {
+  const { newPrice } = input;
+  const newCents = toCents(newPrice.value);
+  if (newCents === null) return null;
+  const centsOf = (money: MoneyLike): number | null | 'invalid' => {
+    if (money === null || money === undefined) return null;
+    if (money.currency !== newPrice.currency) return 'invalid';
+    return toCents(money.value) ?? 'invalid';
+  };
+  const autoAccept = centsOf(input.autoAccept);
+  const minimum = centsOf(input.minimum);
+  if (autoAccept === 'invalid' || minimum === 'invalid') return null;
+  const oldParsed = centsOf(input.oldPrice);
+  const oldCents = oldParsed === 'invalid' ? null : oldParsed;
+
+  let nextAutoAccept = autoAccept;
+  if (autoAccept !== null && autoAccept >= newCents) {
+    nextAutoAccept = lowerFloor(autoAccept, oldCents, newCents, newCents);
+  }
+  let nextMinimum = minimum;
+  const minimumLimit = nextAutoAccept ?? newCents;
+  if (minimum !== null && minimum >= minimumLimit) {
+    nextMinimum = lowerFloor(minimum, oldCents, newCents, minimumLimit);
+  }
+  if (nextAutoAccept === autoAccept && nextMinimum === minimum) return null;
+  if ((nextAutoAccept !== null && nextAutoAccept <= 0)
+    || (nextMinimum !== null && nextMinimum <= 0)) {
+    return null;
+  }
+  return Object.freeze({
+    autoAccept: nextAutoAccept === null ? null : fromCents(nextAutoAccept, newPrice.currency),
+    minimum: nextMinimum === null ? null : fromCents(nextMinimum, newPrice.currency),
+  });
+}
+
+function parseOptionalMoneyJson(serialized: string | null): MoneyLike {
+  if (serialized === null) return null;
+  try {
+    const parsed = JSON.parse(serialized) as { amount?: unknown; currency?: unknown };
+    return typeof parsed.amount === 'string' && typeof parsed.currency === 'string'
+      ? { value: parsed.amount, currency: parsed.currency }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse an operator-supplied `--best-offer-floors` value for `reconcile`
+ * (the exact JSON `plan` printed under `manifest.bestOfferFloors`). Strict:
+ * exactly the two keys, each null or a valid price.
+ */
+export function parseBestOfferFloors(serialized: string): BestOfferFloors {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized) as unknown;
+  } catch {
+    return deny('PLAN_SOURCE_VALUE_INVALID');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)
+    || JSON.stringify(Object.keys(parsed).sort()) !== '["autoAccept","minimum"]') {
+    return deny('PLAN_SOURCE_VALUE_INVALID');
+  }
+  const member = (value: unknown): ParsedAlignmentPrice | null => {
+    if (value === null) return null;
+    if (typeof value !== 'object' || Array.isArray(value)
+      || JSON.stringify(Object.keys(value).sort()) !== '["currency","value"]') {
+      return deny('PLAN_SOURCE_VALUE_INVALID');
+    }
+    const { value: amount, currency } = value as Record<string, unknown>;
+    if (typeof amount !== 'string' || !PRICE_AMOUNT.test(amount) || Number(amount) <= 0
+      || typeof currency !== 'string' || !CURRENCY.test(currency)) {
+      return deny('PLAN_SOURCE_VALUE_INVALID');
+    }
+    return Object.freeze({ value: amount, currency });
+  };
+  const record = parsed as Record<string, unknown>;
+  const floors = { autoAccept: member(record.autoAccept), minimum: member(record.minimum) };
+  if (floors.autoAccept === null && floors.minimum === null) {
+    return deny('PLAN_SOURCE_VALUE_INVALID');
+  }
+  return Object.freeze(floors);
 }
 
 /**
@@ -211,7 +359,20 @@ export function deriveAlignmentManifest(input: {
   assertValidAfterValue(field, after);
   const before = basis.observed[field];
   if (isSameAlignedValue(field, before, after)) deny('PLAN_NO_DRIFT');
-  return buildManifest({ identity: basis.identity, field, before, after });
+  // L105: a Trading price drop to or below a Best Offer floor must lower that
+  // floor in the same revise, or eBay refuses it (23004) on every sweep. The
+  // Inventory-model bulk price call cannot carry offer terms, so that model
+  // is unchanged (and still surfaces eBay's refusal).
+  const commerce = basis.workspace?.ebayDetail?.actual.commerce;
+  const bestOfferFloors = field === 'price' && basis.identity.managementModel === 'trading_api'
+    ? deriveBestOfferFloors({
+      oldPrice: parseOptionalMoneyJson(before),
+      newPrice: parseAlignmentPrice(after),
+      autoAccept: commerce?.bestOfferAutoAcceptPrice,
+      minimum: commerce?.bestOfferMinimumPrice,
+    })
+    : null;
+  return buildManifest({ identity: basis.identity, field, before, after, bestOfferFloors });
 }
 
 /**
@@ -226,6 +387,7 @@ export function reconstructAlignmentManifest(input: {
   field: AlignmentField;
   before: string | null;
   after: string;
+  bestOfferFloors?: BestOfferFloors | null;
 }): DerivedAlignmentManifest {
   if (!ALIGNMENT_FIELDS.includes(input.field)) deny('PLAN_FIELD_INVALID');
   assertManagedIdentity(input.identity);
