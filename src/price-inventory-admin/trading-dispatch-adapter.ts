@@ -8,7 +8,10 @@
  * price alignment) or a `Quantity` (a quantity alignment), never both. A
  * structural assertion on the serialized XML guarantees a price dispatch can
  * never contain a Quantity element and a quantity dispatch can never contain
- * a StartPrice element. Errors are redacted to fixed codes; no token, URL,
+ * a StartPrice element. (A price alignment that collides with the listing's
+ * Best Offer floors instead uses one bounded ReviseFixedPriceItem carrying
+ * only the price and the lowered floors -- L105.) Errors are redacted to
+ * fixed codes; no token, URL,
  * payload, or provider body is ever thrown or logged.
  *
  * This module is intentionally not imported by the server, webhooks,
@@ -24,6 +27,7 @@ const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
 const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
+const EBAY_TRADING_REVISE_ITEM_CALL_NAME = 'ReviseFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -64,6 +68,17 @@ export type TradingAlignInput =
 
 export type TradingAlignDispatchAdapter = Readonly<{
   reviseInventoryStatus: (input: TradingAlignInput) => Promise<void>;
+  /**
+   * A price alignment that must also lower the listing's Best Offer
+   * auto-accept / minimum floors in the same call (L105): eBay refuses a Buy
+   * It Now price at or below either floor, and ReviseInventoryStatus cannot
+   * carry them. Exactly one bounded ReviseFixedPriceItem POST.
+   */
+  revisePriceWithBestOfferFloors: (input: Readonly<{
+    listingId: string;
+    price: Readonly<{ value: string; currency: string }>;
+    floors: TradingBestOfferFloors;
+  }>) => Promise<void>;
   /**
    * End one fixed-price listing because the item is no longer available.
    * This is the sell-out path for this seller account: eBay refuses an
@@ -131,6 +146,60 @@ export function buildReviseInventoryStatusXml(input: TradingAlignInput): string 
     deny('TRADING_ALIGN_PAYLOAD_INVALID');
   }
   if (input.field === 'quantity' && /<\/?StartPrice\b/iu.test(xml)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
+export type TradingBestOfferFloors = Readonly<{
+  autoAccept: Readonly<{ value: string; currency: string }> | null;
+  minimum: Readonly<{ value: string; currency: string }> | null;
+}>;
+
+/**
+ * Serialize the one bounded ReviseFixedPriceItem request for a price
+ * alignment that collides with the listing's Best Offer floors (L105): the
+ * exact ItemID, the new StartPrice, and the lowered
+ * `ListingDetails.BestOfferAutoAcceptPrice` / `MinimumBestOfferPrice` --
+ * nothing else, so eBay keeps every other listing field. Same strict
+ * grammars as the revise serializer; each floor must sit strictly below the
+ * price (and the minimum below auto-accept), in the price's currency, so
+ * eBay's 23004 rule holds by construction. No Quantity element can appear.
+ */
+export function buildRevisePriceWithBestOfferFloorsXml(input: Readonly<{
+  listingId: string;
+  price: Readonly<{ value: string; currency: string }>;
+  floors: TradingBestOfferFloors;
+}>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  const { price, floors } = input;
+  const validMoney = (money: Readonly<{ value: string; currency: string }> | null): boolean =>
+    money !== null && typeof money.value === 'string' && PRICE_AMOUNT.test(money.value)
+    && Number(money.value) > 0 && money.currency === price.currency;
+  if (!price || typeof price.currency !== 'string' || !CURRENCY.test(price.currency)
+    || !validMoney(price) || !floors
+    || (floors.autoAccept === null && floors.minimum === null)
+    || (floors.autoAccept !== null && (!validMoney(floors.autoAccept)
+      || Number(floors.autoAccept.value) >= Number(price.value)))
+    || (floors.minimum !== null && (!validMoney(floors.minimum)
+      || Number(floors.minimum.value) >= Number((floors.autoAccept ?? price).value)))) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const autoAccept = floors.autoAccept === null ? ''
+    : `<BestOfferAutoAcceptPrice currencyID="${price.currency}">${floors.autoAccept.value}</BestOfferAutoAcceptPrice>`;
+  const minimum = floors.minimum === null ? ''
+    : `<MinimumBestOfferPrice currencyID="${price.currency}">${floors.minimum.value}</MinimumBestOfferPrice>`;
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + '<Item>'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + `<StartPrice currencyID="${price.currency}">${price.value}</StartPrice>`
+    + `<ListingDetails>${autoAccept}${minimum}</ListingDetails>`
+    + '</Item>'
+    + '</ReviseFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || (xml.match(/<StartPrice /g) ?? []).length !== 1
+    || /<\/?Quantity\b/iu.test(xml)) {
     deny('TRADING_ALIGN_PAYLOAD_INVALID');
   }
   return xml;
@@ -309,6 +378,17 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
   }
 
+  async function revisePriceWithBestOfferFloors(input: Readonly<{
+    listingId: string;
+    price: Readonly<{ value: string; currency: string }>;
+    floors: TradingBestOfferFloors;
+  }>): Promise<void> {
+    await dispatchBoundedCall(
+      buildRevisePriceWithBestOfferFloorsXml(input),
+      EBAY_TRADING_REVISE_ITEM_CALL_NAME,
+    );
+  }
+
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
     await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
   }
@@ -328,5 +408,10 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     return newListingId as string;
   }
 
-  return Object.freeze({ reviseInventoryStatus, endFixedPriceItem, relistFixedPriceItem });
+  return Object.freeze({
+    reviseInventoryStatus,
+    revisePriceWithBestOfferFloors,
+    endFixedPriceItem,
+    relistFixedPriceItem,
+  });
 }

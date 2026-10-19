@@ -19,6 +19,7 @@ import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.
 import type { LiveListingCatalogSnapshot } from '../../server/live-listing-catalog.js';
 import {
   buildReviseInventoryStatusXml,
+  buildRevisePriceWithBestOfferFloorsXml,
   createTradingAlignDispatchAdapter,
   TradingAlignDispatchError,
 } from '../trading-dispatch-adapter.js';
@@ -27,6 +28,7 @@ import {
   type PriceInventoryAdminIo,
 } from '../program.js';
 import { openQuantityBeliefStore } from '../quantity-beliefs.js';
+import { deriveBestOfferFloors } from '../manifest.js';
 import type { PriceInventoryDispatchAdapter } from '../dispatch-adapter.js';
 
 const MIGRATION_SCOPE: IntegrationScope = {
@@ -61,6 +63,8 @@ function tradingWorkspace(options: {
   ebayQuantity?: number;
   shopifyPrice?: string;
   ebayPrice?: string;
+  autoAccept?: string | null;
+  minimum?: string | null;
 } = {}): ListingWorkspaceDto {
   const shopifyAvailable = options.shopifyAvailable ?? 3;
   const ebayQuantity = options.ebayQuantity ?? 1;
@@ -123,7 +127,12 @@ function tradingWorkspace(options: {
         identifiers: { brand: 'Nikon', mpn: null, upc: [], ean: [], isbn: [], epid: null },
         commerce: { price: { value: ebayPrice, currency: 'USD' }, totalQuantity: ebayQuantity,
           soldQuantity: 0, availableQuantity: ebayQuantity,
-          availableQuantityBasis: 'reported', bestOfferEnabled: false },
+          availableQuantityBasis: 'reported',
+          bestOfferEnabled: options.autoAccept != null || options.minimum != null,
+          bestOfferAutoAcceptPrice: options.autoAccept == null ? null
+            : { value: options.autoAccept, currency: 'USD' },
+          bestOfferMinimumPrice: options.minimum == null ? null
+            : { value: options.minimum, currency: 'USD' } },
         policies: { fulfillmentPolicyId: '6055555000', paymentPolicyId: '6066666000',
           returnPolicyId: '6077777000', paymentMethods: [], shippingType: null,
           domesticServices: [], internationalServices: [], returnsAccepted: true,
@@ -226,25 +235,46 @@ function createTradingWorld(): TradingWorld {
         { status: 200, headers: { 'Content-Type': 'text/xml' } },
       );
     }
+    const body = String(init?.body ?? '');
+    const commerce = current.ebayDetail!.actual.commerce;
+    // eBay's rule 23004 (L105): a Buy It Now price at or below the listing's
+    // Best Offer auto-accept or minimum price refuses the WHOLE revise.
+    const sentPrice = /<StartPrice [^>]*>([0-9.]+)</u.exec(body)?.[1];
+    const sentAutoAccept = /<BestOfferAutoAcceptPrice [^>]*>([0-9.]+)</u.exec(body)?.[1];
+    const sentMinimum = /<MinimumBestOfferPrice [^>]*>([0-9.]+)</u.exec(body)?.[1];
+    const autoAcceptAfter = sentAutoAccept ?? commerce.bestOfferAutoAcceptPrice?.value ?? null;
+    const minimumAfter = sentMinimum ?? commerce.bestOfferMinimumPrice?.value ?? null;
+    if (sentPrice !== undefined && [autoAcceptAfter, minimumAfter]
+      .some((floor) => floor !== null && Number(floor) >= Number(sentPrice))) {
+      return new Response(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        + `<${callName}Response xmlns="urn:ebay:apis:eBLBaseComponents">`
+        + '<Ack>Failure</Ack><Errors><ShortMessage>Invalid AutoAccept price.</ShortMessage>'
+        + '<ErrorCode>23004</ErrorCode></Errors>'
+        + `</${callName}Response>`,
+        { status: 200, headers: { 'Content-Type': 'text/xml' } },
+      );
+    }
     if (responseAck === 'Success' && flipOnSuccess) {
       const shopify = current.catalog.shopify as {
         available: number;
         price: { amount: string };
       };
-      const commerce = current.ebayDetail!.actual.commerce;
-      const priceDispatch = String(init?.body ?? '').includes('<StartPrice ');
+      const priceDispatch = body.includes('<StartPrice ');
       current = tradingWorkspace({
         shopifyAvailable: shopify.available,
         ebayQuantity: priceDispatch ? commerce.availableQuantity! : shopify.available,
         shopifyPrice: shopify.price.amount,
         ebayPrice: priceDispatch ? shopify.price.amount : commerce.price!.value,
+        autoAccept: autoAcceptAfter,
+        minimum: minimumAfter,
       });
     }
     return new Response(
       '<?xml version="1.0" encoding="UTF-8"?>'
-      + '<ReviseInventoryStatusResponse xmlns="urn:ebay:apis:eBLBaseComponents">'
+      + `<${callName}Response xmlns="urn:ebay:apis:eBLBaseComponents">`
       + `<Ack>${responseAck}</Ack>`
-      + '</ReviseInventoryStatusResponse>',
+      + `</${callName}Response>`,
       { status: 200, headers: { 'Content-Type': 'text/xml' } },
     );
   };
@@ -1015,6 +1045,113 @@ describe('trading-model price/inventory alignment dispatch', () => {
     })).toThrow(TradingAlignDispatchError);
     expect(() => buildReviseInventoryStatusXml({
       listingId: LISTING_ID, field: 'price', price: { value: '12.95', currency: 'usd' },
+    })).toThrow(TradingAlignDispatchError);
+  });
+});
+
+describe('price alignment below a Best Offer floor (L105, incident #200)', () => {
+  // Production shape: AFF050S-700-U029 / 147436215816 — eBay refused every
+  // price sweep with 23004 "The Best Offer Auto Accept Price must be less
+  // than the Buy It Now price" because the auto-accept sat at 159.95.
+  it('lowers the colliding floors in the same single revise and reconciles', async () => {
+    const world = createTradingWorld();
+    world.setWorkspace(tradingWorkspace({
+      shopifyAvailable: 1, ebayQuantity: 1,
+      shopifyPrice: '159.95', ebayPrice: '179.95',
+      autoAccept: '159.95', minimum: '150.00',
+    }));
+    await world.run(establishArguments('price', world.migrationDatabasePath));
+
+    await world.run(['plan', ...targetArguments('price')]);
+    const preview = lastJson(world.stdout);
+    // The floors are part of the approved manifest (and its digest), so the
+    // operator ceremony covers every value written.
+    expect(preview.manifest).toMatchObject({
+      bestOfferFloors: {
+        autoAccept: { value: '142.17', currency: 'USD' },
+        minimum: { value: '133.32', currency: 'USD' },
+      },
+    });
+
+    await world.run(['dispatch', ...targetArguments('price'),
+      '--manifest-digest', preview.manifestDigest as string,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({
+      status: 'dispatched-and-reconciled', effect: 'effect_observed',
+    });
+    expect(world.requests).toHaveLength(1);
+    const request = world.requests[0]!;
+    expect(request.headers['X-EBAY-API-CALL-NAME']).toBe('ReviseFixedPriceItem');
+    expect(request.body).toContain(
+      `<Item><ItemID>${LISTING_ID}</ItemID>`
+      + '<StartPrice currencyID="USD">159.95</StartPrice>'
+      + '<ListingDetails><BestOfferAutoAcceptPrice currencyID="USD">142.17</BestOfferAutoAcceptPrice>'
+      + '<MinimumBestOfferPrice currencyID="USD">133.32</MinimumBestOfferPrice></ListingDetails>'
+      + '</Item>',
+    );
+    expect(request.body).not.toMatch(NO_QUANTITY);
+
+    await world.run(['plan', ...targetArguments('price')]);
+    expect(lastJson(world.stderr)).toMatchObject({ code: 'PLAN_NO_DRIFT' });
+  });
+
+  it('keeps the plain ReviseInventoryStatus (and the old digest shape) when no floor collides', async () => {
+    const world = createTradingWorld();
+    world.setWorkspace(tradingWorkspace({
+      shopifyAvailable: 1, ebayQuantity: 1,
+      shopifyPrice: '199.95', ebayPrice: '179.95', autoAccept: '159.95', minimum: '150.00',
+    }));
+    await world.run(establishArguments('price', world.migrationDatabasePath));
+    await world.run(['plan', ...targetArguments('price')]);
+    const preview = lastJson(world.stdout);
+    expect(preview.manifest).not.toHaveProperty('bestOfferFloors');
+    await world.run(['dispatch', ...targetArguments('price'),
+      '--manifest-digest', preview.manifestDigest as string,
+      '--migration-store', world.migrationDatabasePath,
+    ]);
+    expect(lastJson(world.stdout)).toMatchObject({ status: 'dispatched-and-reconciled' });
+    expect(world.requests.map((r) => r.headers['X-EBAY-API-CALL-NAME']))
+      .toEqual(['ReviseInventoryStatus']);
+  });
+
+  it('derives floors strictly below the new price, keeping the seller ratio', () => {
+    const usd = (value: string) => ({ value, currency: 'USD' });
+    // Only the minimum collides: auto-accept is untouched (still written so
+    // the pair stays consistent), minimum keeps its ratio to the old price.
+    expect(deriveBestOfferFloors({
+      oldPrice: usd('200.00'), newPrice: usd('100.00'),
+      autoAccept: null, minimum: usd('120.00'),
+    })).toEqual({ autoAccept: null, minimum: usd('60.00') });
+    // No old price to scale from: one cent below the limit.
+    expect(deriveBestOfferFloors({
+      oldPrice: null, newPrice: usd('100.00'), autoAccept: usd('100.00'), minimum: null,
+    })).toEqual({ autoAccept: usd('99.99'), minimum: null });
+    // Nothing collides: nothing extra is written.
+    expect(deriveBestOfferFloors({
+      oldPrice: usd('200.00'), newPrice: usd('150.00'),
+      autoAccept: usd('140.00'), minimum: usd('100.00'),
+    })).toBeNull();
+    // A currency it cannot reason about fails closed (eBay keeps refusing loudly).
+    expect(deriveBestOfferFloors({
+      oldPrice: usd('200.00'), newPrice: usd('100.00'),
+      autoAccept: { value: '150.00', currency: 'CAD' }, minimum: null,
+    })).toBeNull();
+  });
+
+  it('refuses a floors revise that would still violate eBay 23004', () => {
+    const price = { value: '100.00', currency: 'USD' };
+    expect(() => buildRevisePriceWithBestOfferFloorsXml({
+      listingId: LISTING_ID, price,
+      floors: { autoAccept: { value: '100.00', currency: 'USD' }, minimum: null },
+    })).toThrow(TradingAlignDispatchError);
+    expect(() => buildRevisePriceWithBestOfferFloorsXml({
+      listingId: LISTING_ID, price,
+      floors: { autoAccept: { value: '90.00', currency: 'USD' },
+        minimum: { value: '90.00', currency: 'USD' } },
+    })).toThrow(TradingAlignDispatchError);
+    expect(() => buildRevisePriceWithBestOfferFloorsXml({
+      listingId: LISTING_ID, price, floors: { autoAccept: null, minimum: null },
     })).toThrow(TradingAlignDispatchError);
   });
 });

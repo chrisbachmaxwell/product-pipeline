@@ -64,7 +64,7 @@ function getItemXml(overrides: Readonly<{
         <SellingStatus><ListingStatus>Active</ListingStatus><CurrentPrice currencyID="USD">39.95</CurrentPrice><QuantitySold>0</QuantitySold></SellingStatus>
         <Quantity>1</Quantity><QuantityAvailable>1</QuantityAvailable>
         <BestOfferDetails><BestOfferEnabled>true</BestOfferEnabled></BestOfferDetails>
-        <ListingDetails><StartTime>2026-08-13T20:00:00.000Z</StartTime><EndTime>2026-09-12T20:00:00.000Z</EndTime><ViewItemURL>https://www.ebay.com/itm/${listingId}</ViewItemURL></ListingDetails>
+        <ListingDetails><BestOfferAutoAcceptPrice currencyID="USD">35.00</BestOfferAutoAcceptPrice><MinimumBestOfferPrice currencyID="USD">30.00</MinimumBestOfferPrice><StartTime>2026-08-13T20:00:00.000Z</StartTime><EndTime>2026-09-12T20:00:00.000Z</EndTime><ViewItemURL>https://www.ebay.com/itm/${listingId}</ViewItemURL></ListingDetails>
         <SellerProfiles>
           <SellerShippingProfile><ShippingProfileID>101</ShippingProfileID></SellerShippingProfile>
           <SellerPaymentProfile><PaymentProfileID>102</PaymentProfileID></SellerPaymentProfile>
@@ -179,6 +179,9 @@ describe('enriched eBay listing detail reader', () => {
           price: { value: '39.95', currency: 'USD' },
           availableQuantity: 1,
           availableQuantityBasis: 'reported',
+          // L105: the Best Offer floors eBay enforces against every price revise.
+          bestOfferAutoAcceptPrice: { value: '35.00', currency: 'USD' },
+          bestOfferMinimumPrice: { value: '30.00', currency: 'USD' },
         },
         policies: {
           fulfillmentPolicyId: '101', paymentPolicyId: '102', returnPolicyId: '103',

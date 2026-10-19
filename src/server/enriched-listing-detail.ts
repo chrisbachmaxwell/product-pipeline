@@ -138,6 +138,13 @@ export type ListingActualDetail = Readonly<{
     availableQuantity: number | null;
     availableQuantityBasis: 'reported' | 'total_minus_sold' | 'unavailable';
     bestOfferEnabled: boolean | null;
+    /**
+     * Trading `ListingDetails.BestOfferAutoAcceptPrice` / `MinimumBestOfferPrice`.
+     * eBay refuses ANY price revise that would leave either at or above the
+     * new Buy It Now price (error 23004, L105), so the price path must see them.
+     */
+    bestOfferAutoAcceptPrice?: ListingMoney | null;
+    bestOfferMinimumPrice?: ListingMoney | null;
   }>;
   policies: Readonly<{
     fulfillmentPolicyId: string | null;
@@ -897,6 +904,8 @@ export function parseTradingItemDetail(
       price: money(variation?.StartPrice ?? sellingStatus.CurrentPrice),
       ...quantity,
       bestOfferEnabled: optionalBoolean(optionalRecord(item.BestOfferDetails)?.BestOfferEnabled),
+      bestOfferAutoAcceptPrice: money(listingDetails.BestOfferAutoAcceptPrice),
+      bestOfferMinimumPrice: money(listingDetails.MinimumBestOfferPrice),
     }),
     policies: tradingPolicyProjection(item),
     location: Object.freeze({

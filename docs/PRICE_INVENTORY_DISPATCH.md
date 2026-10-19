@@ -48,6 +48,18 @@ writers live at once, and dispatch is denied unless the current owner is
   `ReviseInventoryStatus` carrying exactly ONE `InventoryStatus` element for
   Trading-model targets — each dispatched only from inside a reserved
   migration-store job under a live 10-minute single-use approval.
+- **Best Offer floors (L105).** eBay refuses a Buy It Now price at or below a
+  listing's Best Offer auto-accept or minimum (auto-decline) price (error
+  23004), and `ReviseInventoryStatus` cannot change either. When a
+  Trading-model price alignment would collide, the manifest carries
+  `bestOfferFloors` (the colliding floor lowered to keep its ratio to the old
+  price, always strictly below the new price; covered by the manifest digest
+  and therefore by the approval), and the dispatch is instead exactly one
+  `ReviseFixedPriceItem` carrying only `ItemID`, `StartPrice` and
+  `ListingDetails.BestOfferAutoAcceptPrice` / `MinimumBestOfferPrice` — never
+  a Quantity. Manifests without a collision are byte-identical to before.
+  `reconcile` takes the plan's floors JSON via `--best-offer-floors`. The
+  Inventory-model bulk price call cannot carry offer terms and is unchanged.
 - **Cross-field contamination is structurally impossible.** A price dispatch
   body is asserted (on the serialized form) to contain no quantity or
   availability key/element; a quantity dispatch body is asserted to contain
