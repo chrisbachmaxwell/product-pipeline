@@ -65,8 +65,10 @@ import {
   type PriceInventoryDispatchAdapter,
 } from './dispatch-adapter.js';
 import {
+  clampBestOfferThresholds,
   createTradingAlignDispatchAdapter,
   TradingAlignDispatchError,
+  type BestOfferThresholdClamp,
   type TradingAlignDispatchAdapter,
 } from './trading-dispatch-adapter.js';
 import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
@@ -248,6 +250,27 @@ export function tradingQuantityToWrite(
   if (commerce?.availableQuantityBasis !== 'total_minus_sold') return availableAfter;
   if (!Number.isSafeInteger(sold) || (sold as number) < 0) return availableAfter;
   return availableAfter + (sold as number);
+}
+
+/**
+ * The Best Offer thresholds a Trading price alignment must also write, read
+ * from the same fresh GetItem the manifest was derived from (L105). Null for
+ * every other dispatch: quantity, end, Inventory-model offers, or a listing
+ * whose thresholds already sit below the new price.
+ */
+export function tradingBestOfferClamp(
+  target: DerivedTarget,
+  endListing: boolean,
+): BestOfferThresholdClamp | null {
+  if (target.field !== 'price' || endListing
+    || target.basis.identity.managementModel === 'inventory_api') return null;
+  const commerce = target.basis.workspace?.ebayDetail?.actual.commerce;
+  if (!commerce) return null;
+  return clampBestOfferThresholds({
+    price: parseAlignmentPrice(target.derived.manifest.after),
+    autoAcceptPrice: commerce.bestOfferAutoAcceptPrice,
+    minimumOfferPrice: commerce.minimumBestOfferPrice,
+  });
 }
 
 function ensureIdentity(
@@ -629,6 +652,7 @@ export function buildPriceInventoryAdminProgram(
     let dispatchFailureCode: string | null = null;
     const identity = target.basis.identity;
     const after = target.derived.manifest.after;
+    const bestOfferClamp = tradingBestOfferClamp(target, endListing);
     try {
       if (identity.managementModel === 'inventory_api') {
         const adapter = createAdapter();
@@ -657,6 +681,16 @@ export function buildPriceInventoryAdminProgram(
       } else if (endListing) {
         await createTradingAdapter().endFixedPriceItem({
           listingId: identity.ebayListingId as string,
+        });
+      } else if (bestOfferClamp !== null) {
+        // L105 (#204): the new price would leave the listing's Best Offer
+        // auto-accept/auto-decline at or above Buy It Now, which eBay
+        // refuses (23004) on every ReviseInventoryStatus. The same ONE call
+        // carries the price plus only the thresholds eBay requires moved.
+        await createTradingAdapter().revisePriceWithBestOfferThresholds({
+          listingId: identity.ebayListingId as string,
+          price: parseAlignmentPrice(after),
+          thresholds: bestOfferClamp,
         });
       } else {
         const tradingAdapter = createTradingAdapter();
@@ -721,6 +755,7 @@ export function buildPriceInventoryAdminProgram(
       providerDispatchReported: !dispatchFailed,
       providerFailureCode: dispatchFailureCode,
       dispatchMode: endListing ? 'ended_at_zero' : 'revised',
+      ...(bestOfferClamp !== null ? { bestOfferThresholdsClamped: bestOfferClamp } : {}),
       effect: reconciliation.effect,
       resolution: reconciliation.resolution,
       reconciliationRunId: reconciliation.runId,

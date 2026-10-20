@@ -24,6 +24,7 @@ const EBAY_TRADING_SITE_ID = '0';
 const EBAY_TRADING_CALL_NAME = 'ReviseInventoryStatus';
 const EBAY_TRADING_END_CALL_NAME = 'EndFixedPriceItem';
 const EBAY_TRADING_RELIST_CALL_NAME = 'RelistFixedPriceItem';
+const EBAY_TRADING_REVISE_CALL_NAME = 'ReviseFixedPriceItem';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -86,7 +87,94 @@ export type TradingAlignDispatchAdapter = Readonly<{
     quantity: number;
     price: Readonly<{ value: string; currency: string }>;
   }>) => Promise<string>;
+  /**
+   * Price alignment for a listing whose Best Offer thresholds the new price
+   * would invalidate (L105). eBay refuses a ReviseInventoryStatus StartPrice
+   * at or below the listing's auto-accept (or auto-decline) price with error
+   * 23004, forever, so the same single call instead carries the StartPrice
+   * plus the clamped thresholds from `clampBestOfferThresholds`.
+   */
+  revisePriceWithBestOfferThresholds: (input: Readonly<{
+    listingId: string;
+    price: Readonly<{ value: string; currency: string }>;
+    thresholds: BestOfferThresholdClamp;
+  }>) => Promise<void>;
 }>;
+
+type Money = Readonly<{ value: string; currency: string }>;
+
+/** Only the thresholds that must change; an absent one stays as eBay holds it. */
+export type BestOfferThresholdClamp = Readonly<{
+  autoAcceptPrice?: Money;
+  minimumOfferPrice?: Money;
+}>;
+
+function toCents(value: string): number | null {
+  if (!/^[0-9]{1,10}(\.[0-9]{1,8})?$/u.test(value)) return null;
+  const cents = Math.round(Number(value) * 100);
+  return Number.isSafeInteger(cents) ? cents : null;
+}
+
+function fromCents(cents: number): string {
+  return `${String(Math.floor(cents / 100))}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+/**
+ * The Best Offer thresholds a price alignment must also write so eBay accepts
+ * it (L105, incident #204: `Invalid AutoAccept price ... must be less than the
+ * Buy It Now price`, error 23004, four rejections in a day on 147436215816).
+ *
+ * eBay requires auto-accept < Buy It Now and auto-decline < auto-accept. A
+ * Shopify markdown below the listing's auto-accept price therefore can never
+ * reach eBay by itself. The Shopify price is the operator's decision (price
+ * is ProductPipeline's responsibility), so the subordinate thresholds follow
+ * it, and only as far as eBay requires: a threshold that is still valid is
+ * never touched, and an invalid one moves to one cent below the ceiling above
+ * it. That never auto-accepts an offer more than one cent below the price the
+ * operator just set, so no sale can happen at a price the operator did not
+ * choose. Returns null when nothing must change, or when the thresholds
+ * cannot be made valid (other currency, unparsable, or no room below a
+ * one-cent price) — then the plain revise runs and eBay's refusal is
+ * surfaced as before.
+ */
+export function clampBestOfferThresholds(input: Readonly<{
+  price: Money;
+  autoAcceptPrice: Money | null | undefined;
+  minimumOfferPrice: Money | null | undefined;
+}>): BestOfferThresholdClamp | null {
+  const priceCents = toCents(input.price.value);
+  if (priceCents === null) return null;
+  const sameCurrency = (money: Money | null | undefined): money is Money =>
+    money != null && money.currency === input.price.currency;
+  let ceiling = priceCents;
+  const clamp: { autoAcceptPrice?: Money; minimumOfferPrice?: Money } = {};
+  if (input.autoAcceptPrice != null) {
+    if (!sameCurrency(input.autoAcceptPrice)) return null;
+    const acceptCents = toCents(input.autoAcceptPrice.value);
+    if (acceptCents === null) return null;
+    if (acceptCents >= ceiling) {
+      if (ceiling - 1 < 1) return null;
+      clamp.autoAcceptPrice = Object.freeze({
+        value: fromCents(ceiling - 1), currency: input.price.currency,
+      });
+      ceiling -= 1;
+    } else {
+      ceiling = acceptCents;
+    }
+  }
+  if (input.minimumOfferPrice != null) {
+    if (!sameCurrency(input.minimumOfferPrice)) return null;
+    const minimumCents = toCents(input.minimumOfferPrice.value);
+    if (minimumCents === null) return null;
+    if (minimumCents >= ceiling) {
+      if (ceiling - 1 < 1) return null;
+      clamp.minimumOfferPrice = Object.freeze({
+        value: fromCents(ceiling - 1), currency: input.price.currency,
+      });
+    }
+  }
+  return clamp.autoAcceptPrice || clamp.minimumOfferPrice ? Object.freeze(clamp) : null;
+}
 
 /**
  * Serialize the one bounded ReviseInventoryStatus request: exactly one
@@ -186,6 +274,58 @@ export function buildRelistFixedPriceItemXml(input: Readonly<{
   if ((xml.match(/<ItemID>/g) ?? []).length !== 1
     || (xml.match(/<Quantity>/g) ?? []).length !== 1
     || (xml.match(/<StartPrice /g) ?? []).length !== 1) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  return xml;
+}
+
+/**
+ * Serialize the one bounded ReviseFixedPriceItem price request: the exact
+ * ItemID, exactly one StartPrice, and only the Best Offer thresholds the
+ * clamp says must change. It can never carry a Quantity or any other field.
+ */
+export function buildRevisePriceWithBestOfferXml(input: Readonly<{
+  listingId: string;
+  price: Money;
+  thresholds: BestOfferThresholdClamp;
+}>): string {
+  if (!EXACT_ITEM_ID.test(input.listingId)) deny('TRADING_ALIGN_TARGET_INVALID');
+  const validMoney = (money: Money | undefined): money is Money => money !== undefined
+    && PRICE_AMOUNT.test(money.value) && Number(money.value) > 0
+    && money.currency === input.price.currency;
+  if (!PRICE_AMOUNT.test(input.price.value) || Number(input.price.value) <= 0
+    || !CURRENCY.test(input.price.currency)) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const { autoAcceptPrice, minimumOfferPrice } = input.thresholds;
+  if ((autoAcceptPrice === undefined && minimumOfferPrice === undefined)
+    || (autoAcceptPrice !== undefined && !validMoney(autoAcceptPrice))
+    || (minimumOfferPrice !== undefined && !validMoney(minimumOfferPrice))
+    || (autoAcceptPrice !== undefined
+      && Number(autoAcceptPrice.value) >= Number(input.price.value))
+    || (minimumOfferPrice !== undefined
+      && Number(minimumOfferPrice.value) >= Number(autoAcceptPrice?.value ?? input.price.value))) {
+    deny('TRADING_ALIGN_PAYLOAD_INVALID');
+  }
+  const thresholdXml = (autoAcceptPrice
+    ? `<BestOfferAutoAcceptPrice currencyID="${autoAcceptPrice.currency}">`
+      + `${autoAcceptPrice.value}</BestOfferAutoAcceptPrice>`
+    : '')
+    + (minimumOfferPrice
+      ? `<MinimumBestOfferPrice currencyID="${minimumOfferPrice.currency}">`
+        + `${minimumOfferPrice.value}</MinimumBestOfferPrice>`
+      : '');
+  const xml = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+    + '<Item>'
+    + `<ItemID>${input.listingId}</ItemID>`
+    + `<StartPrice currencyID="${input.price.currency}">${input.price.value}</StartPrice>`
+    + `<ListingDetails>${thresholdXml}</ListingDetails>`
+    + '</Item>'
+    + '</ReviseFixedPriceItemRequest>';
+  if ((xml.match(/<ItemID>/g) ?? []).length !== 1
+    || (xml.match(/<StartPrice /g) ?? []).length !== 1
+    || /<\/?Quantity\b/iu.test(xml)) {
     deny('TRADING_ALIGN_PAYLOAD_INVALID');
   }
   return xml;
@@ -328,5 +468,21 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     return newListingId as string;
   }
 
-  return Object.freeze({ reviseInventoryStatus, endFixedPriceItem, relistFixedPriceItem });
+  async function revisePriceWithBestOfferThresholds(input: Readonly<{
+    listingId: string;
+    price: Money;
+    thresholds: BestOfferThresholdClamp;
+  }>): Promise<void> {
+    await dispatchBoundedCall(
+      buildRevisePriceWithBestOfferXml(input),
+      EBAY_TRADING_REVISE_CALL_NAME,
+    );
+  }
+
+  return Object.freeze({
+    reviseInventoryStatus,
+    endFixedPriceItem,
+    relistFixedPriceItem,
+    revisePriceWithBestOfferThresholds,
+  });
 }

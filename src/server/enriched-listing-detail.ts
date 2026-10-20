@@ -138,6 +138,14 @@ export type ListingActualDetail = Readonly<{
     availableQuantity: number | null;
     availableQuantityBasis: 'reported' | 'total_minus_sold' | 'unavailable';
     bestOfferEnabled: boolean | null;
+    /**
+     * Trading `ListingDetails.BestOfferAutoAcceptPrice` / `MinimumBestOfferPrice`
+     * (seller-only GetItem fields). eBay refuses a price revise that leaves
+     * either at or above the new Buy It Now price (error 23004, L105), so the
+     * price alignment reads them to keep a lowered price dispatchable.
+     */
+    bestOfferAutoAcceptPrice?: ListingMoney | null;
+    minimumBestOfferPrice?: ListingMoney | null;
   }>;
   policies: Readonly<{
     fulfillmentPolicyId: string | null;
@@ -410,6 +418,15 @@ function money(value: unknown): ListingMoney | null {
   if (!/^-?(?:0|[1-9]\d*)(?:\.\d{1,8})?$/u.test(amount)
     || !/^[A-Z]{3}$/u.test(currency)) return fail('INVALID_RESPONSE');
   return Object.freeze({ value: amount, currency });
+}
+
+/** A malformed optional threshold must not fail the whole listing read. */
+function optionalMoney(value: unknown): ListingMoney | null {
+  try {
+    return money(value);
+  } catch {
+    return null;
+  }
 }
 
 function isoTime(value: unknown): string | null {
@@ -897,6 +914,8 @@ export function parseTradingItemDetail(
       price: money(variation?.StartPrice ?? sellingStatus.CurrentPrice),
       ...quantity,
       bestOfferEnabled: optionalBoolean(optionalRecord(item.BestOfferDetails)?.BestOfferEnabled),
+      bestOfferAutoAcceptPrice: optionalMoney(listingDetails.BestOfferAutoAcceptPrice),
+      minimumBestOfferPrice: optionalMoney(listingDetails.MinimumBestOfferPrice),
     }),
     policies: tradingPolicyProjection(item),
     location: Object.freeze({
