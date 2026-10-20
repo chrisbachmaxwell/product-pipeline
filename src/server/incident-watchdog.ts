@@ -153,6 +153,8 @@ export function evaluateIncidentCandidates(input: {
   snapshot: Snapshot;
   signals: IncidentLedgerSignals | null;
   nowMs: number;
+  /** Persisted Trading rejections (L87); defaults to the adapter's file. */
+  providerRejections?: readonly unknown[];
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
   const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> = [];
   const { snapshot, signals, nowMs } = input;
@@ -252,7 +254,10 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    const listingId = row?.ebay?.listingId
+      ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
+    const reason = providerRejectionFor(
+      listingId, input.providerRejections ?? readProviderRejections());
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -303,18 +308,39 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
- * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+/** Sanitized provider rejections recorded by the Trading adapter (L87) —
+ * eBay's own words, safe for incidents and the fix agent. */
+function readProviderRejections(): readonly unknown[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(
       '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return null;
+    return [];
   }
+}
+
+/**
+ * The most recent NON-BLANK price-revise rejection for this listing (L105).
+ * Issue #208 quoted "eBay's own reason …: " followed by nothing — the
+ * adapter had persisted an empty string and the old reader accepted any
+ * string. Entries recorded for another listing (or an end/relist call)
+ * are never quoted; legacy entries without a listing id are used only
+ * when they are price revises. Null means "send the operator to the log".
+ */
+export function providerRejectionFor(
+  listingId: string | null,
+  entries: readonly unknown[],
+): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { call?: unknown; listingId?: unknown; reason?: unknown } | null;
+    if (entry === null || typeof entry !== 'object') continue;
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') continue;
+    if (entry.call !== undefined && entry.call !== 'ReviseInventoryStatus') continue;
+    if (typeof entry.listingId === 'string' && entry.listingId !== listingId) continue;
+    return entry.reason.trim().slice(0, 300);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */

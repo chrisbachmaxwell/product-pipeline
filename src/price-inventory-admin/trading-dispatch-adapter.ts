@@ -30,6 +30,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const EXACT_ITEM_ID = /^[0-9]{1,19}$/;
 const PRICE_AMOUNT = /^[0-9]{1,10}(\.[0-9]{1,2})?$/;
 const CURRENCY = /^[A-Z]{3}$/;
+export const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
 
 export class TradingAlignDispatchError extends Error {
   constructor(readonly code:
@@ -195,11 +196,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const sanitizeProviderText = (value: string): string => value
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+/**
+ * eBay's own reason for a non-Ack Trading response, from the PARSED
+ * `<Errors>` entries (L105): `ErrorCode: LongMessage` for each Error-severity
+ * entry (warnings only if no error exists), token-shaped runs redacted,
+ * 300-char cap. Never empty — a response with no readable error text says
+ * so, so an incident can never again quote a blank reason.
+ */
+export function describeTradingRejection(response: unknown, rawText: string): string {
+  const raw = isRecord(response) ? response.Errors : undefined;
+  const entries = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).filter(isRecord);
+  const errors = entries.filter((entry) => entry.SeverityCode !== 'Warning');
+  const text = (field: unknown): string => (typeof field === 'string' ? field : '');
+  const described = (errors.length > 0 ? errors : entries)
+    .map((entry) => {
+      const message = sanitizeProviderText(text(entry.LongMessage) || text(entry.ShortMessage));
+      const code = /^[0-9]{1,12}$/u.test(text(entry.ErrorCode)) ? text(entry.ErrorCode) : '';
+      return [code, message].filter((part) => part !== '').join(': ');
+    })
+    .filter((part) => part !== '')
+    .join(' | ');
+  if (described !== '') return described.slice(0, 300);
+  // Unparseable shape: fall back to the raw block (unbounded, then capped).
+  const block = /<Errors>[\s\S]*?<\/Errors>/u.exec(rawText)?.[0] ?? '';
+  const fallback = sanitizeProviderText(block).slice(0, 300);
+  const ack = isRecord(response) && typeof response.Ack === 'string'
+    ? sanitizeProviderText(response.Ack).slice(0, 20) : 'missing';
+  return fallback !== '' ? fallback : `Ack=${ack} with no <Errors> text in eBay's response`;
+}
+
 export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   fetchImpl?: FetchLike;
   getAccessToken: () => Promise<string>;
+  /** Where sanitized rejections are persisted (L87); injectable for tests. */
+  rejectionLogFile?: string;
 }>): TradingAlignDispatchAdapter {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const rejectionLogFile = dependencies.rejectionLogFile ?? PROVIDER_REJECTIONS_FILE;
 
   async function accessToken(): Promise<string> {
     let token = '';
@@ -250,11 +289,19 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     }
   }
 
-  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
-    await dispatchBoundedCallReturningBody(body, callName);
+  async function dispatchBoundedCall(
+    body: string,
+    callName: string,
+    listingId?: string,
+  ): Promise<void> {
+    await dispatchBoundedCallReturningBody(body, callName, listingId);
   }
 
-  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
+  async function dispatchBoundedCallReturningBody(
+    body: string,
+    callName: string,
+    listingId?: string,
+  ): Promise<string> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
@@ -279,25 +326,30 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       // L84 (the L75 playbook): a bare TRADING_ALIGN_REJECTED hid eBay's
       // reason for WEEKS of 16437396 churn. Surface the sanitized error
       // text (token-shaped runs stripped, operator log only) so the next
-      // rejection diagnoses itself.
-      const errorText = /<Errors>[\s\S]{0,600}?<\/Errors>/u.exec(text)?.[0] ?? '';
-      const sanitized = errorText
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
-        .replace(/\s+/g, ' ')
-        .slice(0, 300);
-      console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
+      // rejection diagnoses itself. L105: read it from the PARSED <Errors>
+      // entries — the old 600-char raw-text regex missed every real
+      // ErrorParameters-bearing block and persisted an empty reason.
+      const sanitized = describeTradingRejection(response, text);
+      console.warn(`EBAY_TRADING_REJECTED call=${callName}`
+        + `${listingId !== undefined ? ` item=${listingId}` : ''} ${sanitized}`);
       // L87: persist the sanitized reason so incidents (and the fix agent,
-      // which can never read server logs) receive eBay's own words.
+      // which can never read server logs) receive eBay's own words. L105:
+      // keyed by listing so an incident quotes ITS listing's rejection,
+      // not whichever call (end, relist, another item) was refused last.
       try {
         const fs = await import('node:fs');
-        const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
+        const file = rejectionLogFile;
+        let entries: Array<{ call: string; listingId?: string; reason: string; atUtc: string }> = [];
         try {
           const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
           if (Array.isArray(parsed)) entries = parsed as typeof entries;
         } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
+        entries.push({
+          call: callName,
+          ...(listingId !== undefined ? { listingId } : {}),
+          reason: sanitized,
+          atUtc: new Date().toISOString(),
+        });
         fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
       } catch { /* best effort */ }
       deny('TRADING_ALIGN_REJECTED');
@@ -306,11 +358,13 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+    await dispatchBoundedCall(
+      buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME, input.listingId);
   }
 
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
-    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+    await dispatchBoundedCall(
+      buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME, input.listingId);
   }
 
   async function relistFixedPriceItem(input: Readonly<{
@@ -321,6 +375,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     const text = await dispatchBoundedCallReturningBody(
       buildRelistFixedPriceItemXml(input),
       EBAY_TRADING_RELIST_CALL_NAME,
+      input.listingId,
     );
     // The response's ItemID is the NEW listing eBay created.
     const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];

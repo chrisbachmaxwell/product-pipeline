@@ -273,6 +273,27 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
   });
+  it('never quotes a blank reason and prefers this listing\'s own (L105, issue #208)', () => {
+    const evaluate = (providerRejections: unknown[]) => evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-6', 1, '147531586972')] },
+      signals: {
+        oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+        repeatedEndFailures: [],
+        repeatedPriceFailures: [{ sku: 'listing 147531586972', count: 3, lastAtUtc: FRESH }],
+      },
+      nowMs: NOW,
+      providerRejections,
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    const blank = evaluate([{ call: 'ReviseInventoryStatus', reason: '' }]);
+    expect(blank.severity).toBe('critical');
+    expect(blank.detail).not.toMatch(/rejection: $/);
+    expect(blank.detail).toContain('EBAY_TRADING_REJECTED');
+    const own = evaluate([
+      { call: 'ReviseInventoryStatus', listingId: '147531586972', reason: '21916264: own' },
+      { call: 'ReviseInventoryStatus', listingId: '147520586676', reason: 'other listing' },
+    ]);
+    expect(own.detail).toContain("eBay's own reason for the most recent rejection: 21916264: own");
+  });
 });
 
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
