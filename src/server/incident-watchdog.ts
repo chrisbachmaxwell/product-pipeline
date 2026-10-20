@@ -153,6 +153,8 @@ export function evaluateIncidentCandidates(input: {
   snapshot: Snapshot;
   signals: IncidentLedgerSignals | null;
   nowMs: number;
+  /** Test seam; defaults to the adapter's provider-rejections ring. */
+  providerRejections?: unknown;
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
   const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> = [];
   const { snapshot, signals, nowMs } = input;
@@ -252,7 +254,13 @@ export function evaluateIncidentCandidates(input: {
     const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
       || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
     const stillLive = row?.ebay?.listingId != null;
-    const reason = latestProviderRejection();
+    const listingId = row?.ebay?.listingId
+      ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
+    const reason = providerRejectionFor(
+      input.providerRejections ?? readProviderRejections(),
+      'ReviseInventoryStatus',
+      listingId,
+    );
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -266,7 +274,8 @@ export function evaluateIncidentCandidates(input: {
         + 'listing may be selling at the old price. Set the price manually on eBay now. '
         + (reason !== null
           ? `eBay's own reason for the most recent rejection: ${reason}`
-          : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+          : 'eBay\'s reason was not captured for this listing — check the server log for '
+            + `EBAY_TRADING_REJECTED lines${listingId === null ? '' : ` naming item=${listingId}`}.`),
     });
   }
 
@@ -303,18 +312,37 @@ export function evaluateIncidentCandidates(input: {
   return candidates;
 }
 
-/** Latest sanitized provider rejection recorded by the Trading adapter
+/** The sanitized provider rejections ring written by the Trading adapter
  * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection(): string | null {
+function readProviderRejections(): unknown {
   try {
-    const parsed = JSON.parse(fs.readFileSync(
+    return JSON.parse(fs.readFileSync(
       '/data/product-pipeline/provider-rejections.json', 'utf8')) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const last = parsed[parsed.length - 1] as { reason?: unknown };
-    return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The latest non-empty rejection of `call` for this listing (#209: the
+ * incident quoted the ring's LAST entry, whatever its call or listing, and
+ * printed an empty reason verbatim). Entries written before the adapter
+ * recorded `listingId` match on call alone.
+ */
+export function providerRejectionFor(
+  entries: unknown,
+  call: string,
+  listingId: string | null,
+): string | null {
+  if (!Array.isArray(entries)) return null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { call?: unknown; listingId?: unknown; reason?: unknown } | null;
+    if (entry === null || typeof entry !== 'object' || entry.call !== call) continue;
+    if (typeof entry.listingId === 'string' && entry.listingId !== listingId) continue;
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') continue;
+    return entry.reason.trim().slice(0, 300);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
