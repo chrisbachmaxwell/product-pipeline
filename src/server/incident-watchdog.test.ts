@@ -273,6 +273,24 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
   });
+  it('never quotes an empty or unattributed reason (incident #206)', () => {
+    const candidates = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-5', 2, '147487396129')] },
+      signals: {
+        oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+        repeatedEndFailures: [],
+        repeatedPriceFailures: [{ sku: 'listing 147487396129', count: 3, lastAtUtc: FRESH }],
+      },
+      nowMs: NOW,
+      providerRejections: [
+        { call: 'ReviseInventoryStatus', listingId: '147487396129', reason: '  ' },
+        { call: 'ReviseInventoryStatus', reason: 'legacy entry with no listing' },
+      ],
+    });
+    const incident = candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED');
+    expect(incident!.detail).not.toContain("eBay's own reason");
+    expect(incident!.detail).toContain('listing=147487396129');
+  });
 });
 
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {

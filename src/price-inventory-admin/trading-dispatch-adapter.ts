@@ -195,11 +195,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const PROVIDER_REJECTIONS_FILE = '/data/product-pipeline/provider-rejections.json';
+
+function sanitizeProviderText(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+}
+
+/**
+ * eBay's own reason for a non-Success Ack, never empty (incident #206,
+ * L105). The previous `<Errors>[\s\S]{0,600}?</Errors>` window matched
+ * nothing once the first Errors block ran past 600 characters (a long
+ * LongMessage plus ErrorParameters), so the rejection was persisted as ""
+ * and the incident read "eBay's own reason …: " with nothing after it.
+ * The reason now comes from the parsed response: every error's code,
+ * ShortMessage and LongMessage.
+ */
+export function describeTradingRejection(response: unknown, ack: unknown): string {
+  const errors = isRecord(response) ? response.Errors : undefined;
+  const list = Array.isArray(errors) ? errors : errors === undefined ? [] : [errors];
+  const parts = list.filter(isRecord).map((error) => {
+    const field = (name: string): string =>
+      typeof error[name] === 'string' ? (error[name] as string).trim() : '';
+    const code = field('ErrorCode');
+    const short = field('ShortMessage');
+    const long = field('LongMessage');
+    const message = long !== '' && long !== short
+      ? (short !== '' ? `${short} — ${long}` : long)
+      : short;
+    return `${code !== '' ? `${code}: ` : ''}${message}`.trim();
+  }).filter((part) => part !== '');
+  const sanitized = sanitizeProviderText(parts.join(' | '));
+  if (sanitized !== '') return sanitized;
+  return `Ack=${typeof ack === 'string' ? sanitizeProviderText(ack) || 'missing' : 'missing'}`
+    + ' with no readable Errors element';
+}
+
 export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
   fetchImpl?: FetchLike;
   getAccessToken: () => Promise<string>;
+  /** Where sanitized rejections are persisted for the incident watchdog. */
+  rejectionsFile?: string;
 }>): TradingAlignDispatchAdapter {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const rejectionsFile = dependencies.rejectionsFile ?? PROVIDER_REJECTIONS_FILE;
+
+  /**
+   * L87: persist the sanitized reason so incidents (and the fix agent,
+   * which can never read server logs) receive eBay's own words. Each entry
+   * names its listing so the watchdog quotes THIS listing's reason, not
+   * whatever call failed last (incident #206).
+   */
+  async function recordRejection(callName: string, listingId: string, reason: string): Promise<void> {
+    try {
+      const fs = await import('node:fs');
+      let entries: Array<{ call: string; listingId?: string; reason: string; atUtc: string }> = [];
+      try {
+        const parsed = JSON.parse(fs.readFileSync(rejectionsFile, 'utf8')) as unknown;
+        if (Array.isArray(parsed)) entries = parsed as typeof entries;
+      } catch { /* fresh */ }
+      entries.push({ call: callName, listingId, reason, atUtc: new Date().toISOString() });
+      fs.writeFileSync(rejectionsFile, JSON.stringify(entries.slice(-20)));
+    } catch { /* best effort */ }
+  }
 
   async function accessToken(): Promise<string> {
     let token = '';
@@ -214,10 +276,13 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     return token;
   }
 
-  async function boundedPost(body: string, callName: string): Promise<string> {
+  async function boundedPost(body: string, callName: string, listingId: string): Promise<string> {
     const token = await accessToken();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    // A non-200 or transport failure also closes the job confirmed_missing
+    // and counts toward PRICE_SYNC_REJECTED, so it is recorded too.
+    let failure: string | null = null;
     try {
       const response = await fetchImpl(EBAY_TRADING_URL, {
         method: 'POST',
@@ -234,32 +299,46 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       });
       const declaredLength = Number(response.headers.get('content-length') ?? '0');
       if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+        failure = 'eBay response exceeded the size bound (not read)';
         deny('TRADING_ALIGN_WRITE_FAILED');
       }
       const text = await response.text();
       if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
+        failure = 'eBay response exceeded the size bound (not read)';
         deny('TRADING_ALIGN_WRITE_FAILED');
       }
-      if (response.status !== 200) deny('TRADING_ALIGN_WRITE_FAILED');
+      if (response.status !== 200) {
+        failure = `eBay answered HTTP ${String(response.status)} (TRADING_ALIGN_WRITE_FAILED)`;
+        deny('TRADING_ALIGN_WRITE_FAILED');
+      }
       return text;
     } catch (error) {
       if (error instanceof TradingAlignDispatchError) throw error;
+      failure = 'no response from eBay (timeout or network error, TRADING_ALIGN_WRITE_FAILED)';
       return deny('TRADING_ALIGN_WRITE_FAILED');
     } finally {
       clearTimeout(timeout);
+      if (failure !== null) await recordRejection(callName, listingId, failure);
     }
   }
 
-  async function dispatchBoundedCall(body: string, callName: string): Promise<void> {
-    await dispatchBoundedCallReturningBody(body, callName);
+  async function dispatchBoundedCall(body: string, callName: string, listingId: string): Promise<void> {
+    await dispatchBoundedCallReturningBody(body, callName, listingId);
   }
 
-  async function dispatchBoundedCallReturningBody(body: string, callName: string): Promise<string> {
+  async function dispatchBoundedCallReturningBody(
+    body: string,
+    callName: string,
+    listingId: string,
+  ): Promise<string> {
     if (Buffer.byteLength(body, 'utf8') > MAX_PAYLOAD_BYTES) {
       deny('TRADING_ALIGN_PAYLOAD_TOO_LARGE');
     }
-    const text = await boundedPost(body, callName);
-    if (/<!DOCTYPE|<!ENTITY/iu.test(text)) deny('TRADING_ALIGN_REJECTED');
+    const text = await boundedPost(body, callName, listingId);
+    if (/<!DOCTYPE|<!ENTITY/iu.test(text)) {
+      await recordRejection(callName, listingId, 'eBay response carried a DOCTYPE/ENTITY (refused unread)');
+      deny('TRADING_ALIGN_REJECTED');
+    }
     let parsed: unknown;
     try {
       parsed = await parseStringPromise(text, {
@@ -269,6 +348,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
         normalizeTags: false,
       });
     } catch {
+      await recordRejection(callName, listingId, 'eBay response was not parseable XML');
       return deny('TRADING_ALIGN_REJECTED');
     }
     const response = isRecord(parsed)
@@ -280,37 +360,28 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
       // reason for WEEKS of 16437396 churn. Surface the sanitized error
       // text (token-shaped runs stripped, operator log only) so the next
       // rejection diagnoses itself.
-      const errorText = /<Errors>[\s\S]{0,600}?<\/Errors>/u.exec(text)?.[0] ?? '';
-      const sanitized = errorText
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/[A-Za-z0-9+/=_-]{20,}/g, '…')
-        .replace(/\s+/g, ' ')
-        .slice(0, 300);
-      console.warn(`EBAY_TRADING_REJECTED call=${callName} ${sanitized}`);
-      // L87: persist the sanitized reason so incidents (and the fix agent,
-      // which can never read server logs) receive eBay's own words.
-      try {
-        const fs = await import('node:fs');
-        const file = '/data/product-pipeline/provider-rejections.json';
-        let entries: Array<{ call: string; reason: string; atUtc: string }> = [];
-        try {
-          const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
-          if (Array.isArray(parsed)) entries = parsed as typeof entries;
-        } catch { /* fresh */ }
-        entries.push({ call: callName, reason: sanitized, atUtc: new Date().toISOString() });
-        fs.writeFileSync(file, JSON.stringify(entries.slice(-20)));
-      } catch { /* best effort */ }
+      const sanitized = describeTradingRejection(response, ack);
+      console.warn(`EBAY_TRADING_REJECTED call=${callName} listing=${listingId} ${sanitized}`);
+      await recordRejection(callName, listingId, sanitized);
       deny('TRADING_ALIGN_REJECTED');
     }
     return text;
   }
 
   async function reviseInventoryStatus(input: TradingAlignInput): Promise<void> {
-    await dispatchBoundedCall(buildReviseInventoryStatusXml(input), EBAY_TRADING_CALL_NAME);
+    await dispatchBoundedCall(
+      buildReviseInventoryStatusXml(input),
+      EBAY_TRADING_CALL_NAME,
+      input.listingId,
+    );
   }
 
   async function endFixedPriceItem(input: Readonly<{ listingId: string }>): Promise<void> {
-    await dispatchBoundedCall(buildEndFixedPriceItemXml(input), EBAY_TRADING_END_CALL_NAME);
+    await dispatchBoundedCall(
+      buildEndFixedPriceItemXml(input),
+      EBAY_TRADING_END_CALL_NAME,
+      input.listingId,
+    );
   }
 
   async function relistFixedPriceItem(input: Readonly<{
@@ -321,6 +392,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     const text = await dispatchBoundedCallReturningBody(
       buildRelistFixedPriceItemXml(input),
       EBAY_TRADING_RELIST_CALL_NAME,
+      input.listingId,
     );
     // The response's ItemID is the NEW listing eBay created.
     const newListingId = /<ItemID>([0-9]{6,20})<\/ItemID>/u.exec(text)?.[1];
