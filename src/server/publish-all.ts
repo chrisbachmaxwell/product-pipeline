@@ -21,6 +21,9 @@
  * - CREATE_BASE_STALE auto-rebases the draft and retries (L69)
  * - a dispatch refused for a reason a fresh preflight can
  *   clear is re-checked and re-dispatched once (L97)
+ * - an eBay server error (5xx) gets one more attempt from a refreshed
+ *   draft once its leftovers are cleared, and a draft an earlier closed
+ *   attempt used is refreshed instead of skipped (L105)
  * - known-benign blockers (missing condition, eBay-illegal SKU, missing
  *   required field, already-listed) are per-item skips with reasons the
  *   UI shows; unknown failure shapes STOP the run loudly (L65)
@@ -57,6 +60,34 @@ const DISPATCH_RECHECK_CODES: ReadonlySet<string> = new Set([
   'CREATE_DRAFT_STORE_UNAVAILABLE',
   'no code',
 ]);
+
+/** eBay's generic server-side failure ("A system error has occurred"). */
+const EBAY_SYSTEM_ERROR_IDS: ReadonlySet<number> = new Set([25001]);
+
+/**
+ * Read a failed dispatch-create summary (incident #212). `transient` is an
+ * eBay server error (HTTP 5xx, or eBay's system-error id): eBay's own
+ * trouble, not a refusal of the payload, so one more attempt may succeed.
+ * `detail` names the stage, HTTP status and eBay error ids (digits only,
+ * never provider text) for the log and the item reason.
+ */
+export function providerFailure(json: Record<string, unknown>): { transient: boolean; detail: string } {
+  const stage = typeof json.dispatchFailureStage === 'string' ? json.dispatchFailureStage : 'unknown stage';
+  const httpStatus = typeof json.dispatchFailureHttpStatusCode === 'number'
+    ? json.dispatchFailureHttpStatusCode : null;
+  const errorIds = Array.isArray(json.dispatchFailureEbayErrorIds)
+    ? json.dispatchFailureEbayErrorIds.filter((id): id is number => Number.isSafeInteger(id))
+    : [];
+  const transient = json.dispatchFailureHttpStatusFamily === 'http_5xx'
+    || (httpStatus !== null && httpStatus >= 500 && httpStatus <= 599)
+    || errorIds.some((id) => EBAY_SYSTEM_ERROR_IDS.has(id));
+  const detail = [
+    stage,
+    httpStatus === null ? null : `HTTP ${httpStatus}`,
+    errorIds.length === 0 ? null : `eBay error ${errorIds.join(', ')}`,
+  ].filter((part) => part !== null).join(', ');
+  return { transient, detail };
+}
 
 /** One publish at a time process-wide — shared with the one-item route. */
 let publishLockHeld = false;
@@ -805,60 +836,146 @@ export function startPublishAllRun(
         // dispatched again. That is safe: one manifest is one intent forever,
         // so an unchanged draft can only replay-deny, and a create that left
         // a job open on the ledger is never retried here.
+        // A refresh save binds the item to a NEW revision, and so to a new
+        // manifest and a new intent (one manifest digest is one intent
+        // forever). It keeps every override (draftPayload carries them).
+        const refreshRevision = async (actor: string): Promise<boolean> => {
+          try {
+            const dto = await draftService.get(row.id);
+            const payload = draftPayload(dto, {});
+            (payload as { catalogId: unknown }).catalogId = row.id;
+            const saved = await draftService.save(payload, actor);
+            revisionDigest = saved.revision.revisionDigest;
+            return true;
+          } catch (error) {
+            const refused = error instanceof Error && 'code' in error
+              ? String((error as { code: unknown }).code) : 'unavailable';
+            warn(`[Publish All] draft refresh for ${sku} was refused (${refused})`);
+            return false;
+          }
+        };
         let dispatched: Awaited<ReturnType<StepRunner>> = { json: null };
         let deniedCode: string | null = null;
-        for (let pass = 0; pass < 2; pass += 1) {
-          step('Pausing 40s before publishing (Shopify rate limit)');
-          await sleep(40_000);
-          step('Publishing to eBay');
-          dispatched = await runStep(substituteArgv(dispatchArgv, {
-            catalogId: row.id, sku, revisionDigest, manifestDigest,
-          }));
-          deniedCode = dispatched.json?.status === 'denied'
-            ? (typeof dispatched.json.code === 'string' ? dispatched.json.code : 'no code')
-            : null;
-          if (pass > 0 || deniedCode === null || !DISPATCH_RECHECK_CODES.has(deniedCode)
-            || findUnresolvedCreate(sku) !== null) break;
-          warn(`[Publish All] dispatch refused ${sku}: ${deniedCode}; re-checking once`);
-          step(`eBay publish was refused (${deniedCode}) — re-checking in 60s`);
-          await sleep(60_000);
+        let dispatchStatus = 'no-summary';
+        let listingId: string | null = null;
+        let published = false;
+        let providerFailureNote: string | null = null;
+        let cleanedDispatch: Record<string, unknown> | null = null;
+        // Incident #212: eBay answered a create with a 5xx ("A system error
+        // has occurred"). That is eBay's own trouble, not a refusal of the
+        // payload, but the item failed for the run, and its draft's intent
+        // was spent: every later run was replay-denied
+        // (CREATE_INTENT_ALREADY_RECORDED) and skipped until the operator
+        // saved the draft by hand. A transient provider failure whose
+        // leftovers are cleared gets ONE more attempt after a pause, from a
+        // refreshed revision; a replay denial with nothing open on the
+        // ledger is refreshed the same way (below).
+        for (let providerTry = 0; providerTry < 2; providerTry += 1) {
+          for (let pass = 0; pass < 2; pass += 1) {
+            step('Pausing 40s before publishing (Shopify rate limit)');
+            await sleep(40_000);
+            step('Publishing to eBay');
+            dispatched = await runStep(substituteArgv(dispatchArgv, {
+              catalogId: row.id, sku, revisionDigest, manifestDigest,
+            }));
+            deniedCode = dispatched.json?.status === 'denied'
+              ? (typeof dispatched.json.code === 'string' ? dispatched.json.code : 'no code')
+              : null;
+            if (pass > 0 || deniedCode === null) break;
+            if (deniedCode === 'CREATE_INTENT_ALREADY_RECORDED') {
+              // An earlier attempt used this exact draft. Dispatch reached
+              // the intent check, so its fresh capture found nothing of the
+              // item on eBay; with no open create on the ledger the earlier
+              // attempt is fully closed, and only a new revision can
+              // publish (incident #212).
+              if (findUnresolvedCreate(sku) !== null) break;
+              warn(`[Publish All] ${sku}: an earlier attempt used this draft; refreshing it once`);
+              step('An earlier attempt used this draft — refreshing it');
+              if (!await refreshRevision('publish-all-intent-refresh')) break;
+            } else {
+              if (!DISPATCH_RECHECK_CODES.has(deniedCode) || findUnresolvedCreate(sku) !== null) break;
+              warn(`[Publish All] dispatch refused ${sku}: ${deniedCode}; re-checking once`);
+              step(`eBay publish was refused (${deniedCode}) — re-checking in 60s`);
+              await sleep(60_000);
+            }
+            const again = await runPreflight();
+            if (again.manifestDigest === null) {
+              ({ skipReason, stop } = again);
+              break;
+            }
+            manifestDigest = again.manifestDigest;
+          }
+          if (deniedCode !== null && (skipReason !== null || stop !== null)) break;
+          dispatchStatus = typeof dispatched.json?.status === 'string'
+            ? dispatched.json.status : 'no-summary';
+          listingId = typeof dispatched.json?.listingId === 'string'
+            ? dispatched.json.listingId : null;
+          // The ceremony reports 'dispatched-and-reconciled'; older box-script
+          // runners said 'created-and-reconciled'. Accept both.
+          published = (dispatchStatus === 'dispatched-and-reconciled'
+            || dispatchStatus === 'created-and-reconciled') && listingId !== null;
+          // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
+          // capture. With a listing id in hand, reconcile patiently before
+          // declaring failure — the first proving run marked 11 LIVE listings
+          // failed for want of this loop (2026-09-23).
+          if (!published && listingId !== null && reconcileArgv
+            && typeof dispatched.json?.jobId === 'string'
+            && typeof dispatched.json?.attemptId === 'string') {
+            for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
+              step('Confirming the listing is live on eBay');
+              await sleep(10_000 + attempt * 10_000);
+              const reconciled = await runStep(substituteArgv(reconcileArgv, {
+                catalogId: row.id, sku, revisionDigest,
+                jobId: dispatched.json.jobId, attemptId: dispatched.json.attemptId,
+              }));
+              published = reconciled.json?.resolution === 'resolved_existing';
+            }
+          }
+          if (published || deniedCode !== null || dispatched.json === null) break;
+          const failure = providerFailure(dispatched.json);
+          warn(`[Publish All] create for ${sku} failed at ${failure.detail}`);
+          if (!failure.transient) break;
+          providerFailureNote = failure.detail;
+          if (providerTry > 0) break;
+          // Clear what the failed attempt left on eBay first. A retry needs
+          // proof the attempt is closed: the ceremony confirmed nothing was
+          // created, or the reconcile chain is armed and the ledger holds no
+          // open create for the SKU. The fresh preflight then re-proves the
+          // item is not on eBay before anything is sent again.
+          await cleanupFailedCreate({
+            catalogId: row.id, sku, revisionDigest,
+            dispatchJson: { ...dispatched.json, manifestDigest },
+          });
+          cleanedDispatch = dispatched.json;
+          if (findUnresolvedCreate(sku) !== null) await sweepResidue(row);
+          if ((dispatchStatus !== 'dispatch-failed-confirmed-missing' && !reconcileArgv)
+            || findUnresolvedCreate(sku) !== null) {
+            break;
+          }
+          step('eBay had a temporary server error — retrying in 2 minutes');
+          await sleep(120_000);
+          if (!await refreshRevision('publish-all-provider-retry')) break;
           const again = await runPreflight();
           if (again.manifestDigest === null) {
             ({ skipReason, stop } = again);
             break;
           }
           manifestDigest = again.manifestDigest;
+          dispatched = { json: null };
+        }
+        if (dispatched.json === null && (skipReason !== null || stop !== null)) {
+          // The provider retry's preflight refused; the failed attempt was
+          // already cleaned up.
+          record({ sku, title, status: skipReason !== null ? 'skipped' : 'failed',
+            reason: skipReason ?? `${stop} (after eBay's server error: ${providerFailureNote})` });
+          if (!isLast) await sleep(20_000);
+          continue;
         }
         if (deniedCode !== null && (skipReason !== null || stop !== null)) {
           record({ sku, title, status: skipReason !== null ? 'skipped' : 'failed',
             reason: skipReason ?? `${stop} (after dispatch refused: ${deniedCode})` });
           if (!isLast) await sleep(20_000);
           continue;
-        }
-        const dispatchStatus = typeof dispatched.json?.status === 'string'
-          ? dispatched.json.status : 'no-summary';
-        const listingId = typeof dispatched.json?.listingId === 'string'
-          ? dispatched.json.listingId : null;
-        // The ceremony reports 'dispatched-and-reconciled'; older box-script
-        // runners said 'created-and-reconciled'. Accept both.
-        let published = (dispatchStatus === 'dispatched-and-reconciled'
-          || dispatchStatus === 'created-and-reconciled') && listingId !== null;
-        // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
-        // capture. With a listing id in hand, reconcile patiently before
-        // declaring failure — the first proving run marked 11 LIVE listings
-        // failed for want of this loop (2026-09-23).
-        if (!published && listingId !== null && reconcileArgv
-          && typeof dispatched.json?.jobId === 'string'
-          && typeof dispatched.json?.attemptId === 'string') {
-          for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
-            step('Confirming the listing is live on eBay');
-            await sleep(10_000 + attempt * 10_000);
-            const reconciled = await runStep(substituteArgv(reconcileArgv, {
-              catalogId: row.id, sku, revisionDigest,
-              jobId: dispatched.json.jobId, attemptId: dispatched.json.attemptId,
-            }));
-            published = reconciled.json?.resolution === 'resolved_existing';
-          }
         }
         if (published && listingId !== null) {
           record({ sku, title, status: 'published', listingId, ...(agentNote ? { reason: agentNote } : {}) });
@@ -871,7 +988,7 @@ export function startPublishAllRun(
           const rawMessages = dispatched.json?.dispatchFailureEbayErrorMessages;
           const providerMessage = Array.isArray(rawMessages) && typeof rawMessages[0] === 'string'
             ? rawMessages[0] : null;
-          if (dispatched.json !== null) {
+          if (dispatched.json !== null && dispatched.json !== cleanedDispatch) {
             await cleanupFailedCreate({
               catalogId: row.id, sku, revisionDigest,
               dispatchJson: { ...dispatched.json, manifestDigest },
@@ -880,7 +997,8 @@ export function startPublishAllRun(
           record({
             sku, title, status: 'failed',
             reason: providerMessage
-              ? `eBay refused the listing: ${providerMessage}`
+              ? `eBay refused the listing: ${providerMessage}${providerFailureNote
+                ? ` (${providerFailureNote}; it retries next run)` : ''}`
               : deniedCode !== null
                 // Carry the ceremony's code: it names the gate that refused
                 // and is what the watchdog groups incidents by.

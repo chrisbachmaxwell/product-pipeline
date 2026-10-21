@@ -675,3 +675,143 @@ describe('publish-all draft without images (incident #186)', () => {
     expect(item.reason).not.toContain('does not have it yet');
   });
 });
+
+describe('publish-all eBay server error on create (incident #212)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const serverError = { json: {
+    command: 'dispatch-create', status: 'dispatch-failed-confirmed-missing',
+    offerId: null, listingId: null, providerDispatchReported: false,
+    dispatchFailureStage: 'put_inventory_item', dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+    dispatchFailureOutcomeClass: 'outcome_unknown', dispatchFailureHttpStatusFamily: 'http_5xx',
+    dispatchFailureHttpStatusCode: 500, dispatchFailureEbayErrorIds: [25001],
+    dispatchFailureEbayErrorMessages: ['A system error has occurred. Internal Server Error'],
+  } };
+
+  it('retries once from a refreshed draft after eBay\'s server error, then publishes', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return argv.includes(REVISION)
+          ? serverError
+          : { json: { status: 'dispatched-and-reconciled', listingId: '147000000212' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'preflight-create', 'dispatch-create', 'preflight-create', 'dispatch-create']);
+    expect(calls[3]).toContain(SAVED);
+    expect(getPublishAllStatus().items[0]).toMatchObject({ status: 'published', listingId: '147000000212' });
+  });
+
+  it('retries only once and names the stage, HTTP status and eBay error id when it persists', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return serverError;
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(2);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('failed');
+    expect(item.reason).toBe('eBay refused the listing: A system error has occurred. Internal Server Error'
+      + ' (put_inventory_item, HTTP 500, eBay error 25001; it retries next run)');
+  });
+
+  it('never retries while the failed create is still open on the ledger', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      findUnresolvedCreate: () => ({
+        jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+        intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: MANIFEST,
+      }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return { json: { ...serverError.json, status: 'dispatched-unresolved' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('failed');
+  });
+
+  it('does not retry a payload refusal (HTTP 4xx)', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return { json: { ...serverError.json, dispatchFailureHttpStatusFamily: 'http_4xx',
+          dispatchFailureHttpStatusCode: 400, dispatchFailureEbayErrorIds: [25002],
+          dispatchFailureEbayErrorMessages: ['A user error has occurred.'] } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.reason).toBe('eBay refused the listing: A user error has occurred.');
+  });
+
+  it('refreshes a draft an earlier closed attempt used, instead of skipping it, then publishes', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return argv.includes(REVISION)
+          ? { json: { command: 'dispatch-create', status: 'denied', code: 'CREATE_INTENT_ALREADY_RECORDED' } }
+          : { json: { status: 'dispatched-and-reconciled', listingId: '147000000213' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect((saves[0] as { catalogId: string }).catalogId).toBe(CATALOG_ID);
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'preflight-create', 'dispatch-create', 'preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]).toMatchObject({ status: 'published', listingId: '147000000213' });
+  });
+
+  it('keeps the replay skip when the earlier attempt is still open on the ledger', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      findUnresolvedCreate: () => ({
+        jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+        intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: MANIFEST,
+      }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return { json: { command: 'dispatch-create', status: 'denied', code: 'CREATE_INTENT_ALREADY_RECORDED' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('skipped');
+  });
+});
