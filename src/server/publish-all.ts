@@ -308,6 +308,45 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
   };
 }
 
+type DraftFailure = { code: string; detail: string | null };
+
+function draftFailure(error: unknown): DraftFailure {
+  const fields = error instanceof Error ? error as { code?: unknown; detail?: unknown } : {};
+  return {
+    code: typeof fields.code === 'string' ? fields.code : 'unavailable',
+    detail: typeof fields.detail === 'string' ? fields.detail : null,
+  };
+}
+
+/**
+ * A draft refusal caused by the shared catalog read (fail-closed after a
+ * failed refresh, a stale or unreadable snapshot), not by this item: a
+ * fresh refresh can clear it (incident #213).
+ */
+function catalogMayRecover(failure: DraftFailure): boolean {
+  return failure.code === 'LISTING_DRAFT_UNAVAILABLE'
+    && failure.detail !== null && failure.detail.startsWith('workspace_');
+}
+
+/**
+ * The skip reason for a draft that could not be prepared. Saving the item
+ * by hand goes through the same gates, so "open the item and save it once"
+ * is advice only for a stale or refused save, never for an unavailable one.
+ */
+function draftSkipReason(failure: DraftFailure | null, catalogDown: boolean): string {
+  const code = failure?.code ?? 'unavailable';
+  const detail = failure?.detail ? `: ${failure.detail}` : '';
+  if (code !== 'LISTING_DRAFT_UNAVAILABLE') {
+    return `The draft could not be prepared (${code}${detail}) — open the item and save it once.`;
+  }
+  if (failure !== null && catalogMayRecover(failure)) {
+    return `The store and eBay catalog could not be read (${code}${detail})`
+      + (catalogDown ? ' and a fresh read failed too' : ' even after a fresh read')
+      + ' — the next run retries it.';
+  }
+  return `The draft could not be prepared (${code}${detail}) — the item is not eligible for a local draft.`;
+}
+
 /**
  * Start a publish-all run in the background. Returns false when another
  * publish (single or batch) is already holding the lock. The returned
@@ -509,6 +548,7 @@ export function startPublishAllRun(
           : ''));
 
       let consecutiveUnknown = 0;
+      let catalogDown = false;
       for (const [index, row] of ready.entries()) {
         const sku = row.shopify.sku;
         const title = row.shopify.title;
@@ -525,25 +565,50 @@ export function startPublishAllRun(
         }
 
         // Ensure a draft revision exists (pure-inherit save when missing).
-        let revisionDigest: string;
-        try {
-          const dto = await draftService.get(row.id);
-          if (dto.revision) {
-            revisionDigest = dto.revision.revisionDigest;
-          } else {
-            const chart = dto.sections.listing.conditionDescription.shopify;
-            const note = ((chart ? `${chart} ` : '')
-              + 'The photographs show the exact item for sale.').slice(0, 1000);
-            const payload = draftPayload(dto, { conditionDescription: note });
-            (payload as { catalogId: unknown }).catalogId = row.id;
-            const saved = await draftService.save(payload, 'publish-all');
-            revisionDigest = saved.revision.revisionDigest;
+        // Incident #213: the draft workspace fails closed while the catalog
+        // cache holds an unresolved refresh failure, and the cache does not
+        // retry while its snapshot is younger than its TTL. One failed
+        // background or webhook refresh therefore skipped every item of the
+        // run for up to five minutes. A catalog-side refusal now forces one
+        // refresh (a success clears the failure) and prepares the draft again.
+        let prepared: string | null = null;
+        let prepareFailure: DraftFailure | null = null;
+        for (let attempt = 0; attempt < 2 && prepared === null; attempt += 1) {
+          try {
+            const dto = await draftService.get(row.id);
+            if (dto.revision) {
+              prepared = dto.revision.revisionDigest;
+            } else {
+              const chart = dto.sections.listing.conditionDescription.shopify;
+              const note = ((chart ? `${chart} ` : '')
+                + 'The photographs show the exact item for sale.').slice(0, 1000);
+              const payload = draftPayload(dto, { conditionDescription: note });
+              (payload as { catalogId: unknown }).catalogId = row.id;
+              const saved = await draftService.save(payload, 'publish-all');
+              prepared = saved.revision.revisionDigest;
+            }
+          } catch (error) {
+            prepareFailure = draftFailure(error);
+            warn(`[Publish All] draft for ${sku} was refused (${prepareFailure.code}`
+              + `${prepareFailure.detail ? `: ${prepareFailure.detail}` : ''})`);
+            if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure)) break;
+            step('Re-reading your store before retrying the draft');
+            try {
+              await getSnapshot();
+            } catch {
+              // The catalog itself cannot be read: stop spending census
+              // reads on every remaining item this run.
+              catalogDown = true;
+              break;
+            }
           }
-        } catch (error) {
-          record({ sku, title, status: 'skipped', reason: `The draft could not be prepared (${error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : 'unavailable'}) — open the item and save it once.` });
+        }
+        if (prepared === null) {
+          record({ sku, title, status: 'skipped', reason: draftSkipReason(prepareFailure, catalogDown) });
           if (!isLast) await sleep(45_000);
           continue;
         }
+        let revisionDigest: string = prepared;
 
         // TITLE FIT (incident #180): the draft inherits the Shopify title,
         // and the create manifest refuses one over 80 characters. A long
