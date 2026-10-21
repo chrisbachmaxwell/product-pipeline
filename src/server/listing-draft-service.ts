@@ -136,15 +136,35 @@ export type ListingDraftFailureCode =
   | 'LISTING_DRAFT_STALE'
   | 'LISTING_DRAFT_UNAVAILABLE';
 
+/**
+ * Why a draft was unavailable, for server-side callers and logs only (the
+ * HTTP route still answers with the code alone). One code covered every
+ * cause, so a Publish-All run that skipped seven items with
+ * LISTING_DRAFT_UNAVAILABLE (incident #213) could not say whether the
+ * catalog read, the item's eligibility, or the local store refused it.
+ */
+export type ListingDraftUnavailableDetail =
+  | 'draft_ineligible'
+  | 'store_path_missing'
+  | 'writer_not_ready'
+  | `workspace_${string}`
+  | `store_${string}`
+  | 'unexpected';
+
 export class ListingDraftServiceError extends Error {
-  constructor(readonly code: ListingDraftFailureCode) {
+  constructor(
+    readonly code: ListingDraftFailureCode,
+    readonly detail: ListingDraftUnavailableDetail | null = null,
+  ) {
     super('Listing draft operation failed');
     this.name = 'ListingDraftServiceError';
   }
 }
 
 const invalid = (): never => { throw new ListingDraftServiceError('LISTING_DRAFT_INVALID'); };
-const unavailable = (): never => { throw new ListingDraftServiceError('LISTING_DRAFT_UNAVAILABLE'); };
+const unavailable = (detail: ListingDraftUnavailableDetail = 'draft_ineligible'): never => {
+  throw new ListingDraftServiceError('LISTING_DRAFT_UNAVAILABLE', detail);
+};
 
 function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -704,7 +724,9 @@ function translate(error: unknown): never {
     && ['CONFLICT', 'STALE_BASE'].includes(error.code)) {
     throw new ListingDraftServiceError('LISTING_DRAFT_STALE');
   }
-  return unavailable();
+  if (error instanceof ListingWorkspaceReaderError) return unavailable(`workspace_${error.detail}`);
+  if (error instanceof ListingControlStoreError) return unavailable(`store_${error.code.toLowerCase()}`);
+  return unavailable('unexpected');
 }
 
 export function createListingDraftService(dependencies: ListingDraftServiceDependencies = {}) {
@@ -720,7 +742,7 @@ export function createListingDraftService(dependencies: ListingDraftServiceDepen
 
   function path(): string {
     const value = databasePath();
-    if (typeof value !== 'string' || value.length === 0) return unavailable();
+    if (typeof value !== 'string' || value.length === 0) return unavailable('store_path_missing');
     return value;
   }
   function preflight(): void {
@@ -745,7 +767,7 @@ export function createListingDraftService(dependencies: ListingDraftServiceDepen
 
     async save(request: SaveListingDraftRequest, actor: string): Promise<ListingDraftDto> {
       try {
-        if (!writerInstanceReady()) unavailable();
+        if (!writerInstanceReady()) unavailable('writer_not_ready');
         preflight();
         const basis = eligibleBasis(await readWorkspace(request.catalogId));
         if (request.base.sourceDigest !== basis.sourceDigest

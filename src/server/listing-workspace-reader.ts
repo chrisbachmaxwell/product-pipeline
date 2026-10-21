@@ -73,13 +73,32 @@ export type ListingWorkspaceDto = Readonly<{
   listingDefaults?: import('./listing-defaults.js').ListingDefaults | null;
 }>;
 
+/**
+ * Which gate made a workspace unavailable (logs and server callers only).
+ * `catalog_refresh_failed` is the fail-closed rule that a known failed
+ * catalog refresh downgrades even a young snapshot; it clears on the next
+ * successful refresh, which Publish-All now forces before giving up on an
+ * item (incident #213).
+ */
+export type ListingWorkspaceUnavailableDetail =
+  | 'not_found'
+  | 'catalog_read_failed'
+  | 'catalog_stale'
+  | 'catalog_row_unverified'
+  | 'catalog_refresh_failed'
+  | 'ebay_detail_failed'
+  | 'ebay_detail_mismatch'
+  | 'unavailable';
+
 export class ListingWorkspaceReaderError extends Error {
   readonly kind: 'not_found' | 'unavailable';
+  readonly detail: ListingWorkspaceUnavailableDetail;
 
-  constructor(kind: 'not_found' | 'unavailable') {
+  constructor(kind: 'not_found' | 'unavailable', detail?: ListingWorkspaceUnavailableDetail) {
     super('Listing workspace is unavailable');
     this.name = 'ListingWorkspaceReaderError';
     this.kind = kind;
+    this.detail = detail ?? (kind === 'not_found' ? 'not_found' : 'unavailable');
   }
 }
 
@@ -114,8 +133,8 @@ function notFound(): never {
   throw new ListingWorkspaceReaderError('not_found');
 }
 
-function unavailable(): never {
-  throw new ListingWorkspaceReaderError('unavailable');
+function unavailable(detail: ListingWorkspaceUnavailableDetail = 'unavailable'): never {
+  throw new ListingWorkspaceReaderError('unavailable', detail);
 }
 
 function validateRowId(value: unknown): string {
@@ -138,17 +157,17 @@ function resolveExactFreshRow(
 ): LiveListingCatalogRow {
   const observedAt = validateTimestamp(snapshot.observedAtUtc);
   if (!Number.isSafeInteger(now) || now < 0 || now < observedAt
-    || now - observedAt > maximumAgeMs) return unavailable();
-  if (!Array.isArray(snapshot.rows) || snapshot.rows.length > 25_000) return unavailable();
+    || now - observedAt > maximumAgeMs) return unavailable('catalog_stale');
+  if (!Array.isArray(snapshot.rows) || snapshot.rows.length > 25_000) return unavailable('catalog_row_unverified');
   const matches = snapshot.rows.filter((candidate) => candidate.id === requestedRowId);
   if (matches.length === 0) return notFound();
-  if (matches.length !== 1) return unavailable();
+  if (matches.length !== 1) return unavailable('catalog_row_unverified');
   const row = matches[0]!;
   if (row.lastVerifiedAtUtc !== snapshot.observedAtUtc
     || row.audit.verified !== true
     || row.audit.evidenceState !== 'live_verified'
     || row.audit.currentRemoteStateVerified !== true
-    || row.lifecycleStatus === 'unknown') return unavailable();
+    || row.lifecycleStatus === 'unknown') return unavailable('catalog_row_unverified');
   return row;
 }
 
@@ -241,11 +260,11 @@ export function createListingWorkspaceReader(
     try {
       snapshot = await dependencies.getSnapshot();
     } catch {
-      return unavailable();
+      return unavailable('catalog_read_failed');
     }
     const row = resolveExactFreshRow(snapshot, exactRowId, now(), maximumAgeMs);
     if (hasUnresolvedLiveListingRefreshFailure(dependencies.getSnapshotStatus?.())) {
-      return unavailable();
+      return unavailable('catalog_refresh_failed');
     }
     const mapping = projectMapping(row);
     const rawSku = exactRawSku(row);
@@ -255,14 +274,14 @@ export function createListingWorkspaceReader(
       try {
         const accessToken = await dependencies.getEbayAccessToken();
         if (typeof accessToken !== 'string' || accessToken.length === 0 || accessToken.length > 4_096) {
-          return unavailable();
+          return unavailable('ebay_detail_failed');
         }
         ebayDetail = await dependencies.readEbayDetail(
           detailRequest(row, rawSku!, accessToken),
         );
       } catch {
         warn('LISTING_CATALOG_DETAIL_CAPTURE_FAILED');
-        return unavailable();
+        return unavailable('ebay_detail_failed');
       }
       if (ebayDetail.identity.listingId !== row.ebay.listingId
         || ebayDetail.identity.sku !== mapping.inventorySku
@@ -270,7 +289,7 @@ export function createListingWorkspaceReader(
         || ebayDetail.identity.shopifyProductId !== mapping.shopifyProductId
         || ebayDetail.identity.shopifyVariantId !== mapping.shopifyVariantId) {
         warn('LISTING_CATALOG_DETAIL_BINDING_FAILED');
-        return unavailable();
+        return unavailable('ebay_detail_mismatch');
       }
     }
 
