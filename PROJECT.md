@@ -343,6 +343,18 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Slash-SKU Publishing Blocker Traced End to End (L116)
+
+The live Publish-All pass correctly refused two Sony SKUs containing `/`. The repository has separate raw-Shopify and eBay-inventory identity fields, but schema v2 and the catalog, create/recovery, alignment and order-import paths still require byte-identical SKUs. Removing the regex alone would risk duplicate listings and orders that cannot resolve back to Shopify. L116 records the required versioned reversible alias design and explicit schema-upgrade boundary; no unsafe partial workaround was shipped.
+
+### 2026-10-23: Legacy eBay Artifacts No Longer Starve Publish-All Recovery (L115)
+
+Publish-All now uses the read-only migration ledger to select executable unresolved-create recoveries before applying its ten-item startup cap. Generic legacy artifacts without an exact ProductPipeline create no longer consume every slot or force a provider census that cannot change them, so the runner proceeds directly to genuinely ready items. Every selected cleanup still uses the unchanged reconcile → recover-create → recover-reconcile ceremony chain and its exact-target remote-state checks.
+
+### 2026-10-23: Operator-Owned Incidents Stay Concise (L114)
+
+Critical incident banners now keep the immediate operator action visible and collapse technical diagnosis by default. An `operatorOnly` incident never renders a stale AI diagnosis or GitHub fix-proposal link, because no code PR can change the merchant's eBay setting. The markdown-sale price-lock message is concise and the watchdog recognizes eBay error `21919248` from both `ReviseInventoryStatus` and the Best Offer `ReviseFixedPriceItem` path. No provider write, promotion setting, ceremony or dependency changed.
+
 ### 2026-10-23: Publish-All Inventory Census Runs Four Bounded Offer Reads at a Time (L113)
 
 The full live catalog still proves every Shopify variant, active eBay listing, Inventory item and Offer before a ceremony uses it, but the independent per-SKU eBay Offer reads now run through a fixed four-worker pool instead of serially. Result ordering and the global 500-page, 10,000-offer, duplicate-ID, pagination, SKU/marketplace and exact-empty-response checks remain fail-closed. This changes no write, approval, intent, reconciliation or Publish-All pacing path; it removes the dominant read-only delay repeated by every fresh standalone ceremony process.

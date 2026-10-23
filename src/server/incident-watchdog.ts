@@ -262,7 +262,7 @@ export function evaluateIncidentCandidates(input: {
       ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
     const reason = providerRejectionFor(
       input.providerRejections ?? readProviderRejections(),
-      'ReviseInventoryStatus',
+      ['ReviseInventoryStatus', 'ReviseFixedPriceItem'],
       listingId,
     );
     const storeState = reason === null ? null : priceRejectionStoreState(reason);
@@ -273,9 +273,8 @@ export function evaluateIncidentCandidates(input: {
         code: 'PRICE_SYNC_REJECTED',
         sku: failure.sku,
         title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
-        detail: `${storeState} The price sync keeps retrying on its own and aligns the `
-          + 'price on the first sweep after that change; no code change can clear it. '
-          + `eBay's own reason for the most recent rejection: ${reason}`,
+        detail: `${storeState} ProductPipeline will align the price automatically after `
+          + 'that setting changes. No code change can clear eBay error [21919248].',
         operatorOnly: true,
       });
       continue;
@@ -371,13 +370,15 @@ function readProviderRejections(): unknown {
  */
 export function providerRejectionFor(
   entries: unknown,
-  call: string,
+  call: string | readonly string[],
   listingId: string | null,
 ): string | null {
   if (!Array.isArray(entries)) return null;
+  const calls = new Set(Array.isArray(call) ? call : [call]);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index] as { call?: unknown; listingId?: unknown; reason?: unknown } | null;
-    if (entry === null || typeof entry !== 'object' || entry.call !== call) continue;
+    if (entry === null || typeof entry !== 'object'
+      || typeof entry.call !== 'string' || !calls.has(entry.call)) continue;
     if (typeof entry.listingId === 'string' && entry.listingId !== listingId) continue;
     if (typeof entry.reason !== 'string' || entry.reason.trim() === '') continue;
     return entry.reason.trim().slice(0, 300);

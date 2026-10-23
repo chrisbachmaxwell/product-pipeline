@@ -1,29 +1,28 @@
 import React, { useEffect, useState } from 'react';
-import { Banner, BlockStack, Text } from '@shopify/polaris';
+import { Banner, BlockStack, Button, Collapsible, Text } from '@shopify/polaris';
 import { apiClient } from '../hooks/useApi';
-
-type Incident = {
-  id: string;
-  severity: 'critical' | 'warning';
-  title: string;
-  detail: string;
-  diagnosis: string | null;
-  githubIssueUrl: string | null;
-};
+import {
+  incidentIssueAction,
+  toggleIncidentDisclosure,
+  visibleIncidentDiagnosis,
+  type IncidentBannerItem,
+} from '../incident-banner';
 
 /**
  * The alarm L75 was missing: critical incidents (a sold item still buyable
  * on eBay, the guard being rejected by eBay) render at the top of every
- * page within minutes of detection, with the AI diagnosis when available.
+ * page within minutes of detection. Operator action stays visible; AI
+ * diagnosis is technical context and stays collapsed unless requested.
  */
 export const IncidentBanner: React.FC = () => {
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidents, setIncidents] = useState<IncidentBannerItem[]>([]);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const body = await apiClient.get<{ incidents: Incident[] }>('/incidents');
+        const body = await apiClient.get<{ incidents: IncidentBannerItem[] }>('/incidents');
         if (!cancelled) setIncidents(body.incidents ?? []);
       } catch { /* transient; keep last state */ }
       if (!cancelled) timer = setTimeout(() => { void poll(); }, 60_000);
@@ -36,23 +35,39 @@ export const IncidentBanner: React.FC = () => {
   if (critical.length === 0 && warnings.length === 0) return null;
   return (
     <BlockStack gap="200">
-      {critical.map((incident) => (
-        <Banner
-          key={incident.id}
-          tone="critical"
-          title={incident.title}
-          action={incident.githubIssueUrl
-            ? { content: 'View fix proposal', url: incident.githubIssueUrl, external: true }
-            : undefined}
-        >
-          <BlockStack gap="100">
-            <Text as="p">{incident.detail}</Text>
-            {incident.diagnosis && (
-              <Text as="p" variant="bodySm">{incident.diagnosis}</Text>
-            )}
-          </BlockStack>
-        </Banner>
-      ))}
+      {critical.map((incident, index) => {
+        const diagnosis = visibleIncidentDiagnosis(incident, expanded);
+        const hasTechnicalDetails = incident.operatorOnly !== true && incident.diagnosis !== null;
+        const detailsId = `incident-details-${index}`;
+        return (
+          <Banner
+            key={incident.id}
+            tone="critical"
+            title={incident.title}
+            action={incidentIssueAction(incident)}
+          >
+            <BlockStack gap="100">
+              <Text as="p">{incident.detail}</Text>
+              {hasTechnicalDetails && (
+                <>
+                  <Button
+                    variant="plain"
+                    onClick={() => setExpanded((current) =>
+                      toggleIncidentDisclosure(current, incident.id))}
+                    ariaExpanded={expanded.has(incident.id)}
+                    ariaControls={detailsId}
+                  >
+                    {expanded.has(incident.id) ? 'Hide technical details' : 'Technical details'}
+                  </Button>
+                  <Collapsible id={detailsId} open={expanded.has(incident.id)}>
+                    {diagnosis && <Text as="p" variant="bodySm">{diagnosis}</Text>}
+                  </Collapsible>
+                </>
+              )}
+            </BlockStack>
+          </Banner>
+        );
+      })}
       {warnings.length > 0 && (
         <Banner tone="warning" title={`${warnings.length} sync warning${warnings.length > 1 ? 's' : ''}`}>
           <BlockStack gap="100">

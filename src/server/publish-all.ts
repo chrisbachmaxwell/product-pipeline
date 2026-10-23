@@ -200,6 +200,13 @@ type DraftServiceLike = {
   }>;
 };
 
+type UnresolvedCreateSource = Readonly<{
+  jobId: string;
+  attemptId: string;
+  intentKey: string;
+  evidenceDigest: string;
+}>;
+
 export type PublishAllDependencies = Readonly<{
   /** Read the newest usable snapshot; production reuses a still-fresh cache entry. */
   getSnapshot?: () => Promise<{ rows: readonly SnapshotRow[] }>;
@@ -221,9 +228,7 @@ export type PublishAllDependencies = Readonly<{
   }>;
   /** Item-specifics agent; null disables it. Default: armed when a Claude key is connected. */
   fillAspects?: ((request: AspectFillRequest) => Promise<AspectFillResult>) | null;
-  findUnresolvedCreate?: (sku: string) => Readonly<{
-    jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
-  }> | null;
+  findUnresolvedCreate?: (sku: string) => UnresolvedCreateSource | null;
   latestRevisionDigest?: (catalogId: string) => string | null;
   /** SKUs whose create dispatched but never resolved, older than an hour. */
   agingUnresolvedCreateSkus?: () => ReadonlySet<string>;
@@ -512,13 +517,14 @@ export function startPublishAllRun(
    * Reconcile re-verifies live state; only the recorded unpublished-offer
    * shape proceeds to removal ('none' = item-only residue).
    */
-  const sweepResidue = async (row: SnapshotRow & { shopify: { sku: string } }): Promise<void> => {
+  const sweepResidue = async (input: Readonly<{
+    row: SnapshotRow & { shopify: { sku: string } };
+    source: UnresolvedCreateSource;
+    revisionDigest: string;
+  }>): Promise<void> => {
     if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv) return;
+    const { row, source, revisionDigest } = input;
     const sku = row.shopify.sku;
-    const source = findUnresolvedCreate(sku);
-    if (source === null) return;
-    const revisionDigest = latestRevisionDigest(row.id);
-    if (revisionDigest === null) return;
     const values: Record<string, string> = {
       catalogId: row.id, sku, revisionDigest,
       jobId: source.jobId, attemptId: source.attemptId,
@@ -561,19 +567,48 @@ export function startPublishAllRun(
       } catch {
         // Best-effort; the watchdog keeps showing the warning.
       }
-      const wedged = snapshot.rows.filter(
+      const possibleWedged = snapshot.rows.filter(
         (row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.shopify !== null
           && (row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true
             || stuckSkus.has(row.shopify.sku)));
-      for (const row of wedged.slice(0, 10)) {
-        status.currentSku = row.shopify.sku;
+      // The catalog's artifact reason is intentionally broad. Only a row with
+      // an exact unresolved ProductPipeline create and a bound draft revision
+      // can enter the existing recovery ceremony. Select those executable
+      // rows before applying the ten-item cap; otherwise ten unrelated legacy
+      // artifacts can consume every slot forever and force a useless census.
+      const recoveryCandidates: Array<Readonly<{
+        row: SnapshotRow & { shopify: { sku: string; title: string } };
+        source: UnresolvedCreateSource;
+        revisionDigest: string;
+      }>> = [];
+      const seenRecoverySkus = new Set<string>();
+      if (reconcileArgv && recoverArgv && recoverReconcileArgv) {
+        for (const row of possibleWedged) {
+          const sku = row.shopify.sku;
+          if (seenRecoverySkus.has(sku)) continue;
+          seenRecoverySkus.add(sku);
+          try {
+            const source = findUnresolvedCreate(sku);
+            if (source === null) continue;
+            const revisionDigest = latestRevisionDigest(row.id);
+            if (revisionDigest === null) continue;
+            recoveryCandidates.push({ row, source, revisionDigest });
+            if (recoveryCandidates.length >= 10) break;
+          } catch {
+            // Read-only selection is best-effort. A row without verified
+            // ledger evidence must never consume or receive recovery authority.
+          }
+        }
+      }
+      for (const candidate of recoveryCandidates) {
+        status.currentSku = candidate.row.shopify.sku;
         step('Re-checking an earlier publish attempt that never finished');
-        await sweepResidue(row);
+        await sweepResidue(candidate);
       }
       status.currentSku = null;
-      if (wedged.length > 0) step('Reloading your store');
-      const freshSnapshot = wedged.length > 0 ? await refreshSnapshot() : snapshot;
+      if (recoveryCandidates.length > 0) step('Reloading your store');
+      const freshSnapshot = recoveryCandidates.length > 0 ? await refreshSnapshot() : snapshot;
       const ready = freshSnapshot.rows
         .filter((row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.readyToList === true && row.shopify !== null
@@ -582,8 +617,8 @@ export function startPublishAllRun(
         .slice(0, maxItems);
       status.totalReady = ready.length;
       info(`[Publish All] ${startedBy}: ${ready.length} ready`
-        + (wedged.length > 0
-          ? ` (${Math.min(wedged.length, 10)} residue sweeps of ${wedged.length} flagged rows)`
+        + (recoveryCandidates.length > 0
+          ? ` (${recoveryCandidates.length} residue sweeps of ${possibleWedged.length} flagged rows)`
           : ''));
 
       let consecutiveUnknown = 0;
@@ -1020,7 +1055,10 @@ export function startPublishAllRun(
             dispatchJson: { ...dispatched.json, manifestDigest },
           });
           cleanedDispatch = dispatched.json;
-          if (findUnresolvedCreate(sku) !== null) await sweepResidue(row);
+          const unresolvedAfterCleanup = findUnresolvedCreate(sku);
+          if (unresolvedAfterCleanup !== null) {
+            await sweepResidue({ row, source: unresolvedAfterCleanup, revisionDigest });
+          }
           if ((dispatchStatus !== 'dispatch-failed-confirmed-missing' && !reconcileArgv)
             || findUnresolvedCreate(sku) !== null) {
             break;
