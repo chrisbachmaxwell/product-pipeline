@@ -51,9 +51,22 @@ function arm(): void {
     '--manifest-digest', '{manifestDigest}']);
 }
 
+function armRecovery(): void {
+  process.env.PUBLISH_RECONCILE_ARGV = JSON.stringify(['cli.js', 'reconcile-create',
+    '--sku', '{sku}', '--job-id', '{jobId}', '--attempt-id', '{attemptId}']);
+  process.env.PUBLISH_RECOVER_ARGV = JSON.stringify(['cli.js', 'recover-create',
+    '--sku', '{sku}', '--offer-id', '{offerId}']);
+  process.env.PUBLISH_RECOVER_RECONCILE_ARGV = JSON.stringify(['cli.js', 'recover-reconcile',
+    '--sku', '{sku}', '--recovery-job-id', '{recoveryJobId}',
+    '--recovery-attempt-id', '{recoveryAttemptId}']);
+}
+
 afterEach(() => {
   delete process.env.PUBLISH_PREFLIGHT_ARGV;
   delete process.env.PUBLISH_DISPATCH_ARGV;
+  delete process.env.PUBLISH_RECONCILE_ARGV;
+  delete process.env.PUBLISH_RECOVER_ARGV;
+  delete process.env.PUBLISH_RECOVER_RECONCILE_ARGV;
   delete process.env.PUBLISH_EXCLUDE_SKUS;
   releasePublishLock();
 });
@@ -227,39 +240,107 @@ describe('publish-all progress reporting', () => {
 describe('publish-all stuck-create sweep', () => {
   it('reconciles a create stuck over an hour even when eBay holds no leftover data', async () => {
     arm();
-    process.env.PUBLISH_RECONCILE_ARGV = JSON.stringify(['cli.js', 'reconcile-create',
-      '--sku', '{sku}', '--job-id', '{jobId}', '--attempt-id', '{attemptId}']);
-    process.env.PUBLISH_RECOVER_ARGV = JSON.stringify(['cli.js', 'recover-create', '--sku', '{sku}']);
-    process.env.PUBLISH_RECOVER_RECONCILE_ARGV = JSON.stringify(['cli.js', 'recover-reconcile', '--sku', '{sku}']);
-    try {
-      const saves: unknown[] = [];
-      const calls: string[][] = [];
-      const configured = dependencies({
-        fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
-        agingUnresolvedCreateSkus: () => new Set(['4426B002-U317']),
-        findUnresolvedCreate: () => ({
-          jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
-          intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
-        }),
-      }, saves, calls);
-      const initialSnapshot = configured.getSnapshot!;
-      let forcedRefreshes = 0;
-      const { run } = startPublishAllRun('test', {
-        ...configured,
-        refreshSnapshot: async () => {
-          forcedRefreshes += 1;
-          return initialSnapshot();
-        },
-      });
-      await run;
-      expect(calls[0]).toEqual(['cli.js', 'reconcile-create', '--sku', '4426B002-U317',
-        '--job-id', 'listing-create-job:1', '--attempt-id', 'listing-create-attempt:1']);
-      expect(forcedRefreshes).toBe(1);
-    } finally {
-      delete process.env.PUBLISH_RECONCILE_ARGV;
-      delete process.env.PUBLISH_RECOVER_ARGV;
-      delete process.env.PUBLISH_RECOVER_RECONCILE_ARGV;
-    }
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const configured = dependencies({
+      fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
+      agingUnresolvedCreateSkus: () => new Set(['4426B002-U317']),
+      findUnresolvedCreate: () => ({
+        jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+        intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
+      }),
+    }, saves, calls);
+    const initialSnapshot = configured.getSnapshot!;
+    let forcedRefreshes = 0;
+    const { run } = startPublishAllRun('test', {
+      ...configured,
+      refreshSnapshot: async () => {
+        forcedRefreshes += 1;
+        return initialSnapshot();
+      },
+    });
+    await run;
+    expect(calls[0]).toEqual(['cli.js', 'reconcile-create', '--sku', '4426B002-U317',
+      '--job-id', 'listing-create-job:1', '--attempt-id', 'listing-create-attempt:1']);
+    expect(forcedRefreshes).toBe(1);
+  });
+
+  it('finds an executable recovery after more than ten unsupported artifacts', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const unsupported = Array.from({ length: 12 }, (_, index) => ({
+      id: `shopify-variant:gid://shopify/ProductVariant/${1000 + index}`,
+      readyToList: false,
+      shopify: { sku: `LEGACY-${index}`, title: `Legacy ${index}` },
+      audit: { attentionReasons: ['ebay_unpublished_artifact' as const] },
+    }));
+    const recoverable = {
+      id: CATALOG_ID,
+      readyToList: false,
+      shopify: { sku: 'RECOVER-ME', title: 'Recover me' },
+      audit: { attentionReasons: ['ebay_unpublished_artifact' as const] },
+    };
+    const source = {
+      jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+      intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
+    };
+    const lookedUp: string[] = [];
+    let forcedRefreshes = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      getSnapshot: async () => ({ rows: [...unsupported, recoverable] }),
+      refreshSnapshot: async () => { forcedRefreshes += 1; return { rows: [] }; },
+      findUnresolvedCreate: (sku) => { lookedUp.push(sku); return sku === 'RECOVER-ME' ? source : null; },
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'reconcile-create') {
+          return { json: { unresolvedCode: 'CREATE_OFFER_UNPUBLISHED', offerId: '247267392011' } };
+        }
+        if (argv[1] === 'recover-create') {
+          return { json: { recoveryJobId: 'listing-recovery-job:1', recoveryAttemptId: 'listing-recovery-attempt:1' } };
+        }
+        return { json: { status: 'recovered-and-reconciled' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(lookedUp).toHaveLength(13);
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'reconcile-create', 'recover-create', 'recover-reconcile',
+    ]);
+    expect(calls.every((argv) => argv.includes('RECOVER-ME'))).toBe(true);
+    expect(forcedRefreshes).toBe(1);
+  });
+
+  it('does not let unsupported artifacts slow or starve a ready item', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const base = dependencies({
+      getCategoryAspects: async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] }),
+    }, saves, calls);
+    const initial = await base.getSnapshot!();
+    const unsupported = Array.from({ length: 207 }, (_, index) => ({
+      id: `shopify-variant:gid://shopify/ProductVariant/${2000 + index}`,
+      readyToList: false,
+      shopify: { sku: `LEGACY-${index}`, title: `Legacy ${index}` },
+      audit: { attentionReasons: ['ebay_unpublished_artifact' as const] },
+    }));
+    let forcedRefreshes = 0;
+    const { run } = startPublishAllRun('test', {
+      ...base,
+      getSnapshot: async () => ({ rows: [...unsupported, ...initial.rows] }),
+      refreshSnapshot: async () => { forcedRefreshes += 1; return initial; },
+      findUnresolvedCreate: () => null,
+    });
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(forcedRefreshes).toBe(0);
+    expect(getPublishAllStatus().items[0]).toMatchObject({
+      sku: '4426B002-U317', status: 'published',
+    });
   });
 });
 

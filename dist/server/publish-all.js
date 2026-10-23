@@ -385,16 +385,11 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
      * Reconcile re-verifies live state; only the recorded unpublished-offer
      * shape proceeds to removal ('none' = item-only residue).
      */
-    const sweepResidue = async (row) => {
+    const sweepResidue = async (input) => {
         if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv)
             return;
+        const { row, source, revisionDigest } = input;
         const sku = row.shopify.sku;
-        const source = findUnresolvedCreate(sku);
-        if (source === null)
-            return;
-        const revisionDigest = latestRevisionDigest(row.id);
-        if (revisionDigest === null)
-            return;
         const values = {
             catalogId: row.id, sku, revisionDigest,
             jobId: source.jobId, attemptId: source.attemptId,
@@ -440,18 +435,48 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
             catch {
                 // Best-effort; the watchdog keeps showing the warning.
             }
-            const wedged = snapshot.rows.filter((row) => row.shopify !== null
+            const possibleWedged = snapshot.rows.filter((row) => row.shopify !== null
                 && (row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true
                     || stuckSkus.has(row.shopify.sku)));
-            for (const row of wedged.slice(0, 10)) {
-                status.currentSku = row.shopify.sku;
+            // The catalog's artifact reason is intentionally broad. Only a row with
+            // an exact unresolved ProductPipeline create and a bound draft revision
+            // can enter the existing recovery ceremony. Select those executable
+            // rows before applying the ten-item cap; otherwise ten unrelated legacy
+            // artifacts can consume every slot forever and force a useless census.
+            const recoveryCandidates = [];
+            const seenRecoverySkus = new Set();
+            if (reconcileArgv && recoverArgv && recoverReconcileArgv) {
+                for (const row of possibleWedged) {
+                    const sku = row.shopify.sku;
+                    if (seenRecoverySkus.has(sku))
+                        continue;
+                    seenRecoverySkus.add(sku);
+                    try {
+                        const source = findUnresolvedCreate(sku);
+                        if (source === null)
+                            continue;
+                        const revisionDigest = latestRevisionDigest(row.id);
+                        if (revisionDigest === null)
+                            continue;
+                        recoveryCandidates.push({ row, source, revisionDigest });
+                        if (recoveryCandidates.length >= 10)
+                            break;
+                    }
+                    catch {
+                        // Read-only selection is best-effort. A row without verified
+                        // ledger evidence must never consume or receive recovery authority.
+                    }
+                }
+            }
+            for (const candidate of recoveryCandidates) {
+                status.currentSku = candidate.row.shopify.sku;
                 step('Re-checking an earlier publish attempt that never finished');
-                await sweepResidue(row);
+                await sweepResidue(candidate);
             }
             status.currentSku = null;
-            if (wedged.length > 0)
+            if (recoveryCandidates.length > 0)
                 step('Reloading your store');
-            const freshSnapshot = wedged.length > 0 ? await refreshSnapshot() : snapshot;
+            const freshSnapshot = recoveryCandidates.length > 0 ? await refreshSnapshot() : snapshot;
             const ready = freshSnapshot.rows
                 .filter((row) => row.readyToList === true && row.shopify !== null
                 && !row.shopify.sku.startsWith('PIPELINE-TEST')
@@ -459,8 +484,8 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                 .slice(0, maxItems);
             status.totalReady = ready.length;
             info(`[Publish All] ${startedBy}: ${ready.length} ready`
-                + (wedged.length > 0
-                    ? ` (${Math.min(wedged.length, 10)} residue sweeps of ${wedged.length} flagged rows)`
+                + (recoveryCandidates.length > 0
+                    ? ` (${recoveryCandidates.length} residue sweeps of ${possibleWedged.length} flagged rows)`
                     : ''));
             let consecutiveUnknown = 0;
             let catalogDown = false;
@@ -919,8 +944,10 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                         dispatchJson: { ...dispatched.json, manifestDigest },
                     });
                     cleanedDispatch = dispatched.json;
-                    if (findUnresolvedCreate(sku) !== null)
-                        await sweepResidue(row);
+                    const unresolvedAfterCleanup = findUnresolvedCreate(sku);
+                    if (unresolvedAfterCleanup !== null) {
+                        await sweepResidue({ row, source: unresolvedAfterCleanup, revisionDigest });
+                    }
                     if ((dispatchStatus !== 'dispatch-failed-confirmed-missing' && !reconcileArgv)
                         || findUnresolvedCreate(sku) !== null) {
                         break;

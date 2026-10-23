@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Legacy eBay Artifacts No Longer Starve Publish-All Recovery (L115)
+
+Publish-All now uses the read-only migration ledger to select executable unresolved-create recoveries before applying its ten-item startup cap. Generic legacy artifacts without an exact ProductPipeline create no longer consume every slot or force a provider census that cannot change them, so the runner proceeds directly to genuinely ready items. Every selected cleanup still uses the unchanged reconcile → recover-create → recover-reconcile ceremony chain and its exact-target remote-state checks.
+
 ### 2026-10-23: Operator-Owned Incidents Stay Concise (L114)
 
 Critical incident banners now keep the immediate operator action visible and collapse technical diagnosis by default. An `operatorOnly` incident never renders a stale AI diagnosis or GitHub fix-proposal link, because no code PR can change the merchant's eBay setting. The markdown-sale price-lock message is concise and the watchdog recognizes eBay error `21919248` from both `ReviseInventoryStatus` and the Best Offer `ReviseFixedPriceItem` path. No provider write, promotion setting, ceremony or dependency changed.
