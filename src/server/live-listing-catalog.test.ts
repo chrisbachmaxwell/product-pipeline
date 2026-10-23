@@ -988,6 +988,63 @@ describe('strict live source parsers', () => {
     }
   });
 
+  it('treats eBay exact 404 / 25713 for a proven inventory SKU as zero offers', async () => {
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        return jsonResponse({ total: 1, inventoryItems: [{ sku: 'ITEM-WITHOUT-OFFER' }] });
+      }
+      return new Response(JSON.stringify({
+        errors: [{
+          errorId: 25713,
+          domain: 'API_INVENTORY',
+          category: 'Request',
+          message: 'provider text is deliberately ignored',
+        }],
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority');
+      expect(result).toMatchObject({ itemPages: 1, offerPages: 1 });
+      expect(result.items).toEqual([{ sku: 'ITEM-WITHOUT-OFFER' }]);
+      expect(result.offers).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.each([
+    [400, 25713, 'API_INVENTORY', 'Request'],
+    [404, 25710, 'API_INVENTORY', 'Request'],
+    [404, 25713, 'OTHER_DOMAIN', 'Request'],
+    [404, 25713, 'API_INVENTORY', 'Application'],
+  ] as const)(
+    'rejects a near-miss empty-offer response: %s / %s / %s / %s',
+    async (status, errorId, domain, category) => {
+      globalThis.fetch = (async (rawUrl) => {
+        const url = new URL(String(rawUrl));
+        if (url.pathname.endsWith('/inventory_item')) {
+          return jsonResponse({ total: 1, inventoryItems: [{ sku: 'STRICT-SKU' }] });
+        }
+        return new Response(JSON.stringify({
+          errors: [{ errorId, domain, category }],
+        }), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+      try {
+        await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
+          .rejects.toThrow('Live listing catalog is unavailable');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
   it.each([
     ['partial-items', 'EBAY_US', 'OFFER-1'],
     ['wrong-marketplace', 'EBAY_GB', 'OFFER-1'],
