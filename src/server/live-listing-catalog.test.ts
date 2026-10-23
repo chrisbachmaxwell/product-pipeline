@@ -988,6 +988,156 @@ describe('strict live source parsers', () => {
     }
   });
 
+  it('reads independent per-SKU Offers with a bounded pool and preserves item order', async () => {
+    let inFlight = 0;
+    let maximumInFlight = 0;
+    const skus = Array.from({ length: 8 }, (_, index) => `SKU-${index}`);
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        return jsonResponse({
+          total: skus.length,
+          inventoryItems: skus.map((sku) => ({ sku })),
+        });
+      }
+      const sku = String(url.searchParams.get('sku'));
+      const index = Number(sku.replace('SKU-', ''));
+      inFlight += 1;
+      maximumInFlight = Math.max(maximumInFlight, inFlight);
+      await new Promise((resolve) => { setTimeout(resolve, (8 - index) * 2); });
+      inFlight -= 1;
+      return jsonResponse({
+        total: 1,
+        offers: [{ offerId: `OFFER-${index}`, sku, marketplaceId: 'EBAY_US' }],
+      });
+    }) as typeof fetch;
+    try {
+      const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority');
+      expect(maximumInFlight).toBe(4);
+      expect(result.offerPages).toBe(skus.length);
+      expect(result.offers.map((entry) => entry.offerId))
+        .toEqual(skus.map((_, index) => `OFFER-${index}`));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects duplicate Offer ids returned by different concurrent SKU reads', async () => {
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        return jsonResponse({
+          total: 2,
+          inventoryItems: [{ sku: 'FIRST' }, { sku: 'SECOND' }],
+        });
+      }
+      const sku = String(url.searchParams.get('sku'));
+      return jsonResponse({
+        total: 1,
+        offers: [{ offerId: 'DUPLICATE', sku, marketplaceId: 'EBAY_US' }],
+      });
+    }) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('quiesces every concurrent Offer worker before a failed capture returns', async () => {
+    const requested: string[] = [];
+    let inFlight = 0;
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        return jsonResponse({
+          total: 8,
+          inventoryItems: Array.from({ length: 8 }, (_, index) => ({ sku: `SKU-${index}` })),
+        });
+      }
+      const sku = String(url.searchParams.get('sku'));
+      const offset = Number(url.searchParams.get('offset'));
+      requested.push(`${sku}:${offset}`);
+      if (sku === 'SKU-0') return new Response('{}', { status: 503 });
+      inFlight += 1;
+      await new Promise((resolve) => { setTimeout(resolve, 20); });
+      inFlight -= 1;
+      return jsonResponse({
+        total: 50,
+        offers: Array.from({ length: 25 }, (_, index) => ({
+          offerId: `${sku}-${offset + index}`,
+          sku,
+          marketplaceId: 'EBAY_US',
+        })),
+        next: `https://api.ebay.com/sell/inventory/v1/offer?sku=${sku}&marketplace_id=EBAY_US&limit=25&offset=${offset + 25}`,
+      });
+    }) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+      expect(requested.sort()).toEqual(['SKU-0:0', 'SKU-1:0', 'SKU-2:0', 'SKU-3:0']);
+      expect(inFlight).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps one shared 500-page Offer budget across concurrent workers', async () => {
+    const skus = Array.from({ length: 501 }, (_, index) => `SKU-${index}`);
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        const offset = Number(url.searchParams.get('offset'));
+        const inventoryItems = skus.slice(offset, offset + 200).map((sku) => ({ sku }));
+        const nextOffset = offset + inventoryItems.length;
+        return jsonResponse({
+          total: skus.length,
+          inventoryItems,
+          ...(nextOffset < skus.length ? {
+            next: `https://api.ebay.com/sell/inventory/v1/inventory_item?limit=200&offset=${nextOffset}`,
+          } : {}),
+        });
+      }
+      return jsonResponse({ total: 0, offers: [] });
+    }) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps one shared 10,000 declared-Offer bound across concurrent workers', async () => {
+    globalThis.fetch = (async (rawUrl) => {
+      const url = new URL(String(rawUrl));
+      if (url.pathname.endsWith('/inventory_item')) {
+        return jsonResponse({
+          total: 2,
+          inventoryItems: [{ sku: 'FIRST' }, { sku: 'SECOND' }],
+        });
+      }
+      const sku = String(url.searchParams.get('sku'));
+      const offset = Number(url.searchParams.get('offset'));
+      return jsonResponse({
+        total: 6_000,
+        offers: Array.from({ length: 25 }, (_, index) => ({
+          offerId: `${sku}-${offset + index}`,
+          sku,
+          marketplaceId: 'EBAY_US',
+        })),
+        next: `https://api.ebay.com/sell/inventory/v1/offer?sku=${sku}&marketplace_id=EBAY_US&limit=25&offset=${offset + 25}`,
+      });
+    }) as typeof fetch;
+    try {
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('treats eBay exact 404 / 25713 for a proven inventory SKU as zero offers', async () => {
     globalThis.fetch = (async (rawUrl) => {
       const url = new URL(String(rawUrl));
