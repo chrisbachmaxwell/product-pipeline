@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Item Recovery Receives Its Exact Target (L118)
+
+The item-detail **Clear leftover eBay data** action reached its guarded route without a JSON parser in the live server composition, so the handler saw no `catalogId` or `sku` and refused before any ceremony ran. The server now mounts the existing strict parser for exactly `/api/listing-recovery`, after auth/quarantine and before the route. A wiring regression checks the real `src/server/index.ts` composition; the exact-target validation and reconcile → recover-create → recover-reconcile ceremony are unchanged.
+
 ### 2026-10-23: Throttled Census Reads Are Retried, Not Fatal (L117, incident #228)
 
 Publish All skipped `L398-U022` and `259969-U557` with `LISTING_DRAFT_UNAVAILABLE: workspace_catalog_stale` because the census failed, and the forced re-read failed too. Every census read treated an explicit throttle as an incomplete census. These reads were: Shopify GraphQL pages, Trading `GetUser`/`GetMyeBaySelling`, and Inventory items/offers. Publish All's ceremony processes run their own censuses against the same Shopify bucket and eBay app, so throttling during a run is routine. Census reads now retry HTTP 429/500–504, and Shopify 200s whose errors are all `THROTTLED`, up to 3 attempts with an 8 s pause. All other answers still fail the whole census closed. Publish All now waits 30 s before its forced re-read after a catalog-side draft refusal. Files: `src/server/live-listing-catalog-source.ts`, `src/server/publish-all.ts`, plus regression tests in `live-listing-catalog.test.ts` and `publish-all-draft-unavailable.test.ts`.

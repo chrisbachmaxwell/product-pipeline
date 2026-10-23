@@ -1,6 +1,8 @@
 import express, { type Request } from 'express';
+import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writerQuarantineMiddleware } from '../../safety/writer-quarantine.js';
 import type { ApiPrincipal } from '../middleware/auth.js';
@@ -109,6 +111,17 @@ function harness(options: {
 const validBody = { catalogId: CATALOG_ID, sku: '2882A001-U002', revisionDigest: REVISION };
 
 describe('listing publish route', () => {
+  it('mounts the strict JSON parser on the live recovery route before the router', () => {
+    const serverSource = readFileSync(
+      fileURLToPath(new URL('../index.ts', import.meta.url)),
+      'utf8',
+    );
+    const parserMount = "app.post('/api/listing-recovery', listingDraftJsonParser);";
+    expect(serverSource).toContain(parserMount);
+    expect(serverSource.indexOf(parserMount))
+      .toBeLessThan(serverSource.indexOf('app.use(listingPublishRoutes);'));
+  });
+
   it('publishes: preflight digest flows into dispatch, argv fully substituted', async () => {
     const h = harness({
       kind: 'shopify_session',
