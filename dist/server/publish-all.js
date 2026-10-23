@@ -35,12 +35,14 @@ import { aspectFillerArmed, fillMissingAspects } from './aspect-filler.js';
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
-import { findUnresolvedListingCreateFromArgv, readIncidentLedgerSignalsFromArgv, } from './migration-state-reader.js';
+import { findUnresolvedListingCreateFromArgv, findUnresolvedListingCreateRecoveryFromArgv, readIncidentLedgerSignalsFromArgv, } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv } from './order-import-trigger.js';
 const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_ITEMS = 30;
+/** Pause before the forced catalog re-read after a catalog-side draft refusal. */
+const CATALOG_REREAD_PAUSE_MS = 30_000;
 /**
  * dispatch-create refusals a fresh preflight can clear: a transient capture
  * failure, or the item/draft moving between preflight and dispatch. The
@@ -305,6 +307,8 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
     });
     const findUnresolvedCreate = dependencies.findUnresolvedCreate
         ?? ((sku) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+    const findUnresolvedRecovery = dependencies.findUnresolvedRecovery
+        ?? ((sku) => findUnresolvedListingCreateRecoveryFromArgv(reconcileArgv, sku));
     const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId) => {
         const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
         if (typeof databasePath !== 'string' || databasePath.length === 0)
@@ -397,11 +401,24 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
         };
         try {
             const reconciled = await runStep(substituteArgv(reconcileArgv, values));
-            if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED')
-                return;
             const observed = reconciled.json?.offerId;
             const offerId = typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed)
                 ? observed : 'none';
+            const priorRecovery = findUnresolvedRecovery(sku);
+            if (priorRecovery !== null) {
+                const closed = await runStep(substituteArgv(recoverReconcileArgv, {
+                    ...values,
+                    offerId,
+                    recoveryJobId: priorRecovery.recoveryJobId,
+                    recoveryAttemptId: priorRecovery.recoveryAttemptId,
+                }));
+                if (closed.json?.status === 'recovered-and-reconciled') {
+                    info(`[Publish All] reconciled prior eBay cleanup for ${sku}`);
+                }
+                return;
+            }
+            if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED')
+                return;
             await sleep(10_000);
             const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
             const recoveryJobId = recovered.json?.recoveryJobId;
@@ -409,11 +426,16 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
             if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
                 || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId))
                 return;
-            await runStep(substituteArgv(recoverReconcileArgv, {
+            // The provider DELETE can be visible to the exact adapter before the
+            // catalog capture converges. Wait before the zero-write closeout; the
+            // previous ordering logged success first and then left both jobs open.
+            await sleep(30_000);
+            const closed = await runStep(substituteArgv(recoverReconcileArgv, {
                 ...values, offerId, recoveryJobId, recoveryAttemptId,
             }));
-            info(`[Publish All] recovered leftover eBay data for ${sku}`);
-            await sleep(30_000);
+            if (closed.json?.status === 'recovered-and-reconciled') {
+                info(`[Publish All] recovered leftover eBay data for ${sku}`);
+            }
         }
         catch {
             // Best-effort; the item stays visible as blocked in the UI.
@@ -534,6 +556,11 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                             + `${prepareFailure.detail ? `: ${prepareFailure.detail}` : ''})`);
                         if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure))
                             break;
+                        // Incident #228: the refusal usually follows a census that just
+                        // failed (throttled or overloaded provider). Re-reading at once
+                        // hits the same drained rate-limit bucket, so let it refill first.
+                        step('Waiting for the store to accept reads again');
+                        await sleep(CATALOG_REREAD_PAUSE_MS);
                         step('Re-reading your store before retrying the draft');
                         try {
                             await refreshSnapshot();

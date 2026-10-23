@@ -80,6 +80,10 @@ export type UnresolvedListingCreateProjection = Readonly<{
     intentKey: string;
     evidenceDigest: string;
 }>;
+export type UnresolvedListingCreateRecoveryProjection = Readonly<{
+    recoveryJobId: string;
+    recoveryAttemptId: string;
+}>;
 /**
  * READ-ONLY lookup for the operator's publish-recovery retry: the most
  * recent listing-create job targeting the SKU whose attempt has no recorded
@@ -91,6 +95,17 @@ export declare function findUnresolvedListingCreateReadOnly(input: {
     databasePath: string;
     sku: string;
 }): UnresolvedListingCreateProjection | null;
+/**
+ * READ-ONLY lookup for a recovery ceremony that already removed provider
+ * residue but has not yet observed the clean catalog state. Retrying the
+ * original recovery write would violate its single-use intent; callers use
+ * these exact identifiers only with the zero-provider-write
+ * `recover-reconcile` ceremony.
+ */
+export declare function findUnresolvedListingCreateRecoveryReadOnly(input: {
+    databasePath: string;
+    sku: string;
+}): UnresolvedListingCreateRecoveryProjection | null;
 export type IncidentLedgerSignals = Readonly<{
     /**
      * The oldest eBay order observation with no resolution. The poll cursor

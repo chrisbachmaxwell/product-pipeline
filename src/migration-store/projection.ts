@@ -324,6 +324,11 @@ export type UnresolvedListingCreateProjection = Readonly<{
   evidenceDigest: string;
 }>;
 
+export type UnresolvedListingCreateRecoveryProjection = Readonly<{
+  recoveryJobId: string;
+  recoveryAttemptId: string;
+}>;
+
 /**
  * READ-ONLY lookup for the operator's publish-recovery retry: the most
  * recent listing-create job targeting the SKU whose attempt has no recorded
@@ -373,6 +378,59 @@ export function findUnresolvedListingCreateReadOnly(input: {
         return null;
       }
       return Object.freeze({ jobId, attemptId, intentKey, evidenceDigest });
+    } finally {
+      database.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * READ-ONLY lookup for a recovery ceremony that already removed provider
+ * residue but has not yet observed the clean catalog state. Retrying the
+ * original recovery write would violate its single-use intent; callers use
+ * these exact identifiers only with the zero-provider-write
+ * `recover-reconcile` ceremony.
+ */
+export function findUnresolvedListingCreateRecoveryReadOnly(input: {
+  databasePath: string;
+  sku: string;
+}): UnresolvedListingCreateRecoveryProjection | null {
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+  if (
+    typeof input.databasePath !== 'string'
+    || input.databasePath.length === 0
+    || input.databasePath.startsWith('file:')
+    || input.databasePath === ':memory:'
+    || !path.isAbsolute(input.databasePath)
+    || path.resolve(input.databasePath) !== input.databasePath
+    || typeof input.sku !== 'string'
+    || input.sku.length === 0
+    || input.sku.length > 128
+  ) {
+    return null;
+  }
+  try {
+    const database = new Database(input.databasePath, { readonly: true, fileMustExist: true });
+    try {
+      const row = database.prepare(
+        'SELECT j.job_id AS recoveryJobId, a.attempt_id AS recoveryAttemptId '
+        + 'FROM execution_jobs j '
+        + 'JOIN external_identities e ON e.identity_key = j.target_identity_key '
+        + 'JOIN intent_attempts a ON a.job_id = j.job_id '
+        + 'LEFT JOIN attempt_resolutions r ON r.attempt_id = a.attempt_id '
+        + "WHERE e.binding_key = ? AND j.job_id LIKE 'listing-create-recovery-job:%' "
+        + 'AND r.resolution_id IS NULL '
+        + 'ORDER BY j.reserved_at_utc DESC LIMIT 1',
+      ).get(`ebay-inventory-sku:${input.sku}`) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const { recoveryJobId, recoveryAttemptId } = row;
+      if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
+        || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId)) {
+        return null;
+      }
+      return Object.freeze({ recoveryJobId, recoveryAttemptId });
     } finally {
       database.close();
     }

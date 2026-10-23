@@ -57,7 +57,7 @@ function armRecovery(): void {
   process.env.PUBLISH_RECOVER_ARGV = JSON.stringify(['cli.js', 'recover-create',
     '--sku', '{sku}', '--offer-id', '{offerId}']);
   process.env.PUBLISH_RECOVER_RECONCILE_ARGV = JSON.stringify(['cli.js', 'recover-reconcile',
-    '--sku', '{sku}', '--recovery-job-id', '{recoveryJobId}',
+    '--sku', '{sku}', '--offer-id', '{offerId}', '--recovery-job-id', '{recoveryJobId}',
     '--recovery-attempt-id', '{recoveryAttemptId}']);
 }
 
@@ -288,11 +288,13 @@ describe('publish-all stuck-create sweep', () => {
       intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
     };
     const lookedUp: string[] = [];
+    const pauses: number[] = [];
     let forcedRefreshes = 0;
     const { run } = startPublishAllRun('test', dependencies({
       getSnapshot: async () => ({ rows: [...unsupported, recoverable] }),
       refreshSnapshot: async () => { forcedRefreshes += 1; return { rows: [] }; },
       findUnresolvedCreate: (sku) => { lookedUp.push(sku); return sku === 'RECOVER-ME' ? source : null; },
+      sleep: async (ms) => { pauses.push(ms); },
       runStep: async (argv) => {
         calls.push([...argv]);
         if (argv[1] === 'reconcile-create') {
@@ -310,6 +312,45 @@ describe('publish-all stuck-create sweep', () => {
       'reconcile-create', 'recover-create', 'recover-reconcile',
     ]);
     expect(calls.every((argv) => argv.includes('RECOVER-ME'))).toBe(true);
+    expect(pauses).toEqual([10_000, 30_000]);
+    expect(forcedRefreshes).toBe(1);
+  });
+
+  it('settles an existing recovery without repeating its provider delete', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const source = {
+      jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
+      intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
+    };
+    let forcedRefreshes = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      getSnapshot: async () => ({ rows: [{
+        id: CATALOG_ID,
+        readyToList: false,
+        shopify: { sku: 'RECOVER-ME', title: 'Recover me' },
+        audit: { attentionReasons: ['ebay_unpublished_artifact'] },
+      }] }),
+      refreshSnapshot: async () => { forcedRefreshes += 1; return { rows: [] }; },
+      findUnresolvedCreate: () => source,
+      findUnresolvedRecovery: () => ({
+        recoveryJobId: 'listing-create-recovery-job:3',
+        recoveryAttemptId: 'listing-create-recovery-attempt:4',
+      }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'reconcile-create') {
+          return { json: { unresolvedCode: 'CREATED_STATE_NOT_YET_OBSERVED', offerId: null } };
+        }
+        return { json: { status: 'recovered-and-reconciled' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.map((argv) => argv[1])).toEqual(['reconcile-create', 'recover-reconcile']);
+    expect(calls[1]).toContain('none');
+    expect(calls[1]).toContain('listing-create-recovery-job:3');
     expect(forcedRefreshes).toBe(1);
   });
 

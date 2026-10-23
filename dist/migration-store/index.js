@@ -4,5 +4,5 @@
  */
 export { MigrationStoreError, createMigrationStore, deriveExternalIdentityKey, deriveIdempotencyKey, deriveScopeKey, openMigrationStore, openMigrationStoreReadOnly, sha256Digest, upgradeMigrationStore, } from './store.js';
 export { CURRENT_SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './schema.js';
-export { inspectMigrationStoreReadOnly } from './projection.js';
+export { findUnresolvedListingCreateRecoveryReadOnly, inspectMigrationStoreReadOnly, } from './projection.js';
 export * from './types.js';

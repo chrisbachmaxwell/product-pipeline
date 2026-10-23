@@ -1,4 +1,4 @@
-import { inspectMigrationStoreReadOnly, type IncidentLedgerSignals, type UnresolvedListingCreateProjection } from '../migration-store/projection.js';
+import { inspectMigrationStoreReadOnly, type IncidentLedgerSignals, type UnresolvedListingCreateRecoveryProjection, type UnresolvedListingCreateProjection } from '../migration-store/projection.js';
 import { loadMigrationAdminConfig } from '../migration-admin/config.js';
 export type UnavailableMigrationStateProjection = {
     status: 'not-configured' | 'unavailable' | 'invalid';
@@ -119,6 +119,12 @@ export declare function readConfiguredMigrationState(options?: {
  * server never holds a second, separately configured store path.
  */
 export declare function findUnresolvedListingCreateFromArgv(argv: readonly string[] | null | undefined, sku: string): UnresolvedListingCreateProjection | null;
+/**
+ * READ-ONLY lookup for a prior recovery job that still needs its zero-write
+ * reconciliation. Uses the same ceremony-argv store path boundary as the
+ * source-create lookup above.
+ */
+export declare function findUnresolvedListingCreateRecoveryFromArgv(argv: readonly string[] | null | undefined, sku: string): UnresolvedListingCreateRecoveryProjection | null;
 export type { IncidentLedgerSignals };
 /**
  * READ-ONLY incident-signal read for the watchdog, taking the store path

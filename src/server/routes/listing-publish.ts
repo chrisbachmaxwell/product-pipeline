@@ -2,7 +2,10 @@ import { Router, type Request, type Response } from 'express';
 import { openListingControlStoreReadOnly } from '../../listing-control-store/index.js';
 import { info, warn } from '../../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-draft-service.js';
-import { findUnresolvedListingCreateFromArgv } from '../migration-state-reader.js';
+import {
+  findUnresolvedListingCreateFromArgv,
+  findUnresolvedListingCreateRecoveryFromArgv,
+} from '../migration-state-reader.js';
 import { apiPrincipal } from '../middleware/auth.js';
 import { releasePublishLock, tryAcquirePublishLock } from '../publish-all.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from '../order-import-trigger.js';
@@ -36,6 +39,7 @@ const CATALOG_ID = /^shopify-variant:gid:\/\/shopify\/ProductVariant\/[0-9]+$/u;
 const SKU = /^[\x21-\x7e]{1,128}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+const RECOVERY_SETTLE_MS = 30_000;
 
 
 function parseArgvEnv(name: string): readonly string[] | null {
@@ -64,7 +68,11 @@ export function createListingPublishRouter(dependencies: Readonly<{
   lookupUnresolvedCreate?: (sku: string) => Readonly<{
     jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
   }> | null;
+  lookupUnresolvedRecovery?: (sku: string) => Readonly<{
+    recoveryJobId: string; recoveryAttemptId: string;
+  }> | null;
   latestRevisionDigest?: (catalogId: string) => string | null;
+  sleep?: (ms: number) => Promise<void>;
 }> = {}): Router {
   const runStep = dependencies.runStep ?? createProcessStepRunner();
   const refreshCatalog = dependencies.refreshCatalog
@@ -87,6 +95,10 @@ export function createListingPublishRouter(dependencies: Readonly<{
   // write in the retry still happens inside the armed ceremony CLIs above.
   const lookupUnresolvedCreate = dependencies.lookupUnresolvedCreate
     ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+  const lookupUnresolvedRecovery = dependencies.lookupUnresolvedRecovery
+    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(reconcileArgv, sku));
+  const sleep = dependencies.sleep
+    ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
     const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
     if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
@@ -162,17 +174,27 @@ export function createListingPublishRouter(dependencies: Readonly<{
     };
     try {
       const reconciled = await runStep(substituteArgv(reconcileArgv, values));
-      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') {
-        // Anything else (already resolved, listing actually live, …) is not
-        // the residue shape this cleanup handles.
-        return 'skipped';
-      }
       const observed = reconciled.json?.offerId;
       // Item-only residue has no provider offer id. Preserve the ceremony's
       // explicit `none` discriminator: recover-create independently proves
       // the SKU has zero offers before it may delete the Inventory item.
       const offerId = input.offerId
         ?? (typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed) ? observed : 'none');
+      const priorRecovery = lookupUnresolvedRecovery(input.sku);
+      if (priorRecovery !== null) {
+        const closed = await runStep(substituteArgv(recoverReconcileArgv, {
+          ...values,
+          offerId,
+          recoveryJobId: priorRecovery.recoveryJobId,
+          recoveryAttemptId: priorRecovery.recoveryAttemptId,
+        }));
+        return closed.json?.status === 'recovered-and-reconciled' ? 'removed' : 'failed';
+      }
+      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') {
+        // Anything else (already resolved, listing actually live, …) is not
+        // the residue shape this cleanup handles.
+        return 'skipped';
+      }
       const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
       const recoveryJobId = recovered.json?.recoveryJobId;
       const recoveryAttemptId = recovered.json?.recoveryAttemptId;
@@ -180,6 +202,10 @@ export function createListingPublishRouter(dependencies: Readonly<{
         || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId)) {
         return 'failed';
       }
+      // eBay can acknowledge the DELETE before its catalog capture stops
+      // returning the item. Let that bounded propagation window pass before
+      // the zero-write reconciliation evaluates the clean state.
+      await sleep(RECOVERY_SETTLE_MS);
       const closed = await runStep(substituteArgv(recoverReconcileArgv, {
         ...values, offerId, recoveryJobId, recoveryAttemptId,
       }));
