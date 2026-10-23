@@ -442,6 +442,28 @@ function recoveryUnresolvedCode(kind) {
     return 'RECOVER_STATE_UNVERIFIED';
 }
 /**
+ * eBay's collection enumeration can retain an Inventory item after the exact
+ * item resource already returns 404. A zero-write recovery reconciliation may
+ * treat only that narrow contradiction as removed: the fresh, verified
+ * workspace sees no listing and no offer, exactly one collection-only item,
+ * while the caller's direct item and offer reads have both proved absence.
+ */
+function isCollectionOnlyInventoryGhost(workspace, sku) {
+    const row = workspace.catalog;
+    return workspace.schemaVersion === 1
+        && workspace.evidence.freshness === 'live'
+        && workspace.evidence.externalWritesPerformed === 0
+        && row.audit.verified === true
+        && row.shopify?.sku === sku
+        && row.ebay.sku === sku
+        && row.ebay.listingId === null
+        && row.ebay.offerId === null
+        && row.ebay.activeMatchCount === 0
+        && row.ebay.offerCount === 0
+        && row.ebay.inventoryItemCount === 1
+        && row.ebay.unpublishedArtifactCount === 1;
+}
+/**
  * Record one authoritative zero-write reconciliation run over the shared
  * fresh capture for ONE intent (the recovery intent or the original create
  * intent) and, when the capture proves the residue removed, resolve that
@@ -462,7 +484,8 @@ function recordResidueRemovalReconciliation(input) {
         observedOfferId: input.outcome.observedOfferId,
         observedDigest: input.outcome.observedDigest,
     });
-    const removed = input.outcome.kind === 'absent' && input.providerRemovalVerified;
+    const removed = input.providerRemovalVerified
+        && (input.outcome.kind === 'absent' || input.collectionOnlyInventoryGhost === true);
     const unresolvedCode = removed
         ? null
         : input.outcome.kind === 'absent'
@@ -1594,6 +1617,12 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     expectedListingId: null,
                     expectedDescriptionHtml: null,
                 });
+                const collectionOnlyInventoryGhost = options.offerId === 'none'
+                    && outcome.kind === 'artifact'
+                    && providerRemovalVerified
+                    && isCollectionOnlyInventoryGhost(freshDto, options.sku);
+                const removalVerified = providerRemovalVerified
+                    && (outcome.kind === 'absent' || collectionOnlyInventoryGhost);
                 let recoveryResult = null;
                 if (!recoveryAlreadyResolved) {
                     recoveryResult = recordResidueRemovalReconciliation({
@@ -1606,13 +1635,14 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                         recoveryDigest: recovery.manifestDigest,
                         outcome,
                         providerRemovalVerified,
+                        collectionOnlyInventoryGhost,
                         startedAtUtc,
                         clock,
                         uuid,
                     });
                 }
                 let sourceResult = null;
-                if (outcome.kind === 'absent' && providerRemovalVerified) {
+                if (removalVerified) {
                     sourceResult = recordResidueRemovalReconciliation({
                         store,
                         intentKey: options.intentKey,
@@ -1623,6 +1653,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                         recoveryDigest: recovery.manifestDigest,
                         outcome,
                         providerRemovalVerified,
+                        collectionOnlyInventoryGhost,
                         startedAtUtc,
                         clock,
                         uuid,
@@ -1646,6 +1677,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                                 recoveryDigest: recovery.manifestDigest,
                                 outcome,
                                 providerRemovalVerified,
+                                collectionOnlyInventoryGhost,
                                 startedAtUtc,
                                 clock,
                                 uuid,
@@ -1666,7 +1698,7 @@ export function buildListingLifecycleAdminProgram(dependencies = {}) {
                     sourceJobId: options.jobId,
                     sourceAttemptId: options.attemptId,
                     offerId: options.offerId,
-                    effect: outcome.kind === 'absent' && providerRemovalVerified
+                    effect: removalVerified
                         ? 'residue_removed'
                         : outcome.kind,
                     recoveryResolution: recoveryAlreadyResolved || recoveryResult?.resolved === true

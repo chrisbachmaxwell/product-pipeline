@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Exact eBay Absence Can Settle One Collection Ghost (L121)
+
+The zero-write `recover-reconcile` ceremony can now close one narrowly defined eBay consistency contradiction: the exact SKU has zero offers, its exact Inventory item resource is absent, and the fresh verified catalog sees no listing or offer but still enumerates exactly one Inventory-item ghost. Any live listing, offer, multiple artifact, present exact resource or unverified capture remains unresolved. The provider-writing `recover-create` path does not use this exception; a separate exact-resource reconciliation is still required.
+
 ### 2026-10-23: Delayed eBay Cleanup Settles Without a Second Delete (L120)
 
 The residue-recovery wrappers now wait 30 seconds after an eBay cleanup before evaluating the provider-backed catalog, and they report success only when `recover-reconcile` reaches its terminal `recovered-and-reconciled` status. If a prior recovery already removed the artifact but remained unresolved, a read-only exact-SKU migration-store lookup supplies that recovery's job and attempt to the zero-write reconciliation path; the provider delete is not repeated. This closes the `3043370-U017` warning after delayed catalog convergence while preserving the standalone ceremony's exact source, intent, target, provider-absence and reconciliation checks.

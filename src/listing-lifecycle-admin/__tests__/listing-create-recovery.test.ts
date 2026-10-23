@@ -935,6 +935,51 @@ describe('recorded unpublished-offer evidence (L40 second layer)', () => {
 });
 
 describe('item-only residue: --offer-id none (2026-09-17)', () => {
+  it('settles a collection-only Inventory ghost when exact provider reads prove absence',
+    async () => {
+      const world = await createWorld();
+      world.useProductionCaptureShape(true);
+      const source = await dispatchUnpublishedCreate(world);
+      world.setWorkspace(itemOnlyResidueWorkspace());
+      await world.run(['reconcile', '--action', 'create',
+        '--catalog-id', CATALOG_ID, '--sku', SKU,
+        '--revision-digest', world.revision.revisionDigest,
+        '--migration-store', world.migrationDatabasePath,
+        '--job-id', source.jobId, '--attempt-id', source.attemptId,
+      ]);
+      world.setOfferStatus('absent');
+
+      // The exact DELETE and post-write resource GET succeed, but eBay's
+      // collection enumeration remains stale and keeps the workspace in the
+      // one-item/no-offer artifact shape.
+      world.holdWorkspaceOnRemoval(true);
+      await world.run(recoverArguments(world, source, { offerId: 'none' }));
+      const pending = lastJson(world.stdout);
+      expect(pending).toMatchObject({
+        status: 'recovery-unresolved',
+        effect: 'artifact',
+        unresolvedCode: 'RECOVER_RESIDUE_STILL_PRESENT',
+      });
+
+      await world.run([...recoverArguments(world, source, { offerId: 'none' }).map((argument) =>
+        argument === 'recover-create' ? 'recover-reconcile' : argument),
+        '--recovery-job-id', pending.recoveryJobId as string,
+        '--recovery-attempt-id', pending.recoveryAttemptId as string,
+      ]);
+      expect(lastJson(world.stdout)).toMatchObject({
+        command: 'recover-reconcile',
+        status: 'recovered-and-reconciled',
+        effect: 'residue_removed',
+        recoveryResolution: 'resolved_residue_removed',
+        sourceResolution: 'resolved_residue_removed',
+        externalWritesPerformed: 0,
+      });
+      expect(jobState(world, source.jobId)).toBe('resolved_residue_removed');
+      expect(jobState(world, pending.recoveryJobId as string))
+        .toBe('resolved_residue_removed');
+      expect(world.recoverCalls.filter((call) => call.startsWith('delete'))).toHaveLength(1);
+    });
+
   it('removes an inventory item with no offer when the provider proves zero offers', async () => {
     const world = await createWorld();
     world.useProductionCaptureShape(true);
