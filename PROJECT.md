@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Slash-SKU Publishing Blocker Traced End to End (L116)
+
+The live Publish-All pass correctly refused two Sony SKUs containing `/`. The repository has separate raw-Shopify and eBay-inventory identity fields, but schema v2 and the catalog, create/recovery, alignment and order-import paths still require byte-identical SKUs. Removing the regex alone would risk duplicate listings and orders that cannot resolve back to Shopify. L116 records the required versioned reversible alias design and explicit schema-upgrade boundary; no unsafe partial workaround was shipped.
+
 ### 2026-10-23: Legacy eBay Artifacts No Longer Starve Publish-All Recovery (L115)
 
 Publish-All now uses the read-only migration ledger to select executable unresolved-create recoveries before applying its ten-item startup cap. Generic legacy artifacts without an exact ProductPipeline create no longer consume every slot or force a provider census that cannot change them, so the runner proceeds directly to genuinely ready items. Every selected cleanup still uses the unchanged reconcile → recover-create → recover-reconcile ceremony chain and its exact-target remote-state checks.
