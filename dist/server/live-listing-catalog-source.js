@@ -22,6 +22,14 @@ const REQUEST_TIMEOUT_MS = 20_000;
  */
 const INVENTORY_OFFER_READ_CONCURRENCY = 4;
 const MAX_INVENTORY_OFFER_PAGES = 500;
+/**
+ * A deleted Inventory item can remain in eBay's bulk collection after its
+ * exact resource is already gone (Brain L121). Only positive-stock Shopify
+ * rows with no listing or offer can be candidates, and a hard cap/pool keeps
+ * the extra read-only probes bounded.
+ */
+const EXACT_INVENTORY_GHOST_PROBE_LIMIT = 20;
+const EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY = 4;
 // 5 minutes: UI reads reuse the snapshot; freshness when something actually
 // CHANGES comes from the event layer (Shopify webhooks + eBay push call
 // refreshIfStale), so a longer TTL is only visible when nothing changed.
@@ -141,6 +149,44 @@ async function boundedFetchJson(fetchImpl, url, init) {
         deny();
     return parseJsonRecord(response.text);
 }
+/**
+ * Incident #228: one throttled or provider-overloaded census read failed the
+ * whole census. Publish-All shares the store's Shopify GraphQL bucket and the
+ * eBay app's call rate with its own ceremony processes (each runs a census),
+ * so a "slow down" answer during a run is routine, and the immediate forced
+ * re-read hit the same drained bucket. Every census read is read-only, so an
+ * explicit throttle (HTTP 429, a Shopify 200 whose errors are all THROTTLED)
+ * or an eBay/Shopify 5xx is retried a bounded number of times after a fixed
+ * pause. Anything else, and the last attempt, still fails the census closed.
+ */
+const CENSUS_READ_ATTEMPTS = 3;
+const DEFAULT_CENSUS_RETRY_PAUSE_MS = 8_000;
+let censusRetryPauseMs = DEFAULT_CENSUS_RETRY_PAUSE_MS;
+function setCensusRetryPauseForTests(ms) {
+    censusRetryPauseMs = ms ?? DEFAULT_CENSUS_RETRY_PAUSE_MS;
+}
+function isTransientStatus(status) {
+    return status === 429 || (status >= 500 && status <= 504);
+}
+function isShopifyThrottledBody(text) {
+    try {
+        const errors = JSON.parse(text).errors;
+        return Array.isArray(errors) && errors.length > 0 && errors.every((entry) => entry !== null && typeof entry === 'object'
+            && entry.extensions?.code === 'THROTTLED');
+    }
+    catch {
+        return false;
+    }
+}
+async function censusFetchText(url, init, retryable) {
+    for (let attempt = 1;; attempt += 1) {
+        const response = await boundedFetchText(fetch, url, init);
+        if (attempt >= CENSUS_READ_ATTEMPTS || !retryable(response))
+            return response;
+        await new Promise((resolve) => { setTimeout(resolve, censusRetryPauseMs); });
+    }
+}
+const transientHttp = (response) => isTransientStatus(response.status);
 function parseJsonRecord(text) {
     try {
         return asRecord(JSON.parse(text));
@@ -239,7 +285,7 @@ const SHOPIFY_VARIANTS = `query RuntimeListingCatalogVariants($first: Int!, $aft
   }
 }`;
 async function shopifyGraphql(accessToken, operationName, query, variables = {}) {
-    const body = await boundedFetchJson(fetch, `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+    const response = await censusFetchText(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
         method: 'POST',
         headers: {
             'X-Shopify-Access-Token': accessToken,
@@ -247,7 +293,11 @@ async function shopifyGraphql(accessToken, operationName, query, variables = {})
             Accept: 'application/json',
         },
         body: JSON.stringify({ operationName, query, variables }),
-    });
+    }, (candidate) => isTransientStatus(candidate.status)
+        || (candidate.ok && isShopifyThrottledBody(candidate.text)));
+    if (!response.ok)
+        deny();
+    const body = parseJsonRecord(response.text);
     if (body.errors !== undefined || !body.data)
         deny();
     return asRecord(body.data);
@@ -389,7 +439,7 @@ async function captureShopify(accessToken) {
     };
 }
 async function tradingCall(accessToken, callName, body) {
-    const response = await boundedFetchText(fetch, 'https://api.ebay.com/ws/api.dll', {
+    const response = await censusFetchText('https://api.ebay.com/ws/api.dll', {
         method: 'POST',
         headers: {
             'Content-Type': 'text/xml',
@@ -399,7 +449,7 @@ async function tradingCall(accessToken, callName, body) {
             'X-EBAY-API-IAF-TOKEN': accessToken,
         },
         body,
-    });
+    }, transientHttp);
     if (!response.ok)
         deny();
     let parsed;
@@ -612,14 +662,70 @@ async function captureTrading(accessToken) {
 async function inventoryGet(accessToken, path) {
     if (!path.startsWith('/sell/inventory/v1/'))
         deny();
-    return boundedFetchJson(fetch, `https://api.ebay.com${path}`, {
+    const response = await censusFetchText(`https://api.ebay.com${path}`, {
         method: 'GET',
         headers: {
             Authorization: `Bearer ${accessToken}`,
             Accept: 'application/json',
             'Accept-Language': 'en-US',
         },
-    });
+    }, transientHttp);
+    if (!response.ok)
+        deny();
+    return parseJsonRecord(response.text);
+}
+async function exactInventoryItemExists(accessToken, sku) {
+    const response = await censusFetchText(`https://api.ebay.com/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
+        method: 'GET',
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+            'Accept-Language': 'en-US',
+        },
+    }, transientHttp);
+    if (response.status === 404)
+        return false;
+    if (!response.ok)
+        return deny();
+    const body = parseJsonRecord(response.text);
+    if (safeText(body.sku, 128) !== sku)
+        return deny();
+    return true;
+}
+async function filterExactAbsentInventoryGhosts(input, exactItemExists) {
+    const activeListingSkus = new Set(input.ebayActiveListings.map((entry) => entry.sku));
+    const offerSkus = new Set(input.ebayOffers.map((entry) => entry.sku));
+    const positiveActiveShopifySkuCounts = new Map();
+    for (const entry of input.shopifyVariants) {
+        if (entry.productStatus !== 'ACTIVE' || entry.available === null || entry.available <= 0)
+            continue;
+        positiveActiveShopifySkuCounts.set(entry.sku, (positiveActiveShopifySkuCounts.get(entry.sku) ?? 0) + 1);
+    }
+    const candidates = input.inventoryItems.filter((entry) => positiveActiveShopifySkuCounts.get(entry.sku) === 1
+        && !activeListingSkus.has(entry.sku)
+        && !offerSkus.has(entry.sku))
+        .slice(0, EXACT_INVENTORY_GHOST_PROBE_LIMIT);
+    if (candidates.length === 0)
+        return [...input.inventoryItems];
+    const absentSkus = new Set();
+    let nextCandidateIndex = 0;
+    const worker = async () => {
+        while (nextCandidateIndex < candidates.length) {
+            const candidateIndex = nextCandidateIndex;
+            nextCandidateIndex += 1;
+            const candidate = candidates[candidateIndex];
+            try {
+                if (!await exactItemExists(candidate.sku))
+                    absentSkus.add(candidate.sku);
+            }
+            catch {
+                // A failed exact probe cannot weaken the complete bulk census. Keep
+                // the row and its existing attention state until a later fresh read.
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY, candidates.length) }, () => worker()));
+    return input.inventoryItems.filter((entry) => !absentSkus.has(entry.sku));
 }
 /**
  * eBay returns a 404 / 25713 for getOffers when an inventory item exists but
@@ -648,14 +754,14 @@ function isExactEmptyOffersResponse(response) {
 async function inventoryGetOffers(accessToken, path) {
     if (!path.startsWith('/sell/inventory/v1/offer?'))
         deny();
-    const response = await boundedFetchText(fetch, `https://api.ebay.com${path}`, {
+    const response = await censusFetchText(`https://api.ebay.com${path}`, {
         method: 'GET',
         headers: {
             Authorization: `Bearer ${accessToken}`,
             Accept: 'application/json',
             'Accept-Language': 'en-US',
         },
-    });
+    }, transientHttp);
     if (response.ok)
         return parseJsonRecord(response.text);
     if (isExactEmptyOffersResponse(response))
@@ -843,13 +949,19 @@ export async function captureLiveListingCatalog() {
         // Best-effort: an empty list only degrades the location auto-default.
         captureMerchantLocationKeys(accessToken).catch(() => Object.freeze([])),
     ]);
+    const inventoryItems = await filterExactAbsentInventoryGhosts({
+        shopifyVariants: shopify.variants,
+        ebayActiveListings: trading.listings,
+        inventoryItems: inventory.items,
+        ebayOffers: inventory.offers,
+    }, (sku) => exactInventoryItemExists(accessToken, sku));
     const ebayObservedAtUtc = new Date().toISOString();
     const observedAtUtc = new Date().toISOString();
     const snapshot = catalogProjection('PROJECTION_FAILED', () => buildLiveListingCatalogSnapshot({
         observedAtUtc,
         shopifyVariants: shopify.variants,
         ebayActiveListings: trading.listings,
-        ebayInventoryItems: inventory.items,
+        ebayInventoryItems: inventoryItems,
         ebayOffers: inventory.offers,
         coverage: Object.freeze({
             shopify: shopify.coverage,
@@ -866,7 +978,7 @@ export async function captureLiveListingCatalog() {
                 inventory: Object.freeze({
                     inventoryItemsComplete: true,
                     inventoryItemPageCount: inventory.itemPages,
-                    inventoryItemCount: inventory.items.length,
+                    inventoryItemCount: inventoryItems.length,
                     offersComplete: true,
                     offerPageCount: inventory.offerPages,
                     offerCount: inventory.offers.length,
@@ -982,8 +1094,14 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
     tradingCall,
     captureTrading,
     captureInventory,
+    exactInventoryItemExists,
+    filterExactAbsentInventoryGhosts,
     verifySellerIdentity,
     resetSellerVerificationForTests,
+    setCensusRetryPauseForTests,
+    CENSUS_READ_ATTEMPTS,
+    EXACT_INVENTORY_GHOST_PROBE_LIMIT,
+    EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY,
     tradingListingFacets,
     offerListingFacets,
     LIVE_CATALOG_REFRESH_INTERVAL_MS,

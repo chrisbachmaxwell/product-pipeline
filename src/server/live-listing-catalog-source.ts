@@ -31,6 +31,14 @@ const REQUEST_TIMEOUT_MS = 20_000;
  */
 const INVENTORY_OFFER_READ_CONCURRENCY = 4;
 const MAX_INVENTORY_OFFER_PAGES = 500;
+/**
+ * A deleted Inventory item can remain in eBay's bulk collection after its
+ * exact resource is already gone (Brain L121). Only positive-stock Shopify
+ * rows with no listing or offer can be candidates, and a hard cap/pool keeps
+ * the extra read-only probes bounded.
+ */
+const EXACT_INVENTORY_GHOST_PROBE_LIMIT = 20;
+const EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY = 4;
 // 5 minutes: UI reads reuse the snapshot; freshness when something actually
 // CHANGES comes from the event layer (Shopify webhooks + eBay push call
 // refreshIfStale), so a longer TTL is only visible when nothing changed.
@@ -756,6 +764,75 @@ async function inventoryGet(accessToken: string, path: string): Promise<Record<s
   return parseJsonRecord(response.text);
 }
 
+async function exactInventoryItemExists(accessToken: string, sku: string): Promise<boolean> {
+  const response = await censusFetchText(
+    `https://api.ebay.com/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Accept-Language': 'en-US',
+      },
+    },
+    transientHttp,
+  );
+  if (response.status === 404) return false;
+  if (!response.ok) return deny();
+  const body = parseJsonRecord(response.text);
+  if (safeText(body.sku, 128) !== sku) return deny();
+  return true;
+}
+
+async function filterExactAbsentInventoryGhosts(
+  input: Readonly<{
+    shopifyVariants: readonly CapturedShopifyVariant[];
+    ebayActiveListings: readonly CapturedEbayActiveListing[];
+    inventoryItems: readonly CapturedEbayInventoryItem[];
+    ebayOffers: readonly CapturedEbayOffer[];
+  }>,
+  exactItemExists: (sku: string) => Promise<boolean>,
+): Promise<CapturedEbayInventoryItem[]> {
+  const activeListingSkus = new Set(input.ebayActiveListings.map((entry) => entry.sku));
+  const offerSkus = new Set(input.ebayOffers.map((entry) => entry.sku));
+  const positiveActiveShopifySkuCounts = new Map<string, number>();
+  for (const entry of input.shopifyVariants) {
+    if (entry.productStatus !== 'ACTIVE' || entry.available === null || entry.available <= 0) continue;
+    positiveActiveShopifySkuCounts.set(
+      entry.sku,
+      (positiveActiveShopifySkuCounts.get(entry.sku) ?? 0) + 1,
+    );
+  }
+
+  const candidates = input.inventoryItems.filter((entry) =>
+    positiveActiveShopifySkuCounts.get(entry.sku) === 1
+      && !activeListingSkus.has(entry.sku)
+      && !offerSkus.has(entry.sku))
+    .slice(0, EXACT_INVENTORY_GHOST_PROBE_LIMIT);
+  if (candidates.length === 0) return [...input.inventoryItems];
+
+  const absentSkus = new Set<string>();
+  let nextCandidateIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextCandidateIndex < candidates.length) {
+      const candidateIndex = nextCandidateIndex;
+      nextCandidateIndex += 1;
+      const candidate = candidates[candidateIndex]!;
+      try {
+        if (!await exactItemExists(candidate.sku)) absentSkus.add(candidate.sku);
+      } catch {
+        // A failed exact probe cannot weaken the complete bulk census. Keep
+        // the row and its existing attention state until a later fresh read.
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY, candidates.length) },
+    () => worker(),
+  ));
+  return input.inventoryItems.filter((entry) => !absentSkus.has(entry.sku));
+}
+
 /**
  * eBay returns a 404 / 25713 for getOffers when an inventory item exists but
  * has no offer. That is complete coverage (the empty set), not a failed read.
@@ -983,13 +1060,19 @@ export async function captureLiveListingCatalog(): Promise<LiveListingCatalogSna
     // Best-effort: an empty list only degrades the location auto-default.
     captureMerchantLocationKeys(accessToken).catch(() => Object.freeze([] as string[])),
   ]);
+  const inventoryItems = await filterExactAbsentInventoryGhosts({
+    shopifyVariants: shopify.variants,
+    ebayActiveListings: trading.listings,
+    inventoryItems: inventory.items,
+    ebayOffers: inventory.offers,
+  }, (sku) => exactInventoryItemExists(accessToken, sku));
   const ebayObservedAtUtc = new Date().toISOString();
   const observedAtUtc = new Date().toISOString();
   const snapshot = catalogProjection('PROJECTION_FAILED', () => buildLiveListingCatalogSnapshot({
     observedAtUtc,
     shopifyVariants: shopify.variants,
     ebayActiveListings: trading.listings,
-    ebayInventoryItems: inventory.items,
+    ebayInventoryItems: inventoryItems,
     ebayOffers: inventory.offers,
     coverage: Object.freeze({
       shopify: shopify.coverage,
@@ -1006,7 +1089,7 @@ export async function captureLiveListingCatalog(): Promise<LiveListingCatalogSna
         inventory: Object.freeze({
           inventoryItemsComplete: true as const,
           inventoryItemPageCount: inventory.itemPages,
-          inventoryItemCount: inventory.items.length,
+          inventoryItemCount: inventoryItems.length,
           offersComplete: true as const,
           offerPageCount: inventory.offerPages,
           offerCount: inventory.offers.length,
@@ -1161,10 +1244,14 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
   tradingCall,
   captureTrading,
   captureInventory,
+  exactInventoryItemExists,
+  filterExactAbsentInventoryGhosts,
   verifySellerIdentity,
   resetSellerVerificationForTests,
   setCensusRetryPauseForTests,
   CENSUS_READ_ATTEMPTS,
+  EXACT_INVENTORY_GHOST_PROBE_LIMIT,
+  EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY,
   tradingListingFacets,
   offerListingFacets,
   LIVE_CATALOG_REFRESH_INTERVAL_MS,

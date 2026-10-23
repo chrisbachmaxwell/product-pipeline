@@ -1196,6 +1196,77 @@ describe('strict live source parsers', () => {
     },
   );
 
+  it('filters only an exact-absent positive-stock collection ghost and fails closed', async () => {
+    const skus = ['ABSENT', 'PRESENT', 'FAILED', 'LISTED', 'OFFERED', 'ZERO', 'INACTIVE', 'DUPLICATE'];
+    const calls: string[] = [];
+    const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.filterExactAbsentInventoryGhosts({
+      shopifyVariants: [
+        ...skus.map((sku, index) => variant({ sku, variantId: `gid://shopify/ProductVariant/${index + 10}` })),
+        variant({ sku: 'DUPLICATE', variantId: 'gid://shopify/ProductVariant/99' }),
+      ].map((entry) => entry.sku === 'ZERO' ? { ...entry, available: 0 }
+        : entry.sku === 'INACTIVE' ? { ...entry, productStatus: 'DRAFT' }
+          : entry),
+      ebayActiveListings: [active('200', 'LISTED')],
+      inventoryItems: skus.map((sku) => item(sku)),
+      ebayOffers: [offer({ offerId: 'OFFERED-1', sku: 'OFFERED', listingId: null })],
+    }, async (sku) => {
+      calls.push(sku);
+      if (sku === 'FAILED') throw new Error('redacted provider failure');
+      return sku !== 'ABSENT';
+    });
+
+    expect(calls.sort()).toEqual(['ABSENT', 'FAILED', 'PRESENT']);
+    expect(result.map((entry) => entry.sku)).toEqual([
+      'PRESENT', 'FAILED', 'LISTED', 'OFFERED', 'ZERO', 'INACTIVE', 'DUPLICATE',
+    ]);
+  });
+
+  it('bounds exact collection-ghost probes to twenty with four in flight', async () => {
+    const count = LIVE_LISTING_CATALOG_SOURCE_TESTING.EXACT_INVENTORY_GHOST_PROBE_LIMIT + 5;
+    const skus = Array.from({ length: count }, (_, index) => `GHOST-${index}`);
+    let calls = 0;
+    let inFlight = 0;
+    let maximumInFlight = 0;
+    const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.filterExactAbsentInventoryGhosts({
+      shopifyVariants: skus.map((sku, index) =>
+        variant({ sku, variantId: `gid://shopify/ProductVariant/${index + 100}` })),
+      ebayActiveListings: [],
+      inventoryItems: skus.map((sku) => item(sku)),
+      ebayOffers: [],
+    }, async () => {
+      calls += 1;
+      inFlight += 1;
+      maximumInFlight = Math.max(maximumInFlight, inFlight);
+      await new Promise((resolve) => { setTimeout(resolve, 2); });
+      inFlight -= 1;
+      return false;
+    });
+
+    expect(calls).toBe(LIVE_LISTING_CATALOG_SOURCE_TESTING.EXACT_INVENTORY_GHOST_PROBE_LIMIT);
+    expect(maximumInFlight).toBe(
+      LIVE_LISTING_CATALOG_SOURCE_TESTING.EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY,
+    );
+    expect(result.map((entry) => entry.sku)).toEqual(skus.slice(20));
+  });
+
+  it('accepts exact Inventory 404 as absent and requires a matching SKU on success', async () => {
+    try {
+      globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.exactInventoryItemExists('authority', 'SKU-1'))
+        .resolves.toBe(false);
+
+      globalThis.fetch = (async () => jsonResponse({ sku: 'SKU-1' })) as typeof fetch;
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.exactInventoryItemExists('authority', 'SKU-1'))
+        .resolves.toBe(true);
+
+      globalThis.fetch = (async () => jsonResponse({ sku: 'OTHER' })) as typeof fetch;
+      await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.exactInventoryItemExists('authority', 'SKU-1'))
+        .rejects.toThrow('Live listing catalog is unavailable');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it.each([
     ['partial-items', 'EBAY_US', 'OFFER-1'],
     ['wrong-marketplace', 'EBAY_GB', 'OFFER-1'],

@@ -13,6 +13,7 @@ type TransientEbayToken = Readonly<{
     expiresIn: number;
 }>;
 declare function catalogPhase<T>(code: ListingCatalogFailureCode, operation: () => Promise<T>): Promise<T>;
+declare function setCensusRetryPauseForTests(ms: number | null): void;
 export declare function createTransientEbayTokenProvider(dependencies: Readonly<{
     loadAuth: () => Promise<RuntimeAuthMaterial>;
     exchange: (auth: RuntimeAuthMaterial) => Promise<TransientEbayToken>;
@@ -69,6 +70,13 @@ declare function captureTrading(accessToken: string): Promise<{
     pageCount: number;
     activeListingCount: number;
 }>;
+declare function exactInventoryItemExists(accessToken: string, sku: string): Promise<boolean>;
+declare function filterExactAbsentInventoryGhosts(input: Readonly<{
+    shopifyVariants: readonly CapturedShopifyVariant[];
+    ebayActiveListings: readonly CapturedEbayActiveListing[];
+    inventoryItems: readonly CapturedEbayInventoryItem[];
+    ebayOffers: readonly CapturedEbayOffer[];
+}>, exactItemExists: (sku: string) => Promise<boolean>): Promise<CapturedEbayInventoryItem[]>;
 declare function captureInventory(accessToken: string): Promise<{
     items: CapturedEbayInventoryItem[];
     offers: CapturedEbayOffer[];
@@ -134,8 +142,14 @@ export declare const LIVE_LISTING_CATALOG_SOURCE_TESTING: Readonly<{
     tradingCall: typeof tradingCall;
     captureTrading: typeof captureTrading;
     captureInventory: typeof captureInventory;
+    exactInventoryItemExists: typeof exactInventoryItemExists;
+    filterExactAbsentInventoryGhosts: typeof filterExactAbsentInventoryGhosts;
     verifySellerIdentity: typeof verifySellerIdentity;
     resetSellerVerificationForTests: typeof resetSellerVerificationForTests;
+    setCensusRetryPauseForTests: typeof setCensusRetryPauseForTests;
+    CENSUS_READ_ATTEMPTS: 3;
+    EXACT_INVENTORY_GHOST_PROBE_LIMIT: 20;
+    EXACT_INVENTORY_GHOST_PROBE_CONCURRENCY: 4;
     tradingListingFacets: typeof tradingListingFacets;
     offerListingFacets: typeof offerListingFacets;
     LIVE_CATALOG_REFRESH_INTERVAL_MS: 1800000;
