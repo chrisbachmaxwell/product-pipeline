@@ -972,18 +972,27 @@ describe('strict live source parsers', () => {
                 });
             }
             const sku = String(url.searchParams.get('sku'));
-            requested.push(sku);
+            const offset = Number(url.searchParams.get('offset'));
+            requested.push(`${sku}:${offset}`);
             if (sku === 'SKU-0')
                 return new Response('{}', { status: 503 });
             inFlight += 1;
             await new Promise((resolve) => { setTimeout(resolve, 20); });
             inFlight -= 1;
-            return jsonResponse({ total: 0, offers: [] });
+            return jsonResponse({
+                total: 50,
+                offers: Array.from({ length: 25 }, (_, index) => ({
+                    offerId: `${sku}-${offset + index}`,
+                    sku,
+                    marketplaceId: 'EBAY_US',
+                })),
+                next: `https://api.ebay.com/sell/inventory/v1/offer?sku=${sku}&marketplace_id=EBAY_US&limit=25&offset=${offset + 25}`,
+            });
         });
         try {
             await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority'))
                 .rejects.toThrow('Live listing catalog is unavailable');
-            expect(requested.sort()).toEqual(['SKU-0', 'SKU-1', 'SKU-2', 'SKU-3']);
+            expect(requested.sort()).toEqual(['SKU-0:0', 'SKU-1:0', 'SKU-2:0', 'SKU-3:0']);
             expect(inFlight).toBe(0);
         }
         finally {

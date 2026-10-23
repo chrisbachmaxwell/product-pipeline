@@ -832,6 +832,7 @@ async function captureInventory(accessToken: string): Promise<{
             accessToken,
             `/sell/inventory/v1/offer?${query.toString()}`,
           );
+          if (offerCaptureCancelled) return;
           const total = safeInteger(body.total);
           if (expectedOffers === null) {
             expectedOffers = total;
