@@ -37,6 +37,7 @@ import { info, warn } from '../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
 import {
   findUnresolvedListingCreateFromArgv,
+  findUnresolvedListingCreateRecoveryFromArgv,
   readIncidentLedgerSignalsFromArgv,
 } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from './order-import-trigger.js';
@@ -231,6 +232,9 @@ export type PublishAllDependencies = Readonly<{
   /** Item-specifics agent; null disables it. Default: armed when a Claude key is connected. */
   fillAspects?: ((request: AspectFillRequest) => Promise<AspectFillResult>) | null;
   findUnresolvedCreate?: (sku: string) => UnresolvedCreateSource | null;
+  findUnresolvedRecovery?: (sku: string) => Readonly<{
+    recoveryJobId: string; recoveryAttemptId: string;
+  }> | null;
   latestRevisionDigest?: (catalogId: string) => string | null;
   /** SKUs whose create dispatched but never resolved, older than an hour. */
   agingUnresolvedCreateSkus?: () => ReadonlySet<string>;
@@ -440,6 +444,8 @@ export function startPublishAllRun(
   });
   const findUnresolvedCreate = dependencies.findUnresolvedCreate
     ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+  const findUnresolvedRecovery = dependencies.findUnresolvedRecovery
+    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(reconcileArgv, sku));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
     const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
     if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
@@ -534,21 +540,39 @@ export function startPublishAllRun(
     };
     try {
       const reconciled = await runStep(substituteArgv(reconcileArgv, values));
-      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') return;
       const observed = reconciled.json?.offerId;
       const offerId = typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed)
         ? observed : 'none';
+      const priorRecovery = findUnresolvedRecovery(sku);
+      if (priorRecovery !== null) {
+        const closed = await runStep(substituteArgv(recoverReconcileArgv, {
+          ...values,
+          offerId,
+          recoveryJobId: priorRecovery.recoveryJobId,
+          recoveryAttemptId: priorRecovery.recoveryAttemptId,
+        }));
+        if (closed.json?.status === 'recovered-and-reconciled') {
+          info(`[Publish All] reconciled prior eBay cleanup for ${sku}`);
+        }
+        return;
+      }
+      if (reconciled.json?.unresolvedCode !== 'CREATE_OFFER_UNPUBLISHED') return;
       await sleep(10_000);
       const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
       const recoveryJobId = recovered.json?.recoveryJobId;
       const recoveryAttemptId = recovered.json?.recoveryAttemptId;
       if (typeof recoveryJobId !== 'string' || !SAFE_ID.test(recoveryJobId)
         || typeof recoveryAttemptId !== 'string' || !SAFE_ID.test(recoveryAttemptId)) return;
-      await runStep(substituteArgv(recoverReconcileArgv, {
+      // The provider DELETE can be visible to the exact adapter before the
+      // catalog capture converges. Wait before the zero-write closeout; the
+      // previous ordering logged success first and then left both jobs open.
+      await sleep(30_000);
+      const closed = await runStep(substituteArgv(recoverReconcileArgv, {
         ...values, offerId, recoveryJobId, recoveryAttemptId,
       }));
-      info(`[Publish All] recovered leftover eBay data for ${sku}`);
-      await sleep(30_000);
+      if (closed.json?.status === 'recovered-and-reconciled') {
+        info(`[Publish All] recovered leftover eBay data for ${sku}`);
+      }
     } catch {
       // Best-effort; the item stays visible as blocked in the UI.
     }

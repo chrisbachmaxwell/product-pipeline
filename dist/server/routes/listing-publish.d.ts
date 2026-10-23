@@ -14,7 +14,12 @@ export declare function createListingPublishRouter(dependencies?: Readonly<{
         intentKey: string;
         evidenceDigest: string;
     }> | null;
+    lookupUnresolvedRecovery?: (sku: string) => Readonly<{
+        recoveryJobId: string;
+        recoveryAttemptId: string;
+    }> | null;
     latestRevisionDigest?: (catalogId: string) => string | null;
+    sleep?: (ms: number) => Promise<void>;
 }>): Router;
 declare const _default: Router;
 export default _default;

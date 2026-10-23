@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createMigrationStore,
   deriveScopeKey,
+  findUnresolvedListingCreateRecoveryReadOnly,
   openMigrationStore,
   sha256Digest,
   upgradeMigrationStore,
@@ -172,7 +173,13 @@ function seedUnresolvedCreate(): SeededCreate {
 }
 
 /** Reserve and dispatch the recovery ceremony job for a seeded store. */
-function seedRecoveryCeremony(seeded: SeededCreate): {
+function seedRecoveryCeremony(
+  seeded: SeededCreate,
+  ids: Readonly<{ jobId: string; attemptId: string }> = {
+    jobId: 'job:recover',
+    attemptId: 'attempt:recover',
+  },
+): {
   recoveryIntentKey: Digest;
   recoveryDigest: Digest;
 } {
@@ -197,7 +204,7 @@ function seedRecoveryCeremony(seeded: SeededCreate): {
     audit: { eventId: 'approval:recover', occurredAtUtc: at(21) },
   });
   seeded.store.reserveExecutionJob({
-    jobId: 'job:recover',
+    jobId: ids.jobId,
     approvalToken: 'recover-ceremony-approval-token-001',
     intentKey: recoveryIntentKey,
     responsibility: 'listingCreate',
@@ -209,8 +216,8 @@ function seedRecoveryCeremony(seeded: SeededCreate): {
     audit: { eventId: 'job:recover:reserved', occurredAtUtc: at(22) },
   });
   seeded.store.markDispatchingOutcomeUnknown({
-    jobId: 'job:recover',
-    attemptId: 'attempt:recover',
+    jobId: ids.jobId,
+    attemptId: ids.attemptId,
     approvalToken: 'recover-ceremony-approval-token-001',
     approvalEvidenceDigest: recoveryDigest,
     occurredAtUtc: at(23),
@@ -218,8 +225,8 @@ function seedRecoveryCeremony(seeded: SeededCreate): {
     audit: { eventId: 'job:recover:dispatching', occurredAtUtc: at(23) },
   });
   seeded.store.requirePostDispatchReconciliation({
-    jobId: 'job:recover',
-    attemptId: 'attempt:recover',
+    jobId: ids.jobId,
+    attemptId: ids.attemptId,
     occurredAtUtc: at(24),
     evidenceDigest: recoveryDigest,
     audit: { eventId: 'job:recover:reconciliation-required', occurredAtUtc: at(24) },
@@ -263,6 +270,26 @@ function recordRemovalRun(seeded: SeededCreate, input: {
 }
 
 describe('schema v5 listing-create recovery slice', () => {
+  it('finds only an unresolved production recovery attempt for the exact SKU', () => {
+    const seeded = seedUnresolvedCreate();
+    seedRecoveryCeremony(seeded, {
+      jobId: 'listing-create-recovery-job:33333333-3333-3333-3333-333333333333',
+      attemptId: 'listing-create-recovery-attempt:44444444-4444-4444-4444-444444444444',
+    });
+
+    expect(findUnresolvedListingCreateRecoveryReadOnly({
+      databasePath: seeded.databasePath,
+      sku: 'CAN2470-U400',
+    })).toEqual({
+      recoveryJobId: 'listing-create-recovery-job:33333333-3333-3333-3333-333333333333',
+      recoveryAttemptId: 'listing-create-recovery-attempt:44444444-4444-4444-4444-444444444444',
+    });
+    expect(findUnresolvedListingCreateRecoveryReadOnly({
+      databasePath: seeded.databasePath,
+      sku: 'OTHER-SKU',
+    })).toBeNull();
+  });
+
   it('admits a production recovery intent only against an unresolved create job on the exact target', () => {
     const seeded = seedUnresolvedCreate();
 

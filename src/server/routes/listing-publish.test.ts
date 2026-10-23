@@ -75,9 +75,13 @@ function harness(options: {
   unresolvedCreate?: {
     jobId: string; attemptId: string; intentKey: string; evidenceDigest: string;
   } | null;
+  unresolvedRecovery?: {
+    recoveryJobId: string; recoveryAttemptId: string;
+  } | null;
   revisionDigest?: string | null;
 }) {
   const calls: string[][] = [];
+  const sleeps: number[] = [];
   const app = express();
   app.use((req, _res, next) => {
     (req as Request & { apiPrincipal?: ApiPrincipal }).apiPrincipal = principal(options.kind);
@@ -95,7 +99,9 @@ function harness(options: {
     recoverReconcileArgv: options.armed === false ? null : RECOVER_RECONCILE,
     refreshCatalog: async () => undefined,
     lookupUnresolvedCreate: () => options.unresolvedCreate ?? null,
+    lookupUnresolvedRecovery: () => options.unresolvedRecovery ?? null,
     latestRevisionDigest: () => options.revisionDigest ?? REVISION,
+    sleep: async (ms) => { sleeps.push(ms); },
     runStep: async (argv) => {
       calls.push([...argv]);
       if (argv[1] === 'preflight-create') return { json: options.preflightJson ?? null };
@@ -105,7 +111,7 @@ function harness(options: {
       return { json: options.dispatchJson ?? null };
     },
   }));
-  return { app, calls };
+  return { app, calls, sleeps };
 }
 
 const validBody = { catalogId: CATALOG_ID, sku: '2882A001-U002', revisionDigest: REVISION };
@@ -198,6 +204,7 @@ describe('listing publish route', () => {
       .toEqual(['reconcile', 'recover-create', 'recover-reconcile']);
     expect(h.calls[1]).toContain('267000000011');
     expect(h.calls[2].join(' ')).not.toContain('{');
+    expect(h.sleeps).toEqual([30_000]);
   });
 
   it('recovery retry selects the ceremony item-only mode when no offer id is observed', async () => {
@@ -223,6 +230,32 @@ describe('listing publish route', () => {
     expect(h.calls.map((call) => call[1]))
       .toEqual(['reconcile', 'recover-create', 'recover-reconcile']);
     expect(h.calls[1]).toContain('none');
+    expect(h.sleeps).toEqual([30_000]);
+  });
+
+  it('settles an existing recovery with zero provider writes instead of deleting again', async () => {
+    const h = harness({
+      kind: 'shopify_session',
+      unresolvedCreate: UNRESOLVED_CREATE,
+      unresolvedRecovery: {
+        recoveryJobId: 'listing-create-recovery-job:33333333-3333-3333-3333-333333333333',
+        recoveryAttemptId: 'listing-create-recovery-attempt:44444444-4444-4444-4444-444444444444',
+      },
+      reconcileJson: {
+        status: 'unresolved',
+        unresolvedCode: 'CREATED_STATE_NOT_YET_OBSERVED',
+        offerId: null,
+      },
+      recoverReconcileJson: { status: 'recovered-and-reconciled' },
+    });
+    const response = await post(h.app, '/api/listing-recovery',
+      { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'removed' });
+    expect(h.calls.map((call) => call[1])).toEqual(['reconcile', 'recover-reconcile']);
+    expect(h.calls[1]).toContain('none');
+    expect(h.calls[1]).toContain('listing-create-recovery-job:33333333-3333-3333-3333-333333333333');
+    expect(h.sleeps).toEqual([]);
   });
 
   it('recovery retry: nothing unresolved in the ledger is a 404, no ceremony spawns', async () => {

@@ -171,6 +171,10 @@ export type PublishAllDependencies = Readonly<{
     /** Item-specifics agent; null disables it. Default: armed when a Claude key is connected. */
     fillAspects?: ((request: AspectFillRequest) => Promise<AspectFillResult>) | null;
     findUnresolvedCreate?: (sku: string) => UnresolvedCreateSource | null;
+    findUnresolvedRecovery?: (sku: string) => Readonly<{
+        recoveryJobId: string;
+        recoveryAttemptId: string;
+    }> | null;
     latestRevisionDigest?: (catalogId: string) => string | null;
     /** SKUs whose create dispatched but never resolved, older than an hour. */
     agingUnresolvedCreateSkus?: () => ReadonlySet<string>;

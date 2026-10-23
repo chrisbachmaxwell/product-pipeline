@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Delayed eBay Cleanup Settles Without a Second Delete (L120)
+
+The residue-recovery wrappers now wait 30 seconds after an eBay cleanup before evaluating the provider-backed catalog, and they report success only when `recover-reconcile` reaches its terminal `recovered-and-reconciled` status. If a prior recovery already removed the artifact but remained unresolved, a read-only exact-SKU migration-store lookup supplies that recovery's job and attempt to the zero-write reconciliation path; the provider delete is not repeated. This closes the `3043370-U017` warning after delayed catalog convergence while preserving the standalone ceremony's exact source, intent, target, provider-absence and reconciliation checks.
+
 ### 2026-10-23: Item-Only eBay Residue Uses the Existing Safe Recovery Mode (L119)
 
 The item recovery button now passes the existing `offer-id none` discriminator when exact reconciliation sees a recorded artifact but no offer ID. The standalone ceremony still performs the decisive provider read and refuses if any offer exists; only a positively verified zero-offer SKU can proceed to its exact Inventory-item deletion. This makes the already-tested item-only crash recovery reachable from the UI without changing its approval, target, or provider-write boundaries.
