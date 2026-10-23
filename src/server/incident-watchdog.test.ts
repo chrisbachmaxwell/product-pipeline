@@ -296,6 +296,85 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(blank).not.toMatch(/rejection: $/u);
     expect(blank).toContain('EBAY_TRADING_REJECTED lines naming item=147521467887');
   });
+
+  const SALE_REASON = '[21919248] The price for this item cannot be updated since it is a part of a sale.: '
+    + 'The price for this item cannot be updated since it is a part of a sale. If you wish to update the '
+    + 'price of this item, please remove it from sale, or use a sale setting that will always allow price updates.';
+  const saleSignals = {
+    oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+    repeatedEndFailures: [],
+    repeatedPriceFailures: [{ sku: 'listing 147487396129', count: 3, lastAtUtc: FRESH }],
+  };
+  const saleRejections = [
+    { call: 'ReviseInventoryStatus', listingId: '147487396129', reason: SALE_REASON, atUtc: FRESH },
+  ];
+
+  it('names a price-locking markdown sale as an operator-only listing setting (#221)', () => {
+    const incident = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-7', 1, '147487396129')] },
+      signals: saleSignals,
+      nowMs: NOW,
+      providerRejections: saleRejections,
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident).toMatchObject({ severity: 'critical', operatorOnly: true });
+    expect(incident.detail).toContain('markdown sale');
+    expect(incident.detail).toContain('Marketing > Promotions');
+    expect(incident.detail).not.toContain('Set the price manually on eBay');
+    expect(incident.detail).toContain('[21919248]');
+    // Any other refusal stays a pipeline incident for the fix agent.
+    const other = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-7', 1, '147487396129')] },
+      signals: saleSignals,
+      nowMs: NOW,
+      providerRejections: [{ ...saleRejections[0], reason: '[23004] Best Offer auto accept.' }],
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(other.operatorOnly).toBeUndefined();
+  });
+
+  it('alerts the operator about a markdown-sale lock but never sends it to the fix agent (#221)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incident-watchdog-'));
+    try {
+      let diagnosed = 0;
+      let notified = 0;
+      const issues: Incident[] = [];
+      await runWatchdogOnce({
+        stateFile: path.join(root, 'incidents.json'),
+        now: () => NOW,
+        getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [row('LENS-7', 1, '147487396129')] }),
+        getLedgerSignals: () => saleSignals,
+        getProviderRejections: () => saleRejections,
+        diagnose: async () => { diagnosed += 1; return 'WHAT HAPPENED: sale'; },
+        openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/4'; },
+        notify: async () => { notified += 1; },
+        learningsContext: () => '',
+      });
+      expect(getIncidents()).toEqual([expect.objectContaining({
+        code: 'PRICE_SYNC_REJECTED', operatorOnly: true, diagnosisState: 'none',
+      })]);
+      expect(diagnosed).toBe(0);
+      expect(issues).toHaveLength(0);
+      expect(notified).toBe(1); // the live listing's price is wrong: the operator still hears once
+      // The sale lock is lifted but eBay now refuses for a code-fixable
+      // reason: the persisted operator-only flag must not keep it from the
+      // fix agent.
+      await runWatchdogOnce({
+        stateFile: path.join(root, 'incidents.json'),
+        now: () => NOW + 5 * 60_000,
+        getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [row('LENS-7', 1, '147487396129')] }),
+        getLedgerSignals: () => saleSignals,
+        getProviderRejections: () => [{ ...saleRejections[0], reason: '[23004] Best Offer auto accept.' }],
+        diagnose: async () => { diagnosed += 1; return 'WHAT HAPPENED: best offer'; },
+        openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/5'; },
+        notify: async () => { notified += 1; },
+        learningsContext: () => '',
+      });
+      expect(getIncidents()[0]!.operatorOnly).toBeUndefined();
+      expect(diagnosed).toBe(1);
+      expect(issues).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
