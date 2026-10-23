@@ -150,6 +150,27 @@ describe('publish-all draft refused by a failed catalog refresh (incident #213)'
     expect(steps.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
   });
 
+  it('lets the rate limit refill before the forced re-read (incident #228)', async () => {
+    arm();
+    const { dependencies, captureCount } = harness(['ok', 'fail', 'ok']);
+    const events: string[] = [];
+    const refresh = dependencies.getSnapshot!;
+    let started = false;
+    const { run } = startPublishAllRun('test', {
+      ...dependencies,
+      getSnapshot: async () => {
+        if (started) events.push('refresh');
+        started = true;
+        return refresh();
+      },
+      sleep: async (ms) => { events.push(`sleep:${ms}`); },
+    });
+    await run;
+    expect(getPublishAllStatus().items[0]).toMatchObject({ sku: SKU, status: 'published' });
+    expect(events.slice(0, 2)).toEqual(['sleep:30000', 'refresh']);
+    expect(captureCount()).toBe(3);
+  });
+
   it('skips with the catalog cause, not "save it once", when the fresh read fails too', async () => {
     arm();
     const { dependencies, steps } = harness(['ok', 'fail', 'fail', 'fail']);
