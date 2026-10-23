@@ -201,7 +201,10 @@ type DraftServiceLike = {
 };
 
 export type PublishAllDependencies = Readonly<{
+  /** Read the newest usable snapshot; production reuses a still-fresh cache entry. */
   getSnapshot?: () => Promise<{ rows: readonly SnapshotRow[] }>;
+  /** Force a provider census after a recovery write or a catalog-gated refusal. */
+  refreshSnapshot?: () => Promise<{ rows: readonly SnapshotRow[] }>;
   draftService?: DraftServiceLike;
   runStep?: StepRunner;
   sleep?: (ms: number) => Promise<void>;
@@ -401,6 +404,11 @@ export function startPublishAllRun(
   const maxItems = dependencies.maxItems ?? MAX_ITEMS;
   const getSnapshot = dependencies.getSnapshot
     ?? (async () => (await import('./live-listing-catalog-source.js'))
+      .getLiveListingCatalogSnapshot() as Promise<{ rows: readonly SnapshotRow[] }>);
+  // Tests and other explicit callers historically supplied one reader for
+  // both paths, so retain that contract unless they opt into the split.
+  const refreshSnapshot = dependencies.refreshSnapshot ?? dependencies.getSnapshot
+    ?? (async () => (await import('./live-listing-catalog-source.js'))
       .getLiveListingCatalogSnapshot.refresh() as Promise<{ rows: readonly SnapshotRow[] }>);
   const draftServicePromise: Promise<DraftServiceLike> = dependencies.draftService
     ? Promise.resolve(dependencies.draftService)
@@ -565,7 +573,7 @@ export function startPublishAllRun(
       }
       status.currentSku = null;
       if (wedged.length > 0) step('Reloading your store');
-      const freshSnapshot = wedged.length > 0 ? await getSnapshot() : snapshot;
+      const freshSnapshot = wedged.length > 0 ? await refreshSnapshot() : snapshot;
       const ready = freshSnapshot.rows
         .filter((row): row is SnapshotRow & { shopify: { sku: string; title: string } } =>
           row.readyToList === true && row.shopify !== null
@@ -625,7 +633,7 @@ export function startPublishAllRun(
             if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure)) break;
             step('Re-reading your store before retrying the draft');
             try {
-              await getSnapshot();
+              await refreshSnapshot();
             } catch {
               // The catalog itself cannot be read: stop spending census
               // reads on every remaining item this run.
