@@ -120,10 +120,11 @@ app.use('/api', writerQuarantineMiddleware);
 // Parse the sole local mutation only after authentication and the exact
 // quarantine exception. No unauthenticated or quarantined API body is parsed.
 app.post('/api/listing-draft', listingDraftJsonParser);
-// The publish request body is three bounded identifier strings; reuse the
-// same strict parser. The route itself re-verifies the exact Shopify
-// session and refuses unless the operator has armed the publish argv.
+// Publish and exact-target recovery carry only bounded identifier strings;
+// reuse the same strict parser. Each route re-verifies the exact Shopify
+// session and refuses unless the operator has armed its ceremony argv.
 app.post('/api/listing-publish', listingDraftJsonParser);
+app.post('/api/listing-recovery', listingDraftJsonParser);
 app.post('/api/listing-publish-all', listingDraftJsonParser);
 app.post('/api/connections/anthropic', listingDraftJsonParser);
 app.post('/api/connections/github', listingDraftJsonParser);
