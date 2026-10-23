@@ -170,6 +170,29 @@ describe('listing publish route', () => {
         expect(h.calls[1]).toContain('267000000011');
         expect(h.calls[2].join(' ')).not.toContain('{');
     });
+    it('recovery retry selects the ceremony item-only mode when no offer id is observed', async () => {
+        const h = harness({
+            kind: 'shopify_session',
+            unresolvedCreate: UNRESOLVED_CREATE,
+            reconcileJson: {
+                status: 'unresolved',
+                unresolvedCode: 'CREATE_OFFER_UNPUBLISHED',
+                offerId: null,
+            },
+            recoverJson: {
+                status: 'recovery-unresolved',
+                recoveryJobId: 'listing-create-recovery-job:33333333-3333-3333-3333-333333333333',
+                recoveryAttemptId: 'listing-create-recovery-attempt:44444444-4444-4444-4444-444444444444',
+            },
+            recoverReconcileJson: { status: 'recovered-and-reconciled' },
+        });
+        const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ status: 'removed' });
+        expect(h.calls.map((call) => call[1]))
+            .toEqual(['reconcile', 'recover-create', 'recover-reconcile']);
+        expect(h.calls[1]).toContain('none');
+    });
     it('recovery retry: nothing unresolved in the ledger is a 404, no ceremony spawns', async () => {
         const h = harness({ kind: 'shopify_session', unresolvedCreate: null });
         const response = await post(h.app, '/api/listing-recovery', { catalogId: CATALOG_ID, sku: '2882A001-U002' });

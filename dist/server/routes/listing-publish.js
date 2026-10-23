@@ -149,10 +149,11 @@ export function createListingPublishRouter(dependencies = {}) {
                 return 'skipped';
             }
             const observed = reconciled.json?.offerId;
+            // Item-only residue has no provider offer id. Preserve the ceremony's
+            // explicit `none` discriminator: recover-create independently proves
+            // the SKU has zero offers before it may delete the Inventory item.
             const offerId = input.offerId
-                ?? (typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed) ? observed : null);
-            if (offerId === null)
-                return 'failed';
+                ?? (typeof observed === 'string' && /^[0-9]{1,19}$/.test(observed) ? observed : 'none');
             const recovered = await runStep(substituteArgv(recoverArgv, { ...values, offerId }));
             const recoveryJobId = recovered.json?.recoveryJobId;
             const recoveryAttemptId = recovered.json?.recoveryAttemptId;
