@@ -453,6 +453,7 @@ export function createTradingAlignDispatchAdapter(dependencies: Readonly<{
     await dispatchBoundedCall(
       buildRevisePriceWithBestOfferFloorsXml(input),
       EBAY_TRADING_REVISE_ITEM_CALL_NAME,
+      input.listingId,
     );
   }
 
