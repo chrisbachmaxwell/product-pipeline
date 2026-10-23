@@ -173,8 +173,12 @@ async function boundedFetchJson(
 ): Promise<Record<string, any>> {
   const response = await boundedFetchText(fetchImpl, url, init);
   if (!response.ok) deny();
+  return parseJsonRecord(response.text);
+}
+
+function parseJsonRecord(text: string): Record<string, any> {
   try {
-    return asRecord(JSON.parse(response.text));
+    return asRecord(JSON.parse(text));
   } catch {
     return deny();
   }
@@ -692,6 +696,46 @@ async function inventoryGet(accessToken: string, path: string): Promise<Record<s
   });
 }
 
+/**
+ * eBay returns a 404 / 25713 for getOffers when an inventory item exists but
+ * has no offer. That is complete coverage (the empty set), not a failed read.
+ * Keep the exception local to the per-SKU offer collection and require the
+ * exact fixed response envelope so every other provider error still fails the
+ * whole census closed.
+ */
+function isExactEmptyOffersResponse(response: Readonly<{
+  status: number;
+  text: string;
+}>): boolean {
+  if (response.status !== 404) return false;
+  try {
+    const body = parseJsonRecord(response.text);
+    if (!Array.isArray(body.errors) || body.errors.length !== 1) return false;
+    const providerError = asRecord(body.errors[0]);
+    return providerError.errorId === 25713
+      && providerError.domain === 'API_INVENTORY'
+      && typeof providerError.category === 'string'
+      && providerError.category.toLocaleLowerCase('en-US') === 'request';
+  } catch {
+    return false;
+  }
+}
+
+async function inventoryGetOffers(accessToken: string, path: string): Promise<Record<string, any>> {
+  if (!path.startsWith('/sell/inventory/v1/offer?')) deny();
+  const response = await boundedFetchText(fetch, `https://api.ebay.com${path}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Accept-Language': 'en-US',
+    },
+  });
+  if (response.ok) return parseJsonRecord(response.text);
+  if (isExactEmptyOffersResponse(response)) return { total: 0, offers: [] };
+  return deny();
+}
+
 function requireExactInventoryNext(value: unknown, expectedPath: string): void {
   const rawNext = safeText(value, 2048);
   let actual: URL;
@@ -762,7 +806,10 @@ async function captureInventory(accessToken: string): Promise<{
         limit: '25',
         offset: String(offerOffset),
       });
-      const body = await inventoryGet(accessToken, `/sell/inventory/v1/offer?${query.toString()}`);
+      const body = await inventoryGetOffers(
+        accessToken,
+        `/sell/inventory/v1/offer?${query.toString()}`,
+      );
       offerPages += 1;
       const total = safeInteger(body.total);
       if (expectedOffers === null) expectedOffers = total;

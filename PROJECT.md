@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Empty eBay Inventory Items No Longer Take Down the Live Catalog (L110)
+
+The Listings page became unavailable and Publish-All stopped because eBay's per-SKU `getOffers` read returned HTTP 404 / error 25713 for one valid Inventory item that has no offer. The catalog treated every non-2xx response as a failed census, so that legitimate empty relationship invalidated the complete Shopify/eBay snapshot. `live-listing-catalog-source.ts` now recognizes only the exact fixed envelope (404, one 25713 `API_INVENTORY` request error) on the per-SKU offer read as `total: 0, offers: []`; every near miss still fails closed. A credential- and identifier-free Production-shaped read verified 247 Inventory items, 246 offers, exactly one empty-offer item, complete pagination, and no other failure. Regression coverage proves the exact exception and four fail-closed near misses. No provider write, order path, credential, migration state, ceremony, or dependency changed.
+
 ### 2026-10-23: Brain Refreshed for New Agents
 
 `PROJECT_BRAIN.md` now opens with a pointer to a new Section 16, "State of the System — 2026-10-23". It covers what is live (verified on `/health` at `5a6d977`), responsibility ownership, the Publish-All flow, the `no-ebay` tag, the item-specifics agent, the self-healing loop, the merge policy, the Best Offer decision, and open items. The Section 15 task router gained rows for these areas, and Section 13 is marked as the historical August record.
