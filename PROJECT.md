@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Exact-Absent eBay Collection Ghosts No Longer Block Publishing (L122)
+
+The live catalog now verifies only a bounded set of positive-stock Shopify SKUs that eBay's bulk Inventory collection calls artifacts despite having no active listing or offer. When the exact Inventory-item endpoint independently returns not-found, that stale collection row is removed before catalog projection; exact presence, malformed responses and read failures all keep the warning fail-closed. Probes are capped at 20 per capture with four in flight. This makes the already-cleaned `3043370-U017` eligible to become **Ready to list** without weakening catalog completeness or performing a provider write.
+
 ### 2026-10-23: Exact eBay Absence Can Settle One Collection Ghost (L121)
 
 The zero-write `recover-reconcile` ceremony can now close one narrowly defined eBay consistency contradiction: the exact SKU has zero offers, its exact Inventory item resource is absent, and the fresh verified catalog sees no listing or offer but still enumerates exactly one Inventory-item ghost. Any live listing, offer, multiple artifact, present exact resource or unverified capture remains unresolved. The provider-writing `recover-create` path does not use this exception; a separate exact-resource reconciliation is still required.
