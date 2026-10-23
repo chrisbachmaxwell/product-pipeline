@@ -53,6 +53,7 @@ import {
   deriveAlignmentManifest,
   parseAlignmentPrice,
   parseAlignmentQuantity,
+  parseBestOfferFloors,
   reconstructAlignmentManifest,
   AlignmentManifestError,
   type AlignmentField,
@@ -657,6 +658,14 @@ export function buildPriceInventoryAdminProgram(
       } else if (endListing) {
         await createTradingAdapter().endFixedPriceItem({
           listingId: identity.ebayListingId as string,
+        });
+      } else if (target.field === 'price' && target.derived.manifest.bestOfferFloors) {
+        // L105: the new price collides with the listing's Best Offer floors;
+        // lower them in the same single revise or eBay refuses it (23004).
+        await createTradingAdapter().revisePriceWithBestOfferFloors({
+          listingId: identity.ebayListingId as string,
+          price: parseAlignmentPrice(after),
+          floors: target.derived.manifest.bestOfferFloors,
         });
       } else {
         const tradingAdapter = createTradingAdapter();
@@ -1513,6 +1522,10 @@ export function buildPriceInventoryAdminProgram(
       'Exact before-value from the dispatched manifest, or the literal "none" for null',
     )
     .requiredOption('--after <value>', 'Exact after-value from the dispatched manifest')
+    .option(
+      '--best-offer-floors <json>',
+      'Exact manifest.bestOfferFloors JSON from plan, when the manifest carried one (L105)',
+    )
     .requiredOption('--migration-store <path>', 'Absolute migration-state database path')
     .requiredOption('--job-id <id>', 'Exact job id printed by dispatch')
     .requiredOption('--attempt-id <id>', 'Exact attempt id printed by dispatch')
@@ -1524,6 +1537,7 @@ export function buildPriceInventoryAdminProgram(
       manifestDigest: string;
       before: string;
       after: string;
+      bestOfferFloors?: string;
       migrationStore: string;
       jobId: string;
       attemptId: string;
@@ -1539,6 +1553,9 @@ export function buildPriceInventoryAdminProgram(
           field,
           before: options.before === 'none' ? null : options.before,
           after: options.after,
+          bestOfferFloors: options.bestOfferFloors === undefined
+            ? null
+            : parseBestOfferFloors(options.bestOfferFloors),
         });
         if (derived.manifestDigest !== options.manifestDigest) {
           deny('REALIGN_MANIFEST_DIGEST_MISMATCH');

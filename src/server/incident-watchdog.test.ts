@@ -273,6 +273,29 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(candidates.find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED'))
       .toMatchObject({ severity: 'warning' });
   });
+  it('quotes THIS listing\'s latest non-empty price rejection, never a blank (#209)', () => {
+    const providerRejections = [
+      { call: 'ReviseInventoryStatus', listingId: '147521467887', reason: '[21919188] Older reason.', atUtc: FRESH },
+      { call: 'ReviseInventoryStatus', listingId: '147521467887', reason: '', atUtc: FRESH },
+      { call: 'ReviseInventoryStatus', listingId: '147000000001', reason: 'Another listing.', atUtc: FRESH },
+      { call: 'EndFixedPriceItem', listingId: '147521467887', reason: 'An end, not a price.', atUtc: FRESH },
+    ];
+    const evaluate = (rejections: unknown) => evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-9', 1, '147521467887')] },
+      signals: {
+        oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+        repeatedEndFailures: [],
+        repeatedPriceFailures: [{ sku: 'listing 147521467887', count: 3, lastAtUtc: FRESH }],
+      },
+      nowMs: NOW,
+      providerRejections: rejections,
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(evaluate(providerRejections).detail)
+      .toContain("eBay's own reason for the most recent rejection: [21919188] Older reason.");
+    const blank = evaluate([{ call: 'ReviseInventoryStatus', reason: '', atUtc: FRESH }]).detail;
+    expect(blank).not.toMatch(/rejection: $/u);
+    expect(blank).toContain('EBAY_TRADING_REJECTED lines naming item=147521467887');
+  });
 });
 
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
