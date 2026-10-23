@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Operator-Owned Incidents Stay Concise (L114)
+
+Critical incident banners now keep the immediate operator action visible and collapse technical diagnosis by default. An `operatorOnly` incident never renders a stale AI diagnosis or GitHub fix-proposal link, because no code PR can change the merchant's eBay setting. The markdown-sale price-lock message is concise and the watchdog recognizes eBay error `21919248` from both `ReviseInventoryStatus` and the Best Offer `ReviseFixedPriceItem` path. No provider write, promotion setting, ceremony or dependency changed.
+
 ### 2026-10-23: Publish-All Inventory Census Runs Four Bounded Offer Reads at a Time (L113)
 
 The full live catalog still proves every Shopify variant, active eBay listing, Inventory item and Offer before a ceremony uses it, but the independent per-SKU eBay Offer reads now run through a fixed four-worker pool instead of serially. Result ordering and the global 500-page, 10,000-offer, duplicate-ID, pagination, SKU/marketplace and exact-empty-response checks remain fail-closed. This changes no write, approval, intent, reconciliation or Publish-All pacing path; it removes the dominant read-only delay repeated by every fresh standalone ceremony process.

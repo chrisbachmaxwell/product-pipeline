@@ -331,6 +331,21 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
     expect(other.operatorOnly).toBeUndefined();
   });
 
+  it('classifies the same sale lock from the Best Offer price-write path', () => {
+    const incident = evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [row('LENS-7', 1, '147487396129')] },
+      signals: saleSignals,
+      nowMs: NOW,
+      providerRejections: [{
+        call: 'ReviseFixedPriceItem', listingId: '147487396129', reason: SALE_REASON, atUtc: FRESH,
+      }],
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident).toMatchObject({ severity: 'critical', operatorOnly: true });
+    expect(incident.detail).toContain('Marketing > Promotions');
+    expect(incident.detail).toContain('[21919248]');
+    expect(incident.detail).not.toContain('The price for this item cannot be updated');
+  });
+
   it('alerts the operator about a markdown-sale lock but never sends it to the fix agent (#221)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incident-watchdog-'));
     try {

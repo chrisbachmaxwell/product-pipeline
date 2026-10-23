@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { info, warn } from '../utils/logger.js';
 import { sendIncidentEmail } from './incident-email.js';
-import { getPublishAllStatus } from './publish-all.js';
+import { getPublishAllStatus, OPERATOR_DATA_SKIP_REASONS } from './publish-all.js';
 import { lastOrderImportFailure } from './order-import-trigger.js';
 import { readIncidentLedgerSignalsFromArgv, } from './migration-state-reader.js';
 const EVALUATION_INTERVAL_MS = 5 * 60_000;
@@ -30,6 +30,71 @@ const SNAPSHOT_STALE_MS = 45 * 60_000;
 const PERSISTENCE_MS = 8 * 60_000;
 const STATE_FILE = '/data/product-pipeline/incidents.json';
 const MAX_INCIDENTS = 20;
+/**
+ * Why the sell-out guard may not have acted on an oversell row, from the
+ * catalog's own classification (incident #196, L104: the watchdog fires on
+ * any lifecycle, the --end-at-zero sweep only on 'active' — say which).
+ */
+function oversellGuardDetail(row) {
+    if (row.lifecycleStatus === undefined)
+        return '';
+    if (row.lifecycleStatus !== 'active') {
+        const reasons = row.audit?.attentionReasons ?? [];
+        return ` The catalog classifies this row '${row.lifecycleStatus}'`
+            + (reasons.length > 0 ? ` (reasons: ${reasons.join(', ')})` : '')
+            + ' — the --end-at-zero sweep selects only \'active\' rows, so it was never '
+            + 'attempted. Find where live-listing-catalog.ts adds those reasons.';
+    }
+    return ' The catalog classifies this row \'active\', so the sweep selected it: '
+        + 'look for this SKU\'s skip code in the "[Inventory Alignment]" summary log line.';
+}
+/**
+ * Publish-All items the run could not publish, grouped by root cause so one
+ * defect hitting ten SKUs is ONE incident (and one fix PR), not ten. The
+ * class is the first error code in the reason (CREATE_IDENTITY_MISMATCH,
+ * …) or, without one, the reason with SKUs and listed names stripped.
+ * Items the operator deliberately holds never reach the run (no-ebay tag,
+ * L90). Skips for store data only the operator can fix (no photos, no
+ * title) are marked `operatorOnly`; everything else is something the
+ * pipeline failed to handle.
+ */
+export function publishBlockCandidates(items) {
+    const groups = new Map();
+    for (const item of items) {
+        if (item.status !== 'failed' && item.status !== 'skipped')
+            continue;
+        const reason = (item.reason ?? item.status).slice(0, 400);
+        const code = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/.exec(reason)?.[0];
+        const reasonClass = code ?? reason
+            .split(item.sku).join('<sku>')
+            .replace(/eBay requires .*? for this category/, 'eBay requires <aspects> for this category')
+            .replace(/\([^)]*\)/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 80);
+        const group = groups.get(reasonClass) ?? [];
+        group.push({ sku: item.sku, reason });
+        groups.set(reasonClass, group);
+    }
+    return [...groups.entries()].map(([reasonClass, group]) => {
+        const operatorOnly = group.every((entry) => OPERATOR_DATA_SKIP_REASONS.includes(entry.reason));
+        return {
+            id: `PUBLISH_ITEM_BLOCKED:${reasonClass}`,
+            severity: 'warning',
+            code: 'PUBLISH_ITEM_BLOCKED',
+            sku: group[0].sku,
+            title: `Publish All could not publish ${group.length === 1 ? group[0].sku : `${group.length} items`}: ${reasonClass}`,
+            detail: (operatorOnly
+                ? 'The last Publish All run skipped these items because of store data only you can change. '
+                    + 'Fix it in Shopify and the next run publishes them.\n'
+                : 'The last Publish All run skipped or failed these items for the same cause. '
+                    + 'Find the root cause in the publish path and fix it so the next run publishes them '
+                    + 'without manual work.\n')
+                + group.slice(0, 8).map((entry) => `- ${entry.sku}: ${entry.reason}`).join('\n'),
+            operatorOnly,
+        };
+    });
+}
 /**
  * Pure detection over one observation. Persistence (the two-sighting rule
  * for oversell exposure) is the runner's job.
@@ -78,7 +143,7 @@ export function evaluateIncidentCandidates(input) {
                 title: `SOLD ITEM STILL BUYABLE ON EBAY: ${row.shopify.sku}`,
                 detail: `Shopify shows 0 in stock but eBay listing ${row.ebay.listingId} is still live. `
                     + 'Every minute risks a second sale. If this persists, end the listing on eBay '
-                    + 'manually and check the sell-out guard.',
+                    + 'manually and check the sell-out guard.' + oversellGuardDetail(row),
             });
         }
     }
@@ -129,7 +194,23 @@ export function evaluateIncidentCandidates(input) {
         const row = snapshot.rows.find((candidate) => candidate.shopify?.sku === failure.sku
             || `listing ${candidate.ebay?.listingId ?? ''}` === failure.sku);
         const stillLive = row?.ebay?.listingId != null;
-        const reason = latestProviderRejection();
+        const listingId = row?.ebay?.listingId
+            ?? /^listing ([0-9]+)$/u.exec(failure.sku)?.[1] ?? null;
+        const reason = providerRejectionFor(input.providerRejections ?? readProviderRejections(), ['ReviseInventoryStatus', 'ReviseFixedPriceItem'], listingId);
+        const storeState = reason === null ? null : priceRejectionStoreState(reason);
+        if (storeState !== null) {
+            candidates.push({
+                id: `PRICE_SYNC_REJECTED:${failure.sku}`,
+                severity: stillLive ? 'critical' : 'warning',
+                code: 'PRICE_SYNC_REJECTED',
+                sku: failure.sku,
+                title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
+                detail: `${storeState} ProductPipeline will align the price automatically after `
+                    + 'that setting changes. No code change can clear eBay error [21919248].',
+                operatorOnly: true,
+            });
+            continue;
+        }
         candidates.push({
             id: `PRICE_SYNC_REJECTED:${failure.sku}`,
             // A live listing showing a WRONG PRICE can sell at that price —
@@ -143,7 +224,8 @@ export function evaluateIncidentCandidates(input) {
                 + 'listing may be selling at the old price. Set the price manually on eBay now. '
                 + (reason !== null
                     ? `eBay's own reason for the most recent rejection: ${reason}`
-                    : 'Check the server log for EBAY_TRADING_REJECTED lines for the exact reason.'),
+                    : 'eBay\'s reason was not captured for this listing — check the server log for '
+                        + `EBAY_TRADING_REJECTED lines${listingId === null ? '' : ` naming item=${listingId}`}.`),
         });
     }
     for (const fulfillment of signals?.unresolvedFulfillments ?? []) {
@@ -176,19 +258,58 @@ export function evaluateIncidentCandidates(input) {
     }
     return candidates;
 }
-/** Latest sanitized provider rejection recorded by the Trading adapter
+/**
+ * eBay price refusals caused by a listing setting only the operator can
+ * change, keyed by eBay error code (incident #221: 21919248, the listing is
+ * in a Seller Hub markdown sale that locks its price). The pipeline cannot
+ * and must not undo an operator's promotion, so these go to the operator
+ * with the exact step, never to the fix agent. Returns that step, or null.
+ */
+const STORE_STATE_PRICE_REJECTIONS = [
+    ['21919248', 'This listing is in an eBay markdown sale whose settings lock its price, '
+            + 'so eBay refuses every price change, including one made by hand on eBay. In Seller Hub, '
+            + 'open Marketing > Promotions, edit the markdown sale and choose the setting that always '
+            + 'allows price updates, or remove this listing from the sale.'],
+];
+export function priceRejectionStoreState(reason) {
+    for (const [code, step] of STORE_STATE_PRICE_REJECTIONS) {
+        if (reason.includes(`[${code}]`))
+            return step;
+    }
+    return null;
+}
+/** The sanitized provider rejections ring written by the Trading adapter
  * (L87) — eBay's own words, safe for incidents and the fix agent. */
-function latestProviderRejection() {
+function readProviderRejections() {
     try {
-        const parsed = JSON.parse(fs.readFileSync('/data/product-pipeline/provider-rejections.json', 'utf8'));
-        if (!Array.isArray(parsed) || parsed.length === 0)
-            return null;
-        const last = parsed[parsed.length - 1];
-        return typeof last.reason === 'string' ? last.reason.slice(0, 300) : null;
+        return JSON.parse(fs.readFileSync('/data/product-pipeline/provider-rejections.json', 'utf8'));
     }
     catch {
         return null;
     }
+}
+/**
+ * The latest non-empty rejection of `call` for this listing (#209: the
+ * incident quoted the ring's LAST entry, whatever its call or listing, and
+ * printed an empty reason verbatim). Entries written before the adapter
+ * recorded `listingId` match on call alone.
+ */
+export function providerRejectionFor(entries, call, listingId) {
+    if (!Array.isArray(entries))
+        return null;
+    const calls = new Set(Array.isArray(call) ? call : [call]);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry === null || typeof entry !== 'object'
+            || typeof entry.call !== 'string' || !calls.has(entry.call))
+            continue;
+        if (typeof entry.listingId === 'string' && entry.listingId !== listingId)
+            continue;
+        if (typeof entry.reason !== 'string' || entry.reason.trim() === '')
+            continue;
+        return entry.reason.trim().slice(0, 300);
+    }
+    return null;
 }
 /* ------------------------------------------------------------------ */
 function parseArgvEnv(name) {
@@ -294,7 +415,8 @@ async function defaultOpenIssue(incident) {
                 + `**Detected:** ${incident.detectedAtUtc}\n\n${incident.detail}\n\n`
                 + `## Diagnosis\n\n${incident.diagnosis ?? '_diagnosis unavailable_'}\n\n`
                 + '---\nOpened automatically by the incident watchdog (L76). The `incident` '
-                + 'label triggers the fix-proposal workflow; a human always merges.',
+                + 'label triggers the fix workflow; its PR auto-merges when CI passes and no '
+                + 'protected path changed (L94), otherwise a human merges.',
         }),
     });
     if (response.status !== 201)
@@ -346,8 +468,10 @@ export async function runWatchdogOnce(dependencies = {}) {
     const nowUtc = new Date(nowMs).toISOString();
     const snapshot = await getSnapshot();
     const signals = getLedgerSignals(new Date(nowMs - LEDGER_WINDOW_MS).toISOString());
-    const candidates = evaluateIncidentCandidates({ snapshot, signals, nowMs });
-    const publishRun = getPublishAllStatus();
+    const candidates = evaluateIncidentCandidates({
+        snapshot, signals, nowMs, providerRejections: dependencies.getProviderRejections?.(),
+    });
+    const publishRun = (dependencies.getPublishStatus ?? getPublishAllStatus)();
     if (publishRun.state === 'stopped') {
         candidates.push({
             id: 'PUBLISH_RUN_STOPPED',
@@ -360,13 +484,19 @@ export async function runWatchdogOnce(dependencies = {}) {
                 + 'the next scheduled run retries, but a repeat points at something systemic.',
         });
     }
+    if (publishRun.state === 'finished' || publishRun.state === 'stopped') {
+        candidates.push(...publishBlockCandidates(publishRun.items));
+    }
     const state = loadState(stateFile);
     const nextPending = {};
     const active = [];
     for (const candidate of candidates) {
         const existing = state.incidents.find((incident) => incident.id === candidate.id);
         if (existing) {
-            active.push({ ...existing, ...candidate, lastSeenAtUtc: nowUtc });
+            // operatorOnly follows the CURRENT cause: a listing whose sale lock
+            // was lifted but that eBay now refuses for another reason must reach
+            // the fix agent again (#221).
+            active.push({ ...existing, ...candidate, operatorOnly: candidate.operatorOnly, lastSeenAtUtc: nowUtc });
             continue;
         }
         // Oversell exposure must persist across two sightings; everything else
@@ -393,8 +523,14 @@ export async function runWatchdogOnce(dependencies = {}) {
         });
         warn(`[Incidents] NEW ${candidate.severity} ${candidate.id}`);
     }
-    // Diagnose + escalate new criticals (bounded: one per cycle to cap spend).
-    const needsDiagnosis = active.find((incident) => incident.severity === 'critical' && incident.diagnosisState === 'none');
+    // Diagnose + escalate new criticals and self-heal publish blocks
+    // (bounded: one per cycle to cap spend). A publish block is a warning for
+    // the operator (no email, no red banner) but still goes to the fix agent.
+    // An operator-only incident (store data or a listing setting no code can
+    // change, #194/#221) is shown and alerted, never sent to the fix agent.
+    const escalates = (incident) => incident.operatorOnly !== true
+        && (incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED');
+    const needsDiagnosis = active.find((incident) => escalates(incident) && incident.diagnosisState === 'none');
     if (needsDiagnosis) {
         needsDiagnosis.diagnosisState = 'pending';
         try {
