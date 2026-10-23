@@ -51,8 +51,10 @@ export type Incident = {
   notifiedAtUtc: string | null;
   /**
    * A publish block whose every item is verified store data only the
-   * operator can change (no photos, no title). Shown to the operator, never
-   * sent to the fix agent: no code change can publish it (incident #194).
+   * operator can change (no photos, no title), or a price refusal caused by
+   * a listing setting only the operator can change (a price-locking markdown
+   * sale). Shown to the operator, never sent to the fix agent: no code change
+   * can clear it (incidents #194, #221).
    */
   operatorOnly?: boolean;
 };
@@ -94,6 +96,8 @@ export type WatchdogDependencies = Readonly<{
   notify?: (incident: Incident) => Promise<void>;
   learningsContext?: () => string;
   getPublishStatus?: () => Pick<ReturnType<typeof getPublishAllStatus>, 'state' | 'stopReason' | 'items'>;
+  /** Test seam; defaults to the adapter's provider-rejections ring. */
+  getProviderRejections?: () => unknown;
 }>;
 
 /**
@@ -155,8 +159,8 @@ export function evaluateIncidentCandidates(input: {
   nowMs: number;
   /** Test seam; defaults to the adapter's provider-rejections ring. */
   providerRejections?: unknown;
-}): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
-  const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> = [];
+}): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> {
+  const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> = [];
   const { snapshot, signals, nowMs } = input;
 
   const stuckOrder = signals?.oldestUnresolvedOrder ?? null;
@@ -261,6 +265,21 @@ export function evaluateIncidentCandidates(input: {
       'ReviseInventoryStatus',
       listingId,
     );
+    const storeState = reason === null ? null : priceRejectionStoreState(reason);
+    if (storeState !== null) {
+      candidates.push({
+        id: `PRICE_SYNC_REJECTED:${failure.sku}`,
+        severity: stillLive ? 'critical' : 'warning',
+        code: 'PRICE_SYNC_REJECTED',
+        sku: failure.sku,
+        title: `eBay is rejecting price updates for ${failure.sku} (${failure.count}× in 24h)`,
+        detail: `${storeState} The price sync keeps retrying on its own and aligns the `
+          + 'price on the first sweep after that change; no code change can clear it. '
+          + `eBay's own reason for the most recent rejection: ${reason}`,
+        operatorOnly: true,
+      });
+      continue;
+    }
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -310,6 +329,27 @@ export function evaluateIncidentCandidates(input: {
   }
 
   return candidates;
+}
+
+/**
+ * eBay price refusals caused by a listing setting only the operator can
+ * change, keyed by eBay error code (incident #221: 21919248, the listing is
+ * in a Seller Hub markdown sale that locks its price). The pipeline cannot
+ * and must not undo an operator's promotion, so these go to the operator
+ * with the exact step, never to the fix agent. Returns that step, or null.
+ */
+const STORE_STATE_PRICE_REJECTIONS: ReadonlyArray<readonly [code: string, step: string]> = [
+  ['21919248', 'This listing is in an eBay markdown sale whose settings lock its price, '
+    + 'so eBay refuses every price change, including one made by hand on eBay. In Seller Hub, '
+    + 'open Marketing > Promotions, edit the markdown sale and choose the setting that always '
+    + 'allows price updates, or remove this listing from the sale.'],
+];
+
+export function priceRejectionStoreState(reason: string): string | null {
+  for (const [code, step] of STORE_STATE_PRICE_REJECTIONS) {
+    if (reason.includes(`[${code}]`)) return step;
+  }
+  return null;
 }
 
 /** The sanitized provider rejections ring written by the Trading adapter
@@ -508,7 +548,9 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   const nowUtc = new Date(nowMs).toISOString();
   const snapshot = await getSnapshot();
   const signals = getLedgerSignals(new Date(nowMs - LEDGER_WINDOW_MS).toISOString());
-  const candidates = evaluateIncidentCandidates({ snapshot, signals, nowMs });
+  const candidates = evaluateIncidentCandidates({
+    snapshot, signals, nowMs, providerRejections: dependencies.getProviderRejections?.(),
+  });
   const publishRun = (dependencies.getPublishStatus ?? getPublishAllStatus)();
   if (publishRun.state === 'stopped') {
     candidates.push({
@@ -532,7 +574,10 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   for (const candidate of candidates) {
     const existing = state.incidents.find((incident) => incident.id === candidate.id);
     if (existing) {
-      active.push({ ...existing, ...candidate, lastSeenAtUtc: nowUtc });
+      // operatorOnly follows the CURRENT cause: a listing whose sale lock
+      // was lifted but that eBay now refuses for another reason must reach
+      // the fix agent again (#221).
+      active.push({ ...existing, ...candidate, operatorOnly: candidate.operatorOnly, lastSeenAtUtc: nowUtc });
       continue;
     }
     // Oversell exposure must persist across two sightings; everything else
@@ -563,9 +608,10 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   // Diagnose + escalate new criticals and self-heal publish blocks
   // (bounded: one per cycle to cap spend). A publish block is a warning for
   // the operator (no email, no red banner) but still goes to the fix agent.
-  const escalates = (incident: Incident): boolean =>
-    incident.severity === 'critical'
-    || (incident.code === 'PUBLISH_ITEM_BLOCKED' && incident.operatorOnly !== true);
+  // An operator-only incident (store data or a listing setting no code can
+  // change, #194/#221) is shown and alerted, never sent to the fix agent.
+  const escalates = (incident: Incident): boolean => incident.operatorOnly !== true
+    && (incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED');
   const needsDiagnosis = active.find((incident) =>
     escalates(incident) && incident.diagnosisState === 'none');
   if (needsDiagnosis) {
