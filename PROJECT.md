@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Throttled Census Reads Are Retried, Not Fatal (L117, incident #228)
+
+Publish All skipped `L398-U022` and `259969-U557` with `LISTING_DRAFT_UNAVAILABLE: workspace_catalog_stale` because the census failed, and the forced re-read failed too. Every census read treated an explicit throttle as an incomplete census. These reads were: Shopify GraphQL pages, Trading `GetUser`/`GetMyeBaySelling`, and Inventory items/offers. Publish All's ceremony processes run their own censuses against the same Shopify bucket and eBay app, so throttling during a run is routine. Census reads now retry HTTP 429/500–504, and Shopify 200s whose errors are all `THROTTLED`, up to 3 attempts with an 8 s pause. All other answers still fail the whole census closed. Publish All now waits 30 s before its forced re-read after a catalog-side draft refusal. Files: `src/server/live-listing-catalog-source.ts`, `src/server/publish-all.ts`, plus regression tests in `live-listing-catalog.test.ts` and `publish-all-draft-unavailable.test.ts`.
+
 ### 2026-10-23: Slash-SKU Publishing Blocker Traced End to End (L116)
 
 The live Publish-All pass correctly refused two Sony SKUs containing `/`. The repository has separate raw-Shopify and eBay-inventory identity fields, but schema v2 and the catalog, create/recovery, alignment and order-import paths still require byte-identical SKUs. Removing the regex alone would risk duplicate listings and orders that cannot resolve back to Shopify. L116 records the required versioned reversible alias design and explicit schema-upgrade boundary; no unsafe partial workaround was shipped.

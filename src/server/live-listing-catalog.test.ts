@@ -1059,7 +1059,8 @@ describe('strict live source parsers', () => {
       const sku = String(url.searchParams.get('sku'));
       const offset = Number(url.searchParams.get('offset'));
       requested.push(`${sku}:${offset}`);
-      if (sku === 'SKU-0') return new Response('{}', { status: 503 });
+      // A non-transient refusal (a 503 is now retried, incident #228).
+      if (sku === 'SKU-0') return new Response('{}', { status: 400 });
       inFlight += 1;
       await new Promise((resolve) => { setTimeout(resolve, 20); });
       inFlight -= 1;
@@ -1265,5 +1266,98 @@ describe('strict live source parsers', () => {
     await expect(exchangeRuntimeEbayToken(auth, wrongType)).rejects.toThrow(
       'Live listing catalog is unavailable',
     );
+  });
+
+  // Incident #228: Publish All skipped two ready items with
+  // workspace_catalog_stale because the census failed and the forced re-read
+  // failed too. A throttled or overloaded read is a "try again", not an
+  // incomplete census; it is retried a bounded number of times.
+  describe('transient census reads (incident #228)', () => {
+    const throttled = () => jsonResponse({
+      errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+    });
+    const status = (code: number) => new Response('{}', { status: code });
+    const withPause = async (body: () => Promise<void>) => {
+      LIVE_LISTING_CATALOG_SOURCE_TESTING.setCensusRetryPauseForTests(0);
+      try {
+        await body();
+      } finally {
+        LIVE_LISTING_CATALOG_SOURCE_TESTING.setCensusRetryPauseForTests(null);
+        globalThis.fetch = originalFetch;
+      }
+    };
+    const shopifyWith = (variantPage: (call: number) => Response) => {
+      let calls = 0;
+      globalThis.fetch = (async (_url, init) => {
+        const request = JSON.parse(String(init?.body)) as { operationName: string };
+        if (request.operationName === 'RuntimeListingCatalogPreflight') return jsonResponse(shopifyPreflight);
+        calls += 1;
+        return variantPage(calls);
+      }) as typeof fetch;
+      return () => calls;
+    };
+    const page = () => jsonResponse({ data: { productVariants: {
+      nodes: [shopifyNode(1, 'AFTER-THROTTLE')],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    } } });
+
+    it('retries a Shopify page answered THROTTLED (200) or 429 and completes the census', async () => {
+      await withPause(async () => {
+        const calls = shopifyWith((call) => (call === 1 ? throttled() : call === 2 ? status(429) : page()));
+        const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority');
+        expect(result.variants.map((entry) => entry.sku)).toEqual(['AFTER-THROTTLE']);
+        expect(calls()).toBe(3);
+      });
+    });
+
+    it('still fails closed when Shopify stays throttled, after exactly the bounded attempts', async () => {
+      await withPause(async () => {
+        const calls = shopifyWith(() => throttled());
+        await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority'))
+          .rejects.toThrow('Live listing catalog is unavailable');
+        expect(calls()).toBe(LIVE_LISTING_CATALOG_SOURCE_TESTING.CENSUS_READ_ATTEMPTS);
+      });
+    });
+
+    it('never retries a non-throttle Shopify error or a 4xx', async () => {
+      await withPause(async () => {
+        const mixed = shopifyWith(() => jsonResponse({ errors: [
+          { extensions: { code: 'THROTTLED' } }, { extensions: { code: 'ACCESS_DENIED' } },
+        ] }));
+        await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority')).rejects.toThrow();
+        expect(mixed()).toBe(1);
+        const forbidden = shopifyWith(() => status(403));
+        await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureShopify('authority')).rejects.toThrow();
+        expect(forbidden()).toBe(1);
+      });
+    });
+
+    it('retries an eBay Inventory 429/503 but not a 400', async () => {
+      await withPause(async () => {
+        let offerCalls = 0;
+        let itemCalls = 0;
+        globalThis.fetch = (async (rawUrl) => {
+          const url = new URL(String(rawUrl));
+          if (url.pathname.endsWith('/inventory_item')) {
+            itemCalls += 1;
+            return itemCalls === 1 ? status(429)
+              : jsonResponse({ total: 1, inventoryItems: [{ sku: 'RETRIED-SKU' }] });
+          }
+          offerCalls += 1;
+          return offerCalls === 1 ? status(503) : jsonResponse({ total: 0, offers: [] });
+        }) as typeof fetch;
+        const result = await LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority');
+        expect(result.items).toEqual([{ sku: 'RETRIED-SKU' }]);
+        expect([itemCalls, offerCalls]).toEqual([2, 2]);
+
+        let badCalls = 0;
+        globalThis.fetch = (async () => {
+          badCalls += 1;
+          return status(400);
+        }) as typeof fetch;
+        await expect(LIVE_LISTING_CATALOG_SOURCE_TESTING.captureInventory('authority')).rejects.toThrow();
+        expect(badCalls).toBe(1);
+      });
+    });
   });
 });

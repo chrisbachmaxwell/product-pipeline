@@ -45,6 +45,8 @@ const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_ITEMS = 30;
+/** Pause before the forced catalog re-read after a catalog-side draft refusal. */
+const CATALOG_REREAD_PAUSE_MS = 30_000;
 /**
  * dispatch-create refusals a fresh preflight can clear: a transient capture
  * failure, or the item/draft moving between preflight and dispatch. The
@@ -666,6 +668,11 @@ export function startPublishAllRun(
             warn(`[Publish All] draft for ${sku} was refused (${prepareFailure.code}`
               + `${prepareFailure.detail ? `: ${prepareFailure.detail}` : ''})`);
             if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure)) break;
+            // Incident #228: the refusal usually follows a census that just
+            // failed (throttled or overloaded provider). Re-reading at once
+            // hits the same drained rate-limit bucket, so let it refill first.
+            step('Waiting for the store to accept reads again');
+            await sleep(CATALOG_REREAD_PAUSE_MS);
             step('Re-reading your store before retrying the draft');
             try {
               await refreshSnapshot();

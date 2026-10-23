@@ -183,6 +183,54 @@ async function boundedFetchJson(
   return parseJsonRecord(response.text);
 }
 
+/**
+ * Incident #228: one throttled or provider-overloaded census read failed the
+ * whole census. Publish-All shares the store's Shopify GraphQL bucket and the
+ * eBay app's call rate with its own ceremony processes (each runs a census),
+ * so a "slow down" answer during a run is routine, and the immediate forced
+ * re-read hit the same drained bucket. Every census read is read-only, so an
+ * explicit throttle (HTTP 429, a Shopify 200 whose errors are all THROTTLED)
+ * or an eBay/Shopify 5xx is retried a bounded number of times after a fixed
+ * pause. Anything else, and the last attempt, still fails the census closed.
+ */
+const CENSUS_READ_ATTEMPTS = 3;
+const DEFAULT_CENSUS_RETRY_PAUSE_MS = 8_000;
+let censusRetryPauseMs = DEFAULT_CENSUS_RETRY_PAUSE_MS;
+
+function setCensusRetryPauseForTests(ms: number | null): void {
+  censusRetryPauseMs = ms ?? DEFAULT_CENSUS_RETRY_PAUSE_MS;
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 504);
+}
+
+function isShopifyThrottledBody(text: string): boolean {
+  try {
+    const errors = (JSON.parse(text) as { errors?: unknown }).errors;
+    return Array.isArray(errors) && errors.length > 0 && errors.every((entry) =>
+      entry !== null && typeof entry === 'object'
+      && (entry as { extensions?: { code?: unknown } }).extensions?.code === 'THROTTLED');
+  } catch {
+    return false;
+  }
+}
+
+async function censusFetchText(
+  url: string,
+  init: RequestInit,
+  retryable: (response: Readonly<{ status: number; ok: boolean; text: string }>) => boolean,
+): Promise<{ status: number; ok: boolean; text: string }> {
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await boundedFetchText(fetch, url, init);
+    if (attempt >= CENSUS_READ_ATTEMPTS || !retryable(response)) return response;
+    await new Promise((resolve) => { setTimeout(resolve, censusRetryPauseMs); });
+  }
+}
+
+const transientHttp = (response: Readonly<{ status: number }>): boolean =>
+  isTransientStatus(response.status);
+
 function parseJsonRecord(text: string): Record<string, any> {
   try {
     return asRecord(JSON.parse(text));
@@ -296,8 +344,7 @@ async function shopifyGraphql(
   query: string,
   variables: Record<string, unknown> = {},
 ): Promise<Record<string, any>> {
-  const body = await boundedFetchJson(
-    fetch,
+  const response = await censusFetchText(
     `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`,
     {
       method: 'POST',
@@ -308,7 +355,11 @@ async function shopifyGraphql(
       },
       body: JSON.stringify({ operationName, query, variables }),
     },
+    (candidate) => isTransientStatus(candidate.status)
+      || (candidate.ok && isShopifyThrottledBody(candidate.text)),
   );
+  if (!response.ok) deny();
+  const body = parseJsonRecord(response.text);
   if (body.errors !== undefined || !body.data) deny();
   return asRecord(body.data);
 }
@@ -460,7 +511,7 @@ async function tradingCall(
   callName: 'GetUser' | 'GetMyeBaySelling',
   body: string,
 ): Promise<Record<string, any>> {
-  const response = await boundedFetchText(fetch, 'https://api.ebay.com/ws/api.dll', {
+  const response = await censusFetchText('https://api.ebay.com/ws/api.dll', {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml',
@@ -470,7 +521,7 @@ async function tradingCall(
       'X-EBAY-API-IAF-TOKEN': accessToken,
     },
     body,
-  });
+  }, transientHttp);
   if (!response.ok) deny();
   let parsed: unknown;
   try {
@@ -693,14 +744,16 @@ async function captureTrading(accessToken: string): Promise<{
 
 async function inventoryGet(accessToken: string, path: string): Promise<Record<string, any>> {
   if (!path.startsWith('/sell/inventory/v1/')) deny();
-  return boundedFetchJson(fetch, `https://api.ebay.com${path}`, {
+  const response = await censusFetchText(`https://api.ebay.com${path}`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
       'Accept-Language': 'en-US',
     },
-  });
+  }, transientHttp);
+  if (!response.ok) deny();
+  return parseJsonRecord(response.text);
 }
 
 /**
@@ -730,14 +783,14 @@ function isExactEmptyOffersResponse(response: Readonly<{
 
 async function inventoryGetOffers(accessToken: string, path: string): Promise<Record<string, any>> {
   if (!path.startsWith('/sell/inventory/v1/offer?')) deny();
-  const response = await boundedFetchText(fetch, `https://api.ebay.com${path}`, {
+  const response = await censusFetchText(`https://api.ebay.com${path}`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
       'Accept-Language': 'en-US',
     },
-  });
+  }, transientHttp);
   if (response.ok) return parseJsonRecord(response.text);
   if (isExactEmptyOffersResponse(response)) return { total: 0, offers: [] };
   return deny();
@@ -1110,6 +1163,8 @@ export const LIVE_LISTING_CATALOG_SOURCE_TESTING = Object.freeze({
   captureInventory,
   verifySellerIdentity,
   resetSellerVerificationForTests,
+  setCensusRetryPauseForTests,
+  CENSUS_READ_ATTEMPTS,
   tradingListingFacets,
   offerListingFacets,
   LIVE_CATALOG_REFRESH_INTERVAL_MS,
