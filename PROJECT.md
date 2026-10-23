@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Item-Only eBay Residue Uses the Existing Safe Recovery Mode (L119)
+
+The item recovery button now passes the existing `offer-id none` discriminator when exact reconciliation sees a recorded artifact but no offer ID. The standalone ceremony still performs the decisive provider read and refuses if any offer exists; only a positively verified zero-offer SKU can proceed to its exact Inventory-item deletion. This makes the already-tested item-only crash recovery reachable from the UI without changing its approval, target, or provider-write boundaries.
+
 ### 2026-10-23: Item Recovery Receives Its Exact Target (L118)
 
 The item-detail **Clear leftover eBay data** action reached its guarded route without a JSON parser in the live server composition, so the handler saw no `catalogId` or `sku` and refused before any ceremony ran. The server now mounts the existing strict parser for exactly `/api/listing-recovery`, after auth/quarantine and before the route. A wiring regression checks the real `src/server/index.ts` composition; the exact-target validation and reconcile → recover-create → recover-reconcile ceremony are unchanged.
