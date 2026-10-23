@@ -1,5 +1,7 @@
 # Product Pipeline Project Brain
 
+> **New agent? Start with Section 16 ("State of the System — 2026-10-23")** for what is live today, how the app runs and heals itself, who merges what, and what is open. Then follow the Section 12 protocol and the Section 15 task router. Sections 13–14 and the older parts of 16 are the historical record and are retained as written. The Section 17 Learnings Log (L1–L109) is append-only; the newest entries are the most current detail.
+
 > Canonical orientation and handoff document for the Product Pipeline repository.
 > Initial architecture behavior was verified against `main` at `e6914f5657bf1d074dd8900ac7b6513f96654922` on 2026-08-11.
 > The inert migration-administration and read-only-projection revision `550cf2384a16e6f57f03d315643f3cc1337b4b7d` was source/build/test verified and observed on the public Railway health endpoint on 2026-08-11; remote Shopify/eBay parity remains separate evidence.
@@ -466,6 +468,8 @@ Safest next action:
 
 ## 13. Current Handoff
 
+> **Superseded for current state by Section 16 (2026-10-23).** The entries below are the August 2026 handoff record, retained as written.
+
 - Shopify credential-maintenance checkpoint: PR #15 merged as `579cc077a6ca4930fbfa88d415b80cc04c12d963` with exact-store current/previous-secret JWT and webhook verification plus the standalone compiled credential administrator. Shopify app version `productpipeline-read-only-8` (`1090140569601`) was released with exactly `read_products`, `read_orders`, `read_inventory`, and `read_fulfillments`; the merchant approved Update and the signed-in embedded app loaded afterward. Temporary rotation-ack deployment `77c18d72-e757-41be-8692-284d77f2490c` ran the fixed direct preflight, which returned only `database-denied` before any provider request. The acknowledgement variables were removed, and same-revision deployment `d44e6238-0072-4c8c-bbd3-df6929f6164d` is Active with one replica; public health at `2026-08-14T20:52:35.738Z` reported `ok`, `shadow-read-only`, external writes false, and historical backfill false. No access-token rotation, Production database write, proposal activation, commerce write, Marketplace Connect change, or Lightspeed effect occurred.
 - Credential exposure containment: an attempted cutoff-only Railway change unexpectedly redeployed the prior single-secret release, so the operation immediately rolled back before provider dispatch. A broad Shopify credential-settings accessibility capture then exposed the unused staged secondary; it was revoked, replaced with a fresh secondary through value-blind control-plane handling, and the browser clipboard was cleared. No raw secret is retained in repository evidence. This incident remains open until the database gate is diagnosed, the reviewed fixed rotation completes, temporary variables are removed, old authority is revoked, and credential-free closure evidence is recorded.
 - Credential-maintenance boundary: `credential-admin` pins the exact Production Railway project/environment/service, store/app, four canonical read-only scopes, `/data/ebaysync.db`, and the private backup directory. The mounted catalog consumes products/inventory reads, bounded evidence/order attribution consumes order reads, and fulfillment read authority is deliberately retained from the existing app/install contract; rotation makes no scope change. Its fixed sequence is current-token read-only verification, complete private logical-content-verified backup, one no-retry provider credential request, fresh-token exact-authority verification, full-row compare-and-swap, read-only reopen, and final provider verification. Output distinguishes one provider credential mutation from zero commerce writes and proves the temporary dashboard refresh token was not persisted to the database; the protected Railway variable remains operator-managed until explicit cleanup. It is not mounted/imported by the server and cannot write listings, orders, price, inventory, fulfillment, policy, mapping, Marketplace Connect, or Lightspeed state.
@@ -571,10 +575,51 @@ Every agent starts with the Section 12 protocol (read `AGENTS.md`, this file's S
 | Deploy / ops / "is it live" | Section 16, `docs/ACTIVATION_RUNBOOK.md` §0–1, Learnings L2/L10 | — |
 | Goals / what to work on | Section 14 + its updates, Section 16 | — |
 | Writer-quarantine invariants | `docs/WRITER_QUARANTINE.md` | `src/server/middleware/` |
+| Publish-All runner (in-app publishing, pacing, skips, banner) | Section 16, Learnings L65–L73, L89–L106 | `src/server/publish-all.ts`, `src/server/routes/listing-publish-all.ts` |
+| Item-specifics agent ("Does not apply" fallback) | L89, L93 | `src/server/aspect-filler.ts` |
+| `no-ebay` hold tag | L90 | `src/shared/ebay-hold-tag.ts`, `src/server/live-listing-catalog.ts` |
+| Self-healing loop (watchdog → issue → fix PR → auto-merge) | L76, L94, L96, L103, `docs/AUTOMERGE_POLICY.md` | `src/server/incident-watchdog.ts`, `.github/workflows/incident-fix.yml`, `.github/workflows/auto-merge.yml` |
+| Merge policy (who merges what) | L88, L91, L94, `docs/AUTOMERGE_POLICY.md` | `.github/workflows/auto-merge.yml` |
+| Best Offer thresholds on price drops | L107–L109 | `src/price-inventory-admin/manifest.ts` (`deriveBestOfferFloors`), `trading-dispatch-adapter.ts` |
 
 **Self-building duty (mandatory):** before finishing any merged work an agent MUST (1) update the Section 14 goal statuses (or append a dated update subsection) if goal state changed, (2) append numbered entries to the Section 17 Learnings Log for anything a future agent would otherwise rediscover the hard way, (3) add a `PROJECT.md` changelog entry, and (4) touch the per-agent entry files (`AGENTS.md`, `CLAUDE.md`, `GROK.md`, `.cursorrules`) only if a safety absolute changed. Learnings are append-only; never rewrite or delete an existing entry.
 
-## 16. State of the System — 2026-09-08
+## 16. State of the System — 2026-10-23
+
+Verified on 2026-10-23: production `/health` (`https://ebay-sync-app-production.up.railway.app/health`) served `buildCommit` `5a6d977` (PR #217), the head of `main`. Everything else below is from the repository, GitHub and session history; no production database or log was read for this snapshot.
+
+**What the app is and who owns what.** ProductPipeline is the Shopify-embedded app that replaced Marketplace Connect for the Used Camera Gear eBay integration. `/health` reports `product-pipeline` as owner, through operator ceremonies, of `orderImport`, `price`, `inventory`, `listingCreate`, `listingRevise`, `listingEndRelist` and `fulfillment`. `mapping`, `feedback` and `reconciliation` are `unverified`/read-only. Every provider write still runs a standalone ceremony CLI with its own intent, approval, dispatch and reconciliation. The server never becomes a writer; it only spawns ceremonies (L55). The four absolutes in `CLAUDE.md` are unchanged.
+
+**Deploys.** `main` auto-deploys to Railway (merging = deploying), single replica, durable state only on `/data` (L2). Verify any "is it live" question by comparing `/health` `buildCommit` with the merge SHA (L10). Between 2026-10-16 and 2026-10-22, PR #214 merged but did not deploy until the next merge (#216) triggered a deploy; the cause was not found. If `buildCommit` lags `main`, check the Railway dashboard. A deploy restarts the app and kills an in-flight Publish-All run; the startup residue sweep and the next run recover (L71, L88).
+
+**Publishing to eBay (the main operator flow).**
+- "Ready to list" = an ACTIVE Shopify product, in stock, with a SKU and no eBay presence (L55). The operator clicks **Publish all ready** on the Listings page (or the armed schedule runs it). Each item goes through preflight → paced dispatch → patient reconcile via the ceremony CLIs, about 2–3 minutes per item by design (40 s before dispatch, 60 s between items; L63). The banner shows the current step and an elapsed timer (L92).
+- `no-ebay` Shopify tag: a tagged product is never ready, is skipped by every publish path, and is never relisted on restock. Removing the tag releases it on the next catalog refresh (L90). The operator uses it for items like the Contax G2 kit `TLA200-U288`. `PUBLISH_EXCLUDE_SKUS` (Railway env) is a deploy-level override (L89).
+- Item specifics: only aspects eBay's taxonomy marks REQUIRED are requested. The item-specifics agent (`aspect-filler.ts`, Claude via Settings → Connections) fills missing ones from the title, the description and known model facts. It answers eBay's "Does not apply" when an aspect does not exist for the item or it is unsure, and never guesses. A selection-only aspect whose list lacks "Does not apply" still skips (L89, L93). Operator rule: publishing must not wait on manual item-specifics entry.
+- Publish-All also repairs drafts itself: it rebases stale or identity-drifted drafts (L95), fits titles over 80 characters (L99–L101), refreshes drafts missing store photos (L102–L103), re-checks refused dispatches and eBay 5xx once (L97, L105), re-reads the catalog before giving up on a draft (L106), and re-checks creates unresolved for over an hour so their warnings clear (L96).
+
+**Self-healing loop (L76 → L94).** The watchdog (`incident-watchdog.ts`, 5-minute cadence) raises incidents: oversell exposure, end and price rejections, stuck orders and fulfillments, aging creates, stale snapshots, and `PUBLISH_ITEM_BLOCKED` (Publish-All items grouped by root cause; operator-data-only skips such as "no photos" are shown but not escalated, L103). An escalated incident is diagnosed by Claude and opened as a GitHub `incident` issue. `incident-fix.yml` then has Claude write a fix and open a PR labeled `incident-fix`. `auto-merge.yml` merges that PR when CI is green and it touches no protected path. The loop has shipped many real fixes on its own (#170, #174, #177, #181, #183, #185, #187, #195, #197, #214, …).
+
+**Who merges what.**
+- Docs and tests only: auto-merge (L88).
+- An `incident-fix` PR on a `claude/` branch that avoids protected paths: auto-merge (L94). Protected paths: `src/safety`, `src/server/middleware`, `src/migration-store`, every `src/*-admin` ceremony CLI (including price sync), `src/config`, `src/shopify`, `src/server/connections*`, `src/server/order-import*`, `src/server/migration-state-reader*`, `package*.json`, `.github/`, `CLAUDE.md`, `AGENTS.md`, `GROK.md`, `.cursorrules`.
+- Any PR an agent opened for the operator's request: the agent merges it itself once CI is green and it is mergeable (L91). The exception is a PR that loosens an absolute or its enforcement, which waits for the operator's explicit merge.
+- Open PRs as ready-for-review, not draft. The cloud GitHub tools sometimes cannot un-draft a PR.
+
+**Price sync and Best Offer (operator decision, 2026-10-23, L109).** A Shopify price drop at or below a listing's Best Offer auto-accept or auto-decline price is no longer refused (eBay error 23004). The colliding threshold is lowered proportionally (it keeps its ratio to the old price), always strictly below the new price, in one bounded `ReviseFixedPriceItem` covered by the approval digest. Non-colliding thresholds are untouched. Deployed 2026-10-23 as #217; not yet observed on a live listing. Watch 147436215816, 147521467887 and 147531586972: their "eBay is rejecting price updates" incidents should stop.
+
+**Open items (2026-10-23).**
+- Live proof owed: the first proportional Best Offer revise; the 7 items from incident #213 (`BIGSTOPPER-U021`, `LEENDSET-U019`, `105MMPOL-U020`, `12309-U023`, `16012-U024`, `NOVOLEIRTOFUJX-U026`, `L398-U022`) on the next Publish-All after #216.
+- About 25 `incident` issues are open on GitHub, many already fixed. Nothing closes them automatically yet.
+- Fix-workflow gaps:
+  - Concurrent `incident-fix` PRs can conflict. Both edit `PROJECT.md`/`PROJECT_BRAIN.md` and claim the same L-number, and a conflicted PR gets no CI and never auto-merges (#215 → carried as #216).
+  - Repeat incidents of one root cause each spawn a new PR (11 Best Offer PRs → consolidated as #217).
+  - The agent should base its branch on fresh `main` and reuse an open PR for the same cause.
+- Older still-open threads are listed in L85 (email connection, the `16437396` zombie, sold-before-listing) and in L104's "still uncovered" notes.
+- Learnings L97–L106 were written by the fix agent and describe each fix's root cause in detail; read the one matching your area.
+
+### Prior snapshot — 2026-09-08 (retained as recorded)
+
 
 - **The sell-out lifecycle is fully automatic (2026-09-08):** Shopify → 0 ends the eBay listing (`--end-at-zero`); stock returning relists it with live quantity/price (`--relist-on-restock`); both armed in the production sweep argv. eBay Platform Notifications are SUBSCRIBED (seven event types → verified read-only receiver → armed sweep), so eBay-side changes push to us in seconds. Shopify webhook sweeps carry a 45s confirmation pass (L50). The sweep summary is truthful: `aligned` requires provider acceptance (L51). See L49–L54 for the six defects and designs this day produced.
 - **Open after 2026-09-08:** drop the full sweep to twice daily once one live push notification is observed; `16437396` still cycling `REALIGN_INTENT_IN_FLIGHT` (needs store-level recovery of its stuck job); unresolved-jobs backlog (~44, mostly the L51 rejected zero-writes) awaiting a late-reconciliation pass; listings ended before the relist marker existed need one manual relist each; Brain-era attention-reason audit per L49's lesson.
