@@ -185,6 +185,23 @@ describe('publish-all draft from an older identity (incident #169)', () => {
 });
 
 describe('publish-all progress reporting', () => {
+  it('reuses the fresh initial snapshot instead of forcing a second provider census', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    let forcedRefreshes = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
+      refreshSnapshot: async () => {
+        forcedRefreshes += 1;
+        throw new Error('provider census should not run');
+      },
+    }, saves, calls));
+    await run;
+    expect(forcedRefreshes).toBe(0);
+    expect(getPublishAllStatus().items[0]).toMatchObject({ status: 'published' });
+  });
+
   it('names the step in progress and clears the item once it is recorded', async () => {
     arm();
     const saves: unknown[] = [];
@@ -217,17 +234,27 @@ describe('publish-all stuck-create sweep', () => {
     try {
       const saves: unknown[] = [];
       const calls: string[][] = [];
-      const { run } = startPublishAllRun('test', dependencies({
+      const configured = dependencies({
         fillAspects: async () => ({ filled: { Mount: ['Canon RF'] }, unresolved: [] }),
         agingUnresolvedCreateSkus: () => new Set(['4426B002-U317']),
         findUnresolvedCreate: () => ({
           jobId: 'listing-create-job:1', attemptId: 'listing-create-attempt:1',
           intentKey: `sha256:${'1'.repeat(64)}`, evidenceDigest: `sha256:${'2'.repeat(64)}`,
         }),
-      }, saves, calls));
+      }, saves, calls);
+      const initialSnapshot = configured.getSnapshot!;
+      let forcedRefreshes = 0;
+      const { run } = startPublishAllRun('test', {
+        ...configured,
+        refreshSnapshot: async () => {
+          forcedRefreshes += 1;
+          return initialSnapshot();
+        },
+      });
       await run;
       expect(calls[0]).toEqual(['cli.js', 'reconcile-create', '--sku', '4426B002-U317',
         '--job-id', 'listing-create-job:1', '--attempt-id', 'listing-create-attempt:1']);
+      expect(forcedRefreshes).toBe(1);
     } finally {
       delete process.env.PUBLISH_RECONCILE_ARGV;
       delete process.env.PUBLISH_RECOVER_ARGV;

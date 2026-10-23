@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-23: Publish-All Reuses a Fresh Catalog Before Its First Item (L111)
+
+Two live Publish-All attempts stopped at "Loading your store" with `LISTING_CATALOG_INVENTORY_CAPTURE_FAILED` even though the Listings page had just loaded a complete snapshot with 19 Ready to list; neither attempt reached a listing or a provider write. The runner unconditionally forced another full catalog census on click, repeating 247 per-SKU eBay offer reads while webhook and alignment traffic was active. The initial batch selection now reuses the catalog cache's still-fresh successful snapshot. Forced refresh remains mandatory after residue recovery and when a draft hits the shared catalog-failure gate. Regressions prove a normal ready batch performs no forced census and the stuck-create recovery path still performs exactly one. No ceremony, migration store, order path, credential handling, dependency, or provider adapter changed.
+
 ### 2026-10-23: Empty eBay Inventory Items No Longer Take Down the Live Catalog (L110)
 
 The Listings page became unavailable and Publish-All stopped because eBay's per-SKU `getOffers` read returned HTTP 404 / error 25713 for one valid Inventory item that has no offer. The catalog treated every non-2xx response as a failed census, so that legitimate empty relationship invalidated the complete Shopify/eBay snapshot. `live-listing-catalog-source.ts` now recognizes only the exact fixed envelope (404, one 25713 `API_INVENTORY` request error) on the per-SKU offer read as `total: 0, offers: []`; every near miss still fails closed. A credential- and identifier-free Production-shaped read verified 247 Inventory items, 246 offers, exactly one empty-offer item, complete pagination, and no other failure. Regression coverage proves the exact exception and four fail-closed near misses. No provider write, order path, credential, migration state, ceremony, or dependency changed.

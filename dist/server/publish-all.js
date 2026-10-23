@@ -19,6 +19,11 @@
  * - missing drafts get a pure-inherit save (auto-defaults fill everything
  *   derivable, including title-marker conditions, L69)
  * - CREATE_BASE_STALE auto-rebases the draft and retries (L69)
+ * - a dispatch refused for a reason a fresh preflight can
+ *   clear is re-checked and re-dispatched once (L97)
+ * - an eBay server error (5xx) gets one more attempt from a refreshed
+ *   draft once its leftovers are cleared, and a draft an earlier closed
+ *   attempt used is refreshed instead of skipped (L105)
  * - known-benign blockers (missing condition, eBay-illegal SKU, missing
  *   required field, already-listed) are per-item skips with reasons the
  *   UI shows; unknown failure shapes STOP the run loudly (L65)
@@ -26,15 +31,57 @@
  * - runs are bounded (MAX_ITEMS) and single-flight, sharing the same lock
  *   as the one-item publish route
  */
+import { aspectFillerArmed, fillMissingAspects } from './aspect-filler.js';
 import { openListingControlStoreReadOnly } from '../listing-control-store/index.js';
 import { info, warn } from '../utils/logger.js';
 import { LISTING_DRAFT_SCOPE } from './listing-draft-service.js';
-import { findUnresolvedListingCreateFromArgv } from './migration-state-reader.js';
+import { findUnresolvedListingCreateFromArgv, readIncidentLedgerSignalsFromArgv, } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv } from './order-import-trigger.js';
 const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_ITEMS = 30;
+/**
+ * dispatch-create refusals a fresh preflight can clear: a transient capture
+ * failure, or the item/draft moving between preflight and dispatch. The
+ * generic code can also follow a provider write; the open-create ledger
+ * check at the retry site excludes that case.
+ */
+const DISPATCH_RECHECK_CODES = new Set([
+    'LISTING_LIFECYCLE_DENIED',
+    'CREATE_BASE_STALE',
+    'CREATE_IDENTITY_MISMATCH',
+    'CREATE_DRAFT_REVISION_MISMATCH',
+    'CREATE_MANIFEST_DIGEST_MISMATCH',
+    'CREATE_DRAFT_STORE_UNAVAILABLE',
+    'no code',
+]);
+/** eBay's generic server-side failure ("A system error has occurred"). */
+const EBAY_SYSTEM_ERROR_IDS = new Set([25001]);
+/**
+ * Read a failed dispatch-create summary (incident #212). `transient` is an
+ * eBay server error (HTTP 5xx, or eBay's system-error id): eBay's own
+ * trouble, not a refusal of the payload, so one more attempt may succeed.
+ * `detail` names the stage, HTTP status and eBay error ids (digits only,
+ * never provider text) for the log and the item reason.
+ */
+export function providerFailure(json) {
+    const stage = typeof json.dispatchFailureStage === 'string' ? json.dispatchFailureStage : 'unknown stage';
+    const httpStatus = typeof json.dispatchFailureHttpStatusCode === 'number'
+        ? json.dispatchFailureHttpStatusCode : null;
+    const errorIds = Array.isArray(json.dispatchFailureEbayErrorIds)
+        ? json.dispatchFailureEbayErrorIds.filter((id) => Number.isSafeInteger(id))
+        : [];
+    const transient = json.dispatchFailureHttpStatusFamily === 'http_5xx'
+        || (httpStatus !== null && httpStatus >= 500 && httpStatus <= 599)
+        || errorIds.some((id) => EBAY_SYSTEM_ERROR_IDS.has(id));
+    const detail = [
+        stage,
+        httpStatus === null ? null : `HTTP ${httpStatus}`,
+        errorIds.length === 0 ? null : `eBay error ${errorIds.join(', ')}`,
+    ].filter((part) => part !== null).join(', ');
+    return { transient, detail };
+}
 /** One publish at a time process-wide — shared with the one-item route. */
 let publishLockHeld = false;
 export function tryAcquirePublishLock() {
@@ -46,7 +93,8 @@ export function tryAcquirePublishLock() {
 export function releasePublishLock() { publishLockHeld = false; }
 const status = {
     state: 'idle', startedAtUtc: null, finishedAtUtc: null, startedBy: null,
-    totalReady: 0, currentSku: null, items: [], stopReason: null,
+    totalReady: 0, currentSku: null, currentStep: null, stepStartedAtUtc: null,
+    items: [], stopReason: null,
 };
 export function getPublishAllStatus() {
     return Object.freeze({ ...status, items: [...status.items] });
@@ -67,10 +115,76 @@ function parseArgvEnv(name) {
         return null;
     }
 }
+/** A create unresolved this long is stuck, not in flight (watchdog L76). */
+const UNRESOLVED_CREATE_STUCK_MS = 60 * 60_000;
 const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+/** Operator per-deploy exclusions: never publish these SKUs (comma-separated). */
+function excludedSkus() {
+    return new Set((process.env.PUBLISH_EXCLUDE_SKUS ?? '')
+        .split(',').map((sku) => sku.trim()).filter((sku) => sku.length > 0));
+}
+/** eBay's hard title limit; the create manifest denies anything longer. */
+const EBAY_TITLE_MAX = 80;
+const NO_SHOPIFY_PHOTOS = 'The item has no photos in Shopify — add at least one there and it will publish next run.';
+const NO_SHOPIFY_TITLE = 'The item has no title in Shopify — add one there and it will publish next run.';
+/**
+ * Skip reasons that are verified store data only the operator can change
+ * (incident #194). No code change can publish these items, so the watchdog
+ * shows them to the operator but does not send them to the fix agent.
+ */
+export const OPERATOR_DATA_SKIP_REASONS = Object.freeze([NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE]);
+/**
+ * Fit a store title into eBay's 80 characters (incident #180). The create
+ * manifest refuses a longer title as `CREATE_REQUIRED_FIELD_MISSING: title`,
+ * and the draft inherits the Shopify title verbatim, so every long store
+ * title skipped on every run. A title that already fits is returned
+ * unchanged. A longer one first loses the store-only markers (`(#123)`
+ * inventory suffixes, `*USED*`-style banners; condition is its own eBay
+ * field), then is cut at the last whole word. Returns null when there is no
+ * usable text at all.
+ */
+export function fitEbayTitle(raw) {
+    if (typeof raw !== 'string')
+        return null;
+    const collapsed = raw.replace(/\s+/gu, ' ').trim();
+    if (collapsed.length === 0)
+        return null;
+    if (collapsed.length <= EBAY_TITLE_MAX)
+        return collapsed;
+    const stripped = collapsed
+        .replace(/\(#\s*\d{1,12}\s*\)/gu, ' ')
+        .replace(/\*[^*\n]{1,40}\*/gu, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim();
+    const text = stripped.length > 0 ? stripped : collapsed;
+    if (text.length <= EBAY_TITLE_MAX)
+        return text;
+    const cut = text.slice(0, EBAY_TITLE_MAX + 1);
+    const boundary = cut.lastIndexOf(' ');
+    const words = boundary >= EBAY_TITLE_MAX / 2 ? cut.slice(0, boundary) : text.slice(0, EBAY_TITLE_MAX);
+    const tidy = words.replace(/[\s,;:/&+(\-–—]+$/u, '').trim();
+    return tidy.length > 0 ? tidy : text.slice(0, EBAY_TITLE_MAX).trim();
+}
+/**
+ * The shortened title Publish-All must carry in ANY draft save it makes, or
+ * null when none is needed (an operator title exists, or the store title
+ * already fits). Incident #182: the fit lived only in one dedicated save
+ * whose refusal was swallowed, and every other Publish-All save (first
+ * draft, stale rebase, aspect agent) wrote the title back to "inherit", so
+ * a single refused save left the item skipping on every run.
+ */
+function fittedTitleOverride(dto) {
+    const title = dto.sections.listing.title;
+    if (title.draft !== null)
+        return null;
+    const inherited = title.shopify;
+    if (typeof inherited !== 'string' || inherited.length <= EBAY_TITLE_MAX)
+        return null;
+    return fitEbayTitle(inherited);
+}
 function draftPayload(dto, overrides) {
     let specifics = null;
-    const raw = dto.sections.content.itemSpecifics.draft;
+    const raw = overrides.itemSpecifics ?? dto.sections.content.itemSpecifics.draft;
     if (raw) {
         // The create manifest demands alphabetically sorted specifics keys.
         const parsed = JSON.parse(raw);
@@ -79,6 +193,12 @@ function draftPayload(dto, overrides) {
             sorted[key] = parsed[key];
         specifics = JSON.stringify(sorted);
     }
+    // Incident #186 (L102): these used to be written as `null` (inherit), so
+    // every Publish-All save (first draft, rebase, title fit, aspect agent,
+    // refresh) silently dropped an operator's photo, description, category,
+    // condition or policy override — an image override added to fix "eBay
+    // requires images" was undone by the next run's save.
+    const { listing, content, delivery } = dto.sections;
     return {
         schemaVersion: 1,
         action: 'save_local_draft',
@@ -86,21 +206,55 @@ function draftPayload(dto, overrides) {
         expectedRevisionDigest: dto.revision?.revisionDigest ?? null,
         base: { sourceDigest: dto.base.sourceDigest, ebayDigest: dto.base.ebayDigest },
         draft: {
-            title: dto.sections.listing.title.draft,
-            category: null,
-            condition: null,
+            title: overrides.title ?? dto.sections.listing.title.draft ?? fittedTitleOverride(dto),
+            category: listing.category.draft ?? null,
+            condition: listing.condition?.draft ?? null,
             conditionDescription: overrides.conditionDescription !== undefined
                 ? overrides.conditionDescription
                 : dto.sections.listing.conditionDescription.draft,
-            description: null,
-            images: null,
+            description: content.description?.draft ?? null,
+            images: content.images?.draft ?? null,
             itemSpecifics: specifics,
-            fulfillmentPolicyId: null,
-            paymentPolicyId: null,
-            returnPolicyId: null,
-            merchantLocation: null,
+            fulfillmentPolicyId: delivery?.fulfillmentPolicyId?.draft ?? null,
+            paymentPolicyId: delivery?.paymentPolicyId?.draft ?? null,
+            returnPolicyId: delivery?.returnPolicyId?.draft ?? null,
+            merchantLocation: delivery?.merchantLocation?.draft ?? null,
         },
     };
+}
+function draftFailure(error) {
+    const fields = error instanceof Error ? error : {};
+    return {
+        code: typeof fields.code === 'string' ? fields.code : 'unavailable',
+        detail: typeof fields.detail === 'string' ? fields.detail : null,
+    };
+}
+/**
+ * A draft refusal caused by the shared catalog read (fail-closed after a
+ * failed refresh, a stale or unreadable snapshot), not by this item: a
+ * fresh refresh can clear it (incident #213).
+ */
+function catalogMayRecover(failure) {
+    return failure.code === 'LISTING_DRAFT_UNAVAILABLE'
+        && failure.detail !== null && failure.detail.startsWith('workspace_');
+}
+/**
+ * The skip reason for a draft that could not be prepared. Saving the item
+ * by hand goes through the same gates, so "open the item and save it once"
+ * is advice only for a stale or refused save, never for an unavailable one.
+ */
+function draftSkipReason(failure, catalogDown) {
+    const code = failure?.code ?? 'unavailable';
+    const detail = failure?.detail ? `: ${failure.detail}` : '';
+    if (code !== 'LISTING_DRAFT_UNAVAILABLE') {
+        return `The draft could not be prepared (${code}${detail}) — open the item and save it once.`;
+    }
+    if (failure !== null && catalogMayRecover(failure)) {
+        return `The store and eBay catalog could not be read (${code}${detail})`
+            + (catalogDown ? ' and a fresh read failed too' : ' even after a fresh read')
+            + ' — the next run retries it.';
+    }
+    return `The draft could not be prepared (${code}${detail}) — the item is not eligible for a local draft.`;
 }
 /**
  * Start a publish-all run in the background. Returns false when another
@@ -123,6 +277,11 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
     const maxItems = dependencies.maxItems ?? MAX_ITEMS;
     const getSnapshot = dependencies.getSnapshot
         ?? (async () => (await import('./live-listing-catalog-source.js'))
+            .getLiveListingCatalogSnapshot());
+    // Tests and other explicit callers historically supplied one reader for
+    // both paths, so retain that contract unless they opt into the split.
+    const refreshSnapshot = dependencies.refreshSnapshot ?? dependencies.getSnapshot
+        ?? (async () => (await import('./live-listing-catalog-source.js'))
             .getLiveListingCatalogSnapshot.refresh());
     const draftServicePromise = dependencies.draftService
         ? Promise.resolve(dependencies.draftService)
@@ -131,6 +290,19 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
     const getCategoryAspects = dependencies.getCategoryAspects
         ?? (async (categoryId) => (await import('./ebay-category-aspects.js'))
             .getEbayCategoryAspects(categoryId));
+    const fillAspects = dependencies.fillAspects !== undefined
+        ? dependencies.fillAspects
+        : async (request) => (await aspectFillerArmed()
+            ? fillMissingAspects(request)
+            : { filled: {}, unresolved: request.missing.map((aspect) => aspect.name) });
+    const excluded = excludedSkus();
+    const agingUnresolvedCreateSkus = dependencies.agingUnresolvedCreateSkus ?? (() => {
+        const signals = readIncidentLedgerSignalsFromArgv(reconcileArgv, new Date(Date.now() - 24 * 60 * 60_000).toISOString());
+        const cutoff = Date.now() - UNRESOLVED_CREATE_STUCK_MS;
+        return new Set((signals?.unresolvedCreates ?? [])
+            .filter((create) => Date.parse(create.reservedAtUtc) < cutoff)
+            .map((create) => create.sku));
+    });
     const findUnresolvedCreate = dependencies.findUnresolvedCreate
         ?? ((sku) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
     const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId) => {
@@ -156,9 +328,21 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
     status.startedBy = startedBy;
     status.totalReady = 0;
     status.currentSku = null;
+    status.currentStep = 'Loading your store';
+    status.stepStartedAtUtc = now();
     status.items = [];
     status.stopReason = null;
-    const record = (item) => { status.items.push(item); };
+    const step = (label) => {
+        status.currentStep = label;
+        status.stepStartedAtUtc = label === null ? null : now();
+    };
+    // Recording an item ends it: the banner must not keep showing a finished
+    // SKU as "current" during the pause before the next one.
+    const record = (item) => {
+        status.items.push(item);
+        status.currentSku = null;
+        step('Pausing before the next item (Shopify rate limit)');
+    };
     const cleanupFailedCreate = async (input) => {
         if (!reconcileArgv || !recoverArgv || !recoverReconcileArgv)
             return;
@@ -244,16 +428,34 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
         try {
             const draftService = await draftServicePromise;
             const snapshot = await getSnapshot();
+            // Sweep (a) rows carrying leftover eBay data and (b) rows whose create
+            // has sat unresolved over an hour with NO leftover data: nothing else
+            // ever reconciles those, so their watchdog warning would never clear.
+            // The reconcile ceremony is zero-write; it closes the job as missing
+            // or existing, and an unpublished offer goes through the recovery chain.
+            let stuckSkus = new Set();
+            try {
+                stuckSkus = agingUnresolvedCreateSkus();
+            }
+            catch {
+                // Best-effort; the watchdog keeps showing the warning.
+            }
             const wedged = snapshot.rows.filter((row) => row.shopify !== null
-                && row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true);
+                && (row.audit?.attentionReasons?.includes('ebay_unpublished_artifact') === true
+                    || stuckSkus.has(row.shopify.sku)));
             for (const row of wedged.slice(0, 10)) {
                 status.currentSku = row.shopify.sku;
+                step('Re-checking an earlier publish attempt that never finished');
                 await sweepResidue(row);
             }
-            const freshSnapshot = wedged.length > 0 ? await getSnapshot() : snapshot;
+            status.currentSku = null;
+            if (wedged.length > 0)
+                step('Reloading your store');
+            const freshSnapshot = wedged.length > 0 ? await refreshSnapshot() : snapshot;
             const ready = freshSnapshot.rows
                 .filter((row) => row.readyToList === true && row.shopify !== null
-                && !row.shopify.sku.startsWith('PIPELINE-TEST'))
+                && !row.shopify.sku.startsWith('PIPELINE-TEST')
+                && !excluded.has(row.shopify.sku))
                 .slice(0, maxItems);
             status.totalReady = ready.length;
             info(`[Publish All] ${startedBy}: ${ready.length} ready`
@@ -261,10 +463,13 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     ? ` (${Math.min(wedged.length, 10)} residue sweeps of ${wedged.length} flagged rows)`
                     : ''));
             let consecutiveUnknown = 0;
-            for (const row of ready) {
+            let catalogDown = false;
+            for (const [index, row] of ready.entries()) {
                 const sku = row.shopify.sku;
                 const title = row.shopify.title;
+                const isLast = index === ready.length - 1;
                 status.currentSku = sku;
+                step('Preparing the draft');
                 if (!SKU_GRAMMAR.test(sku)) {
                     record({ sku, title, status: 'skipped', reason: 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).' });
                     continue;
@@ -274,32 +479,124 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     continue;
                 }
                 // Ensure a draft revision exists (pure-inherit save when missing).
-                let revisionDigest;
-                try {
-                    const dto = await draftService.get(row.id);
-                    if (dto.revision) {
-                        revisionDigest = dto.revision.revisionDigest;
+                // Incident #213: the draft workspace fails closed while the catalog
+                // cache holds an unresolved refresh failure, and the cache does not
+                // retry while its snapshot is younger than its TTL. One failed
+                // background or webhook refresh therefore skipped every item of the
+                // run for up to five minutes. A catalog-side refusal now forces one
+                // refresh (a success clears the failure) and prepares the draft again.
+                let prepared = null;
+                let prepareFailure = null;
+                for (let attempt = 0; attempt < 2 && prepared === null; attempt += 1) {
+                    try {
+                        const dto = await draftService.get(row.id);
+                        if (dto.revision) {
+                            prepared = dto.revision.revisionDigest;
+                        }
+                        else {
+                            const chart = dto.sections.listing.conditionDescription.shopify;
+                            const note = ((chart ? `${chart} ` : '')
+                                + 'The photographs show the exact item for sale.').slice(0, 1000);
+                            const payload = draftPayload(dto, { conditionDescription: note });
+                            payload.catalogId = row.id;
+                            const saved = await draftService.save(payload, 'publish-all');
+                            prepared = saved.revision.revisionDigest;
+                        }
                     }
-                    else {
-                        const chart = dto.sections.listing.conditionDescription.shopify;
-                        const note = ((chart ? `${chart} ` : '')
-                            + 'The photographs show the exact item for sale.').slice(0, 1000);
-                        const payload = draftPayload(dto, { conditionDescription: note });
-                        payload.catalogId = row.id;
-                        const saved = await draftService.save(payload, 'publish-all');
-                        revisionDigest = saved.revision.revisionDigest;
+                    catch (error) {
+                        prepareFailure = draftFailure(error);
+                        warn(`[Publish All] draft for ${sku} was refused (${prepareFailure.code}`
+                            + `${prepareFailure.detail ? `: ${prepareFailure.detail}` : ''})`);
+                        if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure))
+                            break;
+                        step('Re-reading your store before retrying the draft');
+                        try {
+                            await refreshSnapshot();
+                        }
+                        catch {
+                            // The catalog itself cannot be read: stop spending census
+                            // reads on every remaining item this run.
+                            catalogDown = true;
+                            break;
+                        }
                     }
                 }
-                catch (error) {
-                    record({ sku, title, status: 'skipped', reason: `The draft could not be prepared (${error instanceof Error && 'code' in error ? String(error.code) : 'unavailable'}) — open the item and save it once.` });
-                    await sleep(45_000);
+                if (prepared === null) {
+                    record({ sku, title, status: 'skipped', reason: draftSkipReason(prepareFailure, catalogDown) });
+                    if (!isLast)
+                        await sleep(45_000);
                     continue;
+                }
+                let revisionDigest = prepared;
+                // TITLE FIT (incident #180): the draft inherits the Shopify title,
+                // and the create manifest refuses one over 80 characters. A long
+                // store title is shortened into a local draft override (the
+                // operator's own override, if any, always fits and is kept). A
+                // title-less item skips with a reason that names the real fix.
+                // Incident #182: one refused save (e.g. LISTING_DRAFT_STALE when the
+                // store basis moved between read and save) used to be swallowed, so
+                // the fit never landed. The save is tried twice from a fresh read,
+                // and every later Publish-All save carries the fit as well.
+                let titleless = false;
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                    try {
+                        const dto = await draftService.get(row.id);
+                        if (dto.sections.listing.title.draft !== null)
+                            break;
+                        const inherited = dto.sections.listing.title.shopify ?? title;
+                        const fitted = fitEbayTitle(inherited);
+                        if (fitted === null) {
+                            titleless = true;
+                            break;
+                        }
+                        if (inherited.length <= EBAY_TITLE_MAX)
+                            break;
+                        const payload = draftPayload(dto, { title: fitted });
+                        payload.catalogId = row.id;
+                        const saved = await draftService.save(payload, 'publish-all-title-fit');
+                        revisionDigest = saved.revision.revisionDigest;
+                        info(`[Publish All] shortened the ${inherited.length}-character title for ${sku} to fit eBay`);
+                        break;
+                    }
+                    catch (error) {
+                        const code = error instanceof Error && 'code' in error
+                            ? String(error.code) : 'unavailable';
+                        warn(`[Publish All] title fit for ${sku} was refused (${code})${attempt === 0 ? '; retrying' : ''}`);
+                    }
+                }
+                if (titleless) {
+                    record({ sku, title, status: 'skipped', reason: NO_SHOPIFY_TITLE });
+                    if (!isLast)
+                        await sleep(15_000);
+                    continue;
+                }
+                // eBay requires at least one photo. The store sweep counts each
+                // product's media, so a product with none skips here, before any
+                // ceremony, with the one fix that works (an operator photo override
+                // in the draft still publishes). That count is captured once when
+                // the run starts, and a long run takes up to an hour, so photos
+                // added since then are missed (incident #194). The draft read is
+                // fresh for each item, so its store photos win over the count.
+                let photosKnownMissing = false;
+                if (row.shopify.imageCount === 0) {
+                    const dto = await draftService.get(row.id).catch(() => null);
+                    const images = dto?.sections.content.images;
+                    photosKnownMissing = !images?.draft && !images?.shopify;
+                    if (photosKnownMissing) {
+                        record({ sku, title, status: 'skipped', reason: NO_SHOPIFY_PHOTOS });
+                        if (!isLast)
+                            await sleep(15_000);
+                        continue;
+                    }
                 }
                 // REQUIRED-ASPECT GATE (L73): eBay reveals missing aspects one
                 // 25002 refusal at a time, and each refusal burns an intent and
                 // strands an unpublished offer. Check the category's complete
-                // required list BEFORE any ceremony and skip with every missing
-                // name in ONE message an employee can act on.
+                // required list BEFORE any ceremony. The item-specifics agent
+                // (aspect-filler.ts) writes what it is confident of into the local
+                // draft; whatever is still missing skips with every name in ONE
+                // message an employee can act on.
+                let agentNote = null;
                 try {
                     const dto = await draftService.get(row.id);
                     const categoryId = dto.sections.listing.category.draft
@@ -309,14 +606,50 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     if (categoryId !== null) {
                         const taxonomy = await getCategoryAspects(categoryId);
                         if (taxonomy.available) {
-                            const present = new Set(Object.keys(specificsRaw ? JSON.parse(specificsRaw) : {}).map((name) => name.toLowerCase()));
-                            const missing = taxonomy.aspects
-                                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()))
-                                .map((aspect) => aspect.name);
+                            const existing = specificsRaw
+                                ? JSON.parse(specificsRaw) : {};
+                            const present = new Set(Object.keys(existing).map((name) => name.toLowerCase()));
+                            const missingAspects = taxonomy.aspects
+                                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()));
+                            let missing = missingAspects.map((aspect) => aspect.name);
+                            if (missing.length > 0 && fillAspects !== null) {
+                                const description = dto.sections.content.description;
+                                step(`Agent is writing missing item specifics (${missing.join(', ')})`);
+                                const result = await fillAspects({
+                                    title: dto.sections.listing.title.draft ?? title,
+                                    description: description?.draft ?? description?.shopify ?? null,
+                                    categoryId,
+                                    existing,
+                                    missing: missingAspects.map((aspect) => ({
+                                        name: aspect.name,
+                                        mode: aspect.mode ?? 'FREE_TEXT',
+                                        values: aspect.values ?? [],
+                                    })),
+                                });
+                                const written = Object.entries(result.filled);
+                                if (written.length > 0) {
+                                    try {
+                                        const payload = draftPayload(dto, {
+                                            itemSpecifics: JSON.stringify({ ...existing, ...result.filled }),
+                                        });
+                                        payload.catalogId = row.id;
+                                        const saved = await draftService.save(payload, 'publish-all-aspect-agent');
+                                        revisionDigest = saved.revision.revisionDigest;
+                                        missing = result.unresolved;
+                                        agentNote = `Item specifics written by the agent: ${written
+                                            .map(([name, values]) => `${name} = ${values.join(', ')}`).join('; ')}.`;
+                                        info(`[Publish All] aspect agent filled ${written.length} for ${sku}`);
+                                    }
+                                    catch {
+                                        // Save refused: fall through and skip with the full list.
+                                    }
+                                }
+                            }
                             if (missing.length > 0) {
                                 record({ sku, title, status: 'skipped',
-                                    reason: `eBay requires ${missing.join(', ')} for this category — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
-                                await sleep(15_000);
+                                    reason: `eBay requires ${missing.join(', ')} for this category${agentNote ? ` (${agentNote.replace(/\.$/, '')}; the rest were not certain)` : ''} — open the item, use the one-click Add buttons in Item specifics, and it will publish next run.` });
+                                if (!isLast)
+                                    await sleep(15_000);
                                 continue;
                             }
                         }
@@ -326,52 +659,115 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     // The gate is advisory; preflight remains the authority.
                 }
                 // Preflight with auto-rebase + transient retry (3 attempts).
-                let manifestDigest = null;
-                let skipReason = null;
-                let stop = null;
-                for (let attempt = 0; attempt < 3; attempt += 1) {
-                    if (attempt > 0)
-                        await sleep(90_000);
-                    const values = { catalogId: row.id, sku, revisionDigest };
-                    const preflight = await runStep(substituteArgv(preflightArgv, values));
-                    const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
-                    const digest = preflight.json?.manifestDigest;
-                    if (typeof digest === 'string' && DIGEST.test(digest)) {
-                        manifestDigest = digest;
-                        break;
-                    }
-                    if (code === 'CREATE_BASE_STALE' && attempt === 0) {
-                        try {
-                            const dto = await draftService.get(row.id);
-                            const payload = draftPayload(dto, {});
-                            payload.catalogId = row.id;
-                            const saved = await draftService.save(payload, 'publish-all-rebase');
-                            revisionDigest = saved.revision.revisionDigest;
-                            continue;
+                const runPreflight = async () => {
+                    let manifestDigest = null;
+                    let skipReason = null;
+                    let stop = null;
+                    let refreshed = false;
+                    for (let attempt = 0; attempt < 3; attempt += 1) {
+                        if (attempt > 0) {
+                            step('eBay check hit a temporary error — retrying in 90s');
+                            await sleep(90_000);
                         }
-                        catch {
-                            skipReason = 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
+                        step('Checking the listing with eBay (preflight)');
+                        const values = { catalogId: row.id, sku, revisionDigest };
+                        const preflight = await runStep(substituteArgv(preflightArgv, values));
+                        const code = typeof preflight.json?.code === 'string' ? preflight.json.code : null;
+                        const digest = preflight.json?.manifestDigest;
+                        if (typeof digest === 'string' && DIGEST.test(digest)) {
+                            manifestDigest = digest;
                             break;
                         }
-                    }
-                    if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
-                        const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
-                        skipReason = `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+                        // Both codes mean the stored draft predates the item's current
+                        // state. CREATE_IDENTITY_MISMATCH is the identity half (incident
+                        // #169): a draft saved before the Shopify SKU was renamed keeps
+                        // the old SKU forever, and the ceremony checks identity before
+                        // values, so without this rebase the item could never publish.
+                        // The rebase keeps the operator's overrides and re-binds them to
+                        // the item's current identity; preflight then re-checks everything.
+                        if ((code === 'CREATE_BASE_STALE' || code === 'CREATE_IDENTITY_MISMATCH') && attempt === 0) {
+                            try {
+                                const dto = await draftService.get(row.id);
+                                const payload = draftPayload(dto, {});
+                                payload.catalogId = row.id;
+                                const saved = await draftService.save(payload, 'publish-all-rebase');
+                                revisionDigest = saved.revision.revisionDigest;
+                                continue;
+                            }
+                            catch {
+                                skipReason = code === 'CREATE_IDENTITY_MISMATCH'
+                                    ? 'The saved draft belongs to an older SKU for this item and could not be refreshed — check the SKU is not used by another product, then open the item and save it once.'
+                                    : 'Shopify changed under the draft and it could not be refreshed — open the item and use “Update draft & publish again”.';
+                                break;
+                            }
+                        }
+                        // A title refusal means the STORED revision's title is not one
+                        // eBay accepts (incident #182: the fit had not landed). Incident
+                        // #184: the manifest checks the title BEFORE base freshness, so
+                        // a revision that inherited a long store title which has since
+                        // been shortened in Shopify reports `title`, never
+                        // CREATE_BASE_STALE. The fresh read then shows a title that
+                        // fits, so a fit-only repair saved nothing and the item skipped
+                        // forever. The repair is therefore a refresh save: from a fresh
+                        // read it re-inherits the current store title (or carries the
+                        // fit), tried twice, and preflight checks again.
+                        // Incident #186: the same ordering hides staleness behind EVERY
+                        // required field, not only the title. A draft saved while the
+                        // store's photos could not be read (the per-product content read
+                        // is best-effort) or before the photos were uploaded holds no
+                        // images forever and reports `images`, never CREATE_BASE_STALE.
+                        // So any missing-field refusal gets this one refresh; a true
+                        // no-op refresh is refused by the draft service's duplicate guard.
+                        const missingField = typeof preflight.json?.field === 'string' ? preflight.json.field : 'field';
+                        if (code === 'CREATE_REQUIRED_FIELD_MISSING' && !refreshed) {
+                            refreshed = true;
+                            let repaired = false;
+                            for (let repair = 0; repair < 2 && !repaired; repair += 1) {
+                                try {
+                                    const dto = await draftService.get(row.id);
+                                    const payload = draftPayload(dto, {});
+                                    payload.catalogId = row.id;
+                                    const saved = await draftService.save(payload, missingField === 'title' ? 'publish-all-title-fit' : 'publish-all-refresh');
+                                    revisionDigest = saved.revision.revisionDigest;
+                                    repaired = true;
+                                }
+                                catch (error) {
+                                    const refused = error instanceof Error && 'code' in error
+                                        ? String(error.code) : 'unavailable';
+                                    warn(`[Publish All] ${missingField} repair for ${sku} was refused (${refused})${repair === 0 ? '; retrying' : ''}`);
+                                }
+                            }
+                            if (repaired)
+                                continue;
+                        }
+                        if (code === 'CREATE_REQUIRED_FIELD_MISSING') {
+                            const field = typeof preflight.json?.field === 'string' ? preflight.json.field : 'a field';
+                            skipReason = field === 'title'
+                                ? 'eBay needs a title of 1–80 characters and the draft title could not be shortened automatically — open the item and edit the eBay title.'
+                                : field === 'images'
+                                    ? photosKnownMissing
+                                        ? NO_SHOPIFY_PHOTOS
+                                        : 'eBay needs 1–24 photos and the store\'s photos could not be read into the draft (only https://cdn.shopify.com images are used) — it retries next run; if this repeats, open the item and check Photos.'
+                                    : `eBay requires ${field} and the item does not have it yet — open the item to fill it.`;
+                            break;
+                        }
+                        if (code === 'CREATE_TARGET_ALREADY_LISTED') {
+                            skipReason = 'Already listed on eBay.';
+                            break;
+                        }
+                        if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
+                            continue;
+                        }
+                        stop = `Preflight refused ${sku}: ${code ?? 'no summary'}`;
                         break;
                     }
-                    if (code === 'CREATE_TARGET_ALREADY_LISTED') {
-                        skipReason = 'Already listed on eBay.';
-                        break;
-                    }
-                    if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
-                        continue;
-                    }
-                    stop = `Preflight refused ${sku}: ${code ?? 'no summary'}`;
-                    break;
-                }
+                    return { manifestDigest, skipReason, stop };
+                };
+                let { manifestDigest, skipReason, stop } = await runPreflight();
                 if (skipReason !== null) {
                     record({ sku, title, status: 'skipped', reason: skipReason });
-                    await sleep(20_000);
+                    if (!isLast)
+                        await sleep(20_000);
                     continue;
                 }
                 if (stop !== null || manifestDigest === null) {
@@ -388,46 +784,190 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                         warn(`[Publish All] stopped: ${status.stopReason}`);
                         return;
                     }
-                    await sleep(45_000);
+                    if (!isLast)
+                        await sleep(45_000);
                     continue;
                 }
                 consecutiveUnknown = 0;
-                await sleep(40_000);
-                const values = { catalogId: row.id, sku, revisionDigest, manifestDigest };
-                const dispatched = await runStep(substituteArgv(dispatchArgv, values));
-                const dispatchStatus = typeof dispatched.json?.status === 'string'
-                    ? dispatched.json.status : 'no-summary';
-                const listingId = typeof dispatched.json?.listingId === 'string'
-                    ? dispatched.json.listingId : null;
-                let published = dispatchStatus === 'created-and-reconciled' && listingId !== null;
-                // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
-                // capture. With a listing id in hand, reconcile patiently before
-                // declaring failure — the first proving run marked 11 LIVE listings
-                // failed for want of this loop (2026-09-23).
-                if (!published && listingId !== null && reconcileArgv
-                    && typeof dispatched.json?.jobId === 'string'
-                    && typeof dispatched.json?.attemptId === 'string') {
-                    for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
-                        await sleep(10_000 + attempt * 10_000);
-                        const reconciled = await runStep(substituteArgv(reconcileArgv, {
-                            catalogId: row.id, sku, revisionDigest,
-                            jobId: dispatched.json.jobId, attemptId: dispatched.json.attemptId,
-                        }));
-                        published = reconciled.json?.resolution === 'resolved_existing';
+                // Dispatch re-derives the whole target from a FRESH store capture, so
+                // it can refuse what preflight accepted 40s earlier: a throttled or
+                // failed capture (LISTING_LIFECYCLE_DENIED) or Shopify changing in
+                // the gap (CREATE_BASE_STALE …). Incident #172: two items failed as
+                // "denied" with no retry and no code. A refusal from this set is
+                // re-checked once from preflight (which rebases a stale draft) and
+                // dispatched again. That is safe: one manifest is one intent forever,
+                // so an unchanged draft can only replay-deny, and a create that left
+                // a job open on the ledger is never retried here.
+                // A refresh save binds the item to a NEW revision, and so to a new
+                // manifest and a new intent (one manifest digest is one intent
+                // forever). It keeps every override (draftPayload carries them).
+                const refreshRevision = async (actor) => {
+                    try {
+                        const dto = await draftService.get(row.id);
+                        const payload = draftPayload(dto, {});
+                        payload.catalogId = row.id;
+                        const saved = await draftService.save(payload, actor);
+                        revisionDigest = saved.revision.revisionDigest;
+                        return true;
                     }
+                    catch (error) {
+                        const refused = error instanceof Error && 'code' in error
+                            ? String(error.code) : 'unavailable';
+                        warn(`[Publish All] draft refresh for ${sku} was refused (${refused})`);
+                        return false;
+                    }
+                };
+                let dispatched = { json: null };
+                let deniedCode = null;
+                let dispatchStatus = 'no-summary';
+                let listingId = null;
+                let published = false;
+                let providerFailureNote = null;
+                let cleanedDispatch = null;
+                // Incident #212: eBay answered a create with a 5xx ("A system error
+                // has occurred"). That is eBay's own trouble, not a refusal of the
+                // payload, but the item failed for the run, and its draft's intent
+                // was spent: every later run was replay-denied
+                // (CREATE_INTENT_ALREADY_RECORDED) and skipped until the operator
+                // saved the draft by hand. A transient provider failure whose
+                // leftovers are cleared gets ONE more attempt after a pause, from a
+                // refreshed revision; a replay denial with nothing open on the
+                // ledger is refreshed the same way (below).
+                for (let providerTry = 0; providerTry < 2; providerTry += 1) {
+                    for (let pass = 0; pass < 2; pass += 1) {
+                        step('Pausing 40s before publishing (Shopify rate limit)');
+                        await sleep(40_000);
+                        step('Publishing to eBay');
+                        dispatched = await runStep(substituteArgv(dispatchArgv, {
+                            catalogId: row.id, sku, revisionDigest, manifestDigest,
+                        }));
+                        deniedCode = dispatched.json?.status === 'denied'
+                            ? (typeof dispatched.json.code === 'string' ? dispatched.json.code : 'no code')
+                            : null;
+                        if (pass > 0 || deniedCode === null)
+                            break;
+                        if (deniedCode === 'CREATE_INTENT_ALREADY_RECORDED') {
+                            // An earlier attempt used this exact draft. Dispatch reached
+                            // the intent check, so its fresh capture found nothing of the
+                            // item on eBay; with no open create on the ledger the earlier
+                            // attempt is fully closed, and only a new revision can
+                            // publish (incident #212).
+                            if (findUnresolvedCreate(sku) !== null)
+                                break;
+                            warn(`[Publish All] ${sku}: an earlier attempt used this draft; refreshing it once`);
+                            step('An earlier attempt used this draft — refreshing it');
+                            if (!await refreshRevision('publish-all-intent-refresh'))
+                                break;
+                        }
+                        else {
+                            if (!DISPATCH_RECHECK_CODES.has(deniedCode) || findUnresolvedCreate(sku) !== null)
+                                break;
+                            warn(`[Publish All] dispatch refused ${sku}: ${deniedCode}; re-checking once`);
+                            step(`eBay publish was refused (${deniedCode}) — re-checking in 60s`);
+                            await sleep(60_000);
+                        }
+                        const again = await runPreflight();
+                        if (again.manifestDigest === null) {
+                            ({ skipReason, stop } = again);
+                            break;
+                        }
+                        manifestDigest = again.manifestDigest;
+                    }
+                    if (deniedCode !== null && (skipReason !== null || stop !== null))
+                        break;
+                    dispatchStatus = typeof dispatched.json?.status === 'string'
+                        ? dispatched.json.status : 'no-summary';
+                    listingId = typeof dispatched.json?.listingId === 'string'
+                        ? dispatched.json.listingId : null;
+                    // The ceremony reports 'dispatched-and-reconciled'; older box-script
+                    // runners said 'created-and-reconciled'. Accept both.
+                    published = (dispatchStatus === 'dispatched-and-reconciled'
+                        || dispatchStatus === 'created-and-reconciled') && listingId !== null;
+                    // eBay read-lag (L63): a create can take 10-60s to appear in a fresh
+                    // capture. With a listing id in hand, reconcile patiently before
+                    // declaring failure — the first proving run marked 11 LIVE listings
+                    // failed for want of this loop (2026-09-23).
+                    if (!published && listingId !== null && reconcileArgv
+                        && typeof dispatched.json?.jobId === 'string'
+                        && typeof dispatched.json?.attemptId === 'string') {
+                        for (let attempt = 0; attempt < 4 && !published; attempt += 1) {
+                            step('Confirming the listing is live on eBay');
+                            await sleep(10_000 + attempt * 10_000);
+                            const reconciled = await runStep(substituteArgv(reconcileArgv, {
+                                catalogId: row.id, sku, revisionDigest,
+                                jobId: dispatched.json.jobId, attemptId: dispatched.json.attemptId,
+                            }));
+                            published = reconciled.json?.resolution === 'resolved_existing';
+                        }
+                    }
+                    if (published || deniedCode !== null || dispatched.json === null)
+                        break;
+                    const failure = providerFailure(dispatched.json);
+                    warn(`[Publish All] create for ${sku} failed at ${failure.detail}`);
+                    if (!failure.transient)
+                        break;
+                    providerFailureNote = failure.detail;
+                    if (providerTry > 0)
+                        break;
+                    // Clear what the failed attempt left on eBay first. A retry needs
+                    // proof the attempt is closed: the ceremony confirmed nothing was
+                    // created, or the reconcile chain is armed and the ledger holds no
+                    // open create for the SKU. The fresh preflight then re-proves the
+                    // item is not on eBay before anything is sent again.
+                    await cleanupFailedCreate({
+                        catalogId: row.id, sku, revisionDigest,
+                        dispatchJson: { ...dispatched.json, manifestDigest },
+                    });
+                    cleanedDispatch = dispatched.json;
+                    if (findUnresolvedCreate(sku) !== null)
+                        await sweepResidue(row);
+                    if ((dispatchStatus !== 'dispatch-failed-confirmed-missing' && !reconcileArgv)
+                        || findUnresolvedCreate(sku) !== null) {
+                        break;
+                    }
+                    step('eBay had a temporary server error — retrying in 2 minutes');
+                    await sleep(120_000);
+                    if (!await refreshRevision('publish-all-provider-retry'))
+                        break;
+                    const again = await runPreflight();
+                    if (again.manifestDigest === null) {
+                        ({ skipReason, stop } = again);
+                        break;
+                    }
+                    manifestDigest = again.manifestDigest;
+                    dispatched = { json: null };
+                }
+                if (dispatched.json === null && (skipReason !== null || stop !== null)) {
+                    // The provider retry's preflight refused; the failed attempt was
+                    // already cleaned up.
+                    record({ sku, title, status: skipReason !== null ? 'skipped' : 'failed',
+                        reason: skipReason ?? `${stop} (after eBay's server error: ${providerFailureNote})` });
+                    if (!isLast)
+                        await sleep(20_000);
+                    continue;
+                }
+                if (deniedCode !== null && (skipReason !== null || stop !== null)) {
+                    record({ sku, title, status: skipReason !== null ? 'skipped' : 'failed',
+                        reason: skipReason ?? `${stop} (after dispatch refused: ${deniedCode})` });
+                    if (!isLast)
+                        await sleep(20_000);
+                    continue;
                 }
                 if (published && listingId !== null) {
-                    record({ sku, title, status: 'published', listingId });
+                    record({ sku, title, status: 'published', listingId, ...(agentNote ? { reason: agentNote } : {}) });
                     info(`[Publish All] ${sku} live as ${listingId}`);
                 }
                 else if (dispatched.json?.code === 'CREATE_INTENT_ALREADY_RECORDED') {
                     record({ sku, title, status: 'skipped', reason: 'A previous attempt already used this draft — open the item and publish from there.' });
                 }
+                else if (deniedCode === 'CREATE_TARGET_ALREADY_LISTED') {
+                    record({ sku, title, status: 'skipped', reason: 'Already listed on eBay.' });
+                }
                 else {
                     const rawMessages = dispatched.json?.dispatchFailureEbayErrorMessages;
                     const providerMessage = Array.isArray(rawMessages) && typeof rawMessages[0] === 'string'
                         ? rawMessages[0] : null;
-                    if (dispatched.json !== null) {
+                    if (dispatched.json !== null && dispatched.json !== cleanedDispatch) {
                         await cleanupFailedCreate({
                             catalogId: row.id, sku, revisionDigest,
                             dispatchJson: { ...dispatched.json, manifestDigest },
@@ -436,11 +976,17 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
                     record({
                         sku, title, status: 'failed',
                         reason: providerMessage
-                            ? `eBay refused the listing: ${providerMessage}`
-                            : `The publish did not complete (${dispatchStatus}).`,
+                            ? `eBay refused the listing: ${providerMessage}${providerFailureNote
+                                ? ` (${providerFailureNote}; it retries next run)` : ''}`
+                            : deniedCode !== null
+                                // Carry the ceremony's code: it names the gate that refused
+                                // and is what the watchdog groups incidents by.
+                                ? `The publish did not complete (denied: ${deniedCode}).`
+                                : `The publish did not complete (${dispatchStatus}).`,
                     });
                 }
-                await sleep(60_000);
+                if (!isLast)
+                    await sleep(60_000);
             }
             status.state = 'finished';
             const published = status.items.filter((item) => item.status === 'published').length;
@@ -454,6 +1000,7 @@ export function startPublishAllRun(startedBy, dependencies = {}) {
         }
         finally {
             status.currentSku = null;
+            step(null);
             status.finishedAtUtc = now();
             releasePublishLock();
         }
