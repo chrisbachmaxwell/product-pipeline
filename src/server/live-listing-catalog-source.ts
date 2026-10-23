@@ -24,6 +24,13 @@ const EBAY_TOKEN_SCOPES = [
 ] as const;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
+/**
+ * Offer reads are independent per exact SKU. A small fixed pool keeps the
+ * census bounded while avoiding the multi-minute serial walk that every
+ * standalone ceremony process otherwise repeats.
+ */
+const INVENTORY_OFFER_READ_CONCURRENCY = 4;
+const MAX_INVENTORY_OFFER_PAGES = 500;
 // 5 minutes: UI reads reuse the snapshot; freshness when something actually
 // CHANGES comes from the event layer (Shopify webhooks + eBay push call
 // refreshIfStale), so a longer TTL is only visible when nothing changed.
@@ -791,60 +798,100 @@ async function captureInventory(accessToken: string): Promise<{
   }
   if (expectedItems === null || items.length !== expectedItems) deny();
 
-  const offers: CapturedEbayOffer[] = [];
-  const seenOfferIds = new Set<string>();
   let offerPages = 0;
-  for (const item of items) {
-    const priorOfferCount = offers.length;
-    let expectedOffers: number | null = null;
-    let collected = 0;
-    let offerOffset = 0;
-    while (offerPages < 500) {
-      const query = new URLSearchParams({
-        sku: item.sku,
-        marketplace_id: EBAY_MARKETPLACE_ID,
-        limit: '25',
-        offset: String(offerOffset),
-      });
-      const body = await inventoryGetOffers(
-        accessToken,
-        `/sell/inventory/v1/offer?${query.toString()}`,
-      );
-      offerPages += 1;
-      const total = safeInteger(body.total);
-      if (expectedOffers === null) expectedOffers = total;
-      if (total !== expectedOffers || priorOfferCount + total > 10_000) deny();
-      const page = asArray(body.offers);
-      if (page.length > 25 || (collected < total && page.length === 0)) deny();
-      for (const raw of page) {
-        const offer = asRecord(raw);
-        const offerId = safeText(offer.offerId, 128);
-        if (offer.sku !== item.sku || offer.marketplaceId !== EBAY_MARKETPLACE_ID
-          || seenOfferIds.has(offerId)) deny();
-        seenOfferIds.add(offerId);
-        const listing = offer.listing == null ? null : asRecord(offer.listing);
-        offers.push(Object.freeze({
-          offerId,
-          sku: item.sku,
-          status: optionalText(offer.status, 64),
-          listingId: optionalText(listing?.listingId, 32),
-          listingStatus: optionalText(listing?.listingStatus, 64),
-          ...offerListingFacets(offer),
-        }));
-        collected += 1;
+  const reserveOfferPage = (): void => {
+    if (offerPages >= MAX_INVENTORY_OFFER_PAGES) deny();
+    offerPages += 1;
+  };
+  const offersByItem: CapturedEbayOffer[][] = Array.from(
+    { length: items.length },
+    () => [],
+  );
+  let declaredOfferCount = 0;
+  let nextItemIndex = 0;
+  let offerCaptureCancelled = false;
+  const readOfferWorker = async (): Promise<void> => {
+    try {
+      while (!offerCaptureCancelled && nextItemIndex < items.length) {
+        const itemIndex = nextItemIndex;
+        nextItemIndex += 1;
+        const item = items[itemIndex]!;
+        const itemOffers: CapturedEbayOffer[] = [];
+        let expectedOffers: number | null = null;
+        let collected = 0;
+        let offerOffset = 0;
+        while (true) {
+          reserveOfferPage();
+          const query = new URLSearchParams({
+            sku: item.sku,
+            marketplace_id: EBAY_MARKETPLACE_ID,
+            limit: '25',
+            offset: String(offerOffset),
+          });
+          const body = await inventoryGetOffers(
+            accessToken,
+            `/sell/inventory/v1/offer?${query.toString()}`,
+          );
+          const total = safeInteger(body.total);
+          if (expectedOffers === null) {
+            expectedOffers = total;
+            declaredOfferCount += total;
+            if (declaredOfferCount > 10_000) deny();
+          }
+          if (total !== expectedOffers) deny();
+          const page = asArray(body.offers);
+          if (page.length > 25 || (collected < total && page.length === 0)) deny();
+          for (const raw of page) {
+            const offer = asRecord(raw);
+            const offerId = safeText(offer.offerId, 128);
+            if (offer.sku !== item.sku || offer.marketplaceId !== EBAY_MARKETPLACE_ID) deny();
+            const listing = offer.listing == null ? null : asRecord(offer.listing);
+            itemOffers.push(Object.freeze({
+              offerId,
+              sku: item.sku,
+              status: optionalText(offer.status, 64),
+              listingId: optionalText(listing?.listingId, 32),
+              listingStatus: optionalText(listing?.listingStatus, 64),
+              ...offerListingFacets(offer),
+            }));
+            collected += 1;
+          }
+          if (collected === total) break;
+          if (collected > total || typeof body.next !== 'string') deny();
+          offerOffset = collected;
+          const expectedNext = new URLSearchParams({
+            sku: item.sku,
+            marketplace_id: EBAY_MARKETPLACE_ID,
+            limit: '25',
+            offset: String(offerOffset),
+          });
+          requireExactInventoryNext(
+            body.next,
+            `/sell/inventory/v1/offer?${expectedNext.toString()}`,
+          );
+        }
+        if (expectedOffers === null || collected !== expectedOffers) deny();
+        offersByItem[itemIndex] = itemOffers;
       }
-      if (collected === total) break;
-      if (collected > total || typeof body.next !== 'string') deny();
-      offerOffset = collected;
-      const expectedNext = new URLSearchParams({
-        sku: item.sku,
-        marketplace_id: EBAY_MARKETPLACE_ID,
-        limit: '25',
-        offset: String(offerOffset),
-      });
-      requireExactInventoryNext(body.next, `/sell/inventory/v1/offer?${expectedNext.toString()}`);
+    } catch (error) {
+      offerCaptureCancelled = true;
+      throw error;
     }
-    if (expectedOffers === null || collected !== expectedOffers) deny();
+  };
+  const workerResults = await Promise.allSettled(Array.from(
+    { length: Math.min(INVENTORY_OFFER_READ_CONCURRENCY, items.length) },
+    () => readOfferWorker(),
+  ));
+  const failedWorker = workerResults.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failedWorker) throw failedWorker.reason;
+  const offers = offersByItem.flat();
+  if (offers.length > 10_000) deny();
+  const seenOfferIds = new Set<string>();
+  for (const offer of offers) {
+    if (seenOfferIds.has(offer.offerId)) deny();
+    seenOfferIds.add(offer.offerId);
   }
   return { items, offers, itemPages, offerPages };
 }
