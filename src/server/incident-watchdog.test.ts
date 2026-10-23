@@ -298,6 +298,81 @@ describe('PRICE_SYNC_REJECTED (L87)', () => {
   });
 });
 
+describe('PRICE_SYNC_REJECTED for a listing in an eBay sale (incident #222)', () => {
+  const SALE_REASON = '[21919248] The price for this item cannot be updated since it is a part of a sale.: '
+    + 'The price for this item cannot be updated since it is a part of a sale. If you wish to update '
+    + 'the price of this item, please remove it from sale, or use a sale setting that will always '
+    + 'allow price updates.';
+  const signals = {
+    oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [],
+    repeatedEndFailures: [],
+    repeatedPriceFailures: [{ sku: 'listing 147531586972', count: 4, lastAtUtc: FRESH }],
+  };
+  const snapshot = { observedAtUtc: FRESH, rows: [row('LENS-22', 1, '147531586972')] };
+
+  it('is an operator-only warning naming the sale, with eBay\'s words verbatim', () => {
+    const incident = evaluateIncidentCandidates({
+      snapshot, signals, nowMs: NOW,
+      providerRejections: [{ call: 'ReviseInventoryStatus', listingId: '147531586972', reason: SALE_REASON, atUtc: FRESH }],
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident).toMatchObject({
+      id: 'PRICE_SYNC_REJECTED:listing 147531586972', severity: 'warning', operatorOnly: true,
+    });
+    expect(incident.title).toContain('sale');
+    expect(incident.detail).toContain('after the sale ends');
+    expect(incident.detail).toContain('[21919248]');
+  });
+
+  it('keeps a different listing\'s sale lock from muting this listing\'s rejection', () => {
+    const incident = evaluateIncidentCandidates({
+      snapshot, signals, nowMs: NOW,
+      providerRejections: [
+        { call: 'ReviseInventoryStatus', listingId: '147531586972', reason: '[23004] Best Offer.', atUtc: FRESH },
+        { call: 'ReviseInventoryStatus', listingId: '147000000001', reason: SALE_REASON, atUtc: FRESH },
+      ],
+    }).find((candidate) => candidate.code === 'PRICE_SYNC_REJECTED')!;
+    expect(incident).toMatchObject({ severity: 'critical' });
+    expect(incident.operatorOnly).not.toBe(true);
+  });
+
+  it('never diagnoses, opens an issue or emails, and escalates again if the reason changes', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'incident-watchdog-'));
+    try {
+      let reason = SALE_REASON;
+      let diagnosed = 0;
+      let notified = 0;
+      const issues: Incident[] = [];
+      const dependencies = {
+        stateFile: path.join(root, 'incidents.json'),
+        getSnapshot: async () => snapshot,
+        getLedgerSignals: () => signals,
+        getPublishStatus: () => ({ state: 'idle' as const, stopReason: null, items: [] }),
+        getProviderRejections: () => [{ call: 'ReviseInventoryStatus', listingId: '147531586972', reason, atUtc: FRESH }],
+        diagnose: async () => { diagnosed += 1; return 'WHAT HAPPENED: x'; },
+        openIssue: async (incident: Incident) => { issues.push(incident); return 'https://github.com/x/y/issues/9'; },
+        notify: async () => { notified += 1; },
+        learningsContext: () => '',
+      };
+      await runWatchdogOnce({ ...dependencies, now: () => NOW });
+      await runWatchdogOnce({ ...dependencies, now: () => NOW + 5 * 60_000 });
+      expect(getIncidents()).toEqual([expect.objectContaining({
+        code: 'PRICE_SYNC_REJECTED', severity: 'warning', operatorOnly: true, diagnosisState: 'none',
+      })]);
+      expect(diagnosed).toBe(0);
+      expect(issues).toHaveLength(0);
+      expect(notified).toBe(0);
+
+      reason = '[23004] The Best Offer Auto Accept Price must be less than the Buy It Now price.';
+      await runWatchdogOnce({ ...dependencies, now: () => NOW + 10 * 60_000 });
+      expect(getIncidents()[0]).toMatchObject({ severity: 'critical', diagnosisState: 'done' });
+      expect(getIncidents()[0]!.operatorOnly).not.toBe(true);
+      expect(issues).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('PUBLISH_ITEM_BLOCKED (self-healing publish path)', () => {
   it('groups items by root cause and ignores published ones', () => {
     const candidates = publishBlockCandidates([

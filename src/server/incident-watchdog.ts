@@ -94,6 +94,8 @@ export type WatchdogDependencies = Readonly<{
   notify?: (incident: Incident) => Promise<void>;
   learningsContext?: () => string;
   getPublishStatus?: () => Pick<ReturnType<typeof getPublishAllStatus>, 'state' | 'stopReason' | 'items'>;
+  /** Test seam; defaults to the adapter's provider-rejections ring. */
+  getProviderRejections?: () => unknown;
 }>;
 
 /**
@@ -155,8 +157,8 @@ export function evaluateIncidentCandidates(input: {
   nowMs: number;
   /** Test seam; defaults to the adapter's provider-rejections ring. */
   providerRejections?: unknown;
-}): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> {
-  const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail'>> = [];
+}): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> {
+  const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> = [];
   const { snapshot, signals, nowMs } = input;
 
   const stuckOrder = signals?.oldestUnresolvedOrder ?? null;
@@ -261,6 +263,23 @@ export function evaluateIncidentCandidates(input: {
       'ReviseInventoryStatus',
       listingId,
     );
+    if (reason !== null && isSalePriceLock(reason)) {
+      candidates.push({
+        id: `PRICE_SYNC_REJECTED:${failure.sku}`,
+        severity: 'warning',
+        code: 'PRICE_SYNC_REJECTED',
+        sku: failure.sku,
+        title: `eBay is holding the sale price on ${failure.sku}: price updates wait until the sale ends`,
+        detail: 'This listing is in one of your eBay sales (markdown), and that sale is set to '
+          + 'lock the price, so eBay refuses Shopify price changes while it runs. eBay shows '
+          + 'buyers the sale price you chose. Nothing needs doing: every price sweep tries '
+          + 'again, and the current Shopify price goes live after the sale ends. To push '
+          + 'Shopify prices during the sale, remove the item from the sale in Seller Hub, or '
+          + `switch the sale to a setting that allows price updates. eBay's own reason: ${reason}`,
+        operatorOnly: true,
+      });
+      continue;
+    }
     candidates.push({
       id: `PRICE_SYNC_REJECTED:${failure.sku}`,
       // A live listing showing a WRONG PRICE can sell at that price —
@@ -310,6 +329,16 @@ export function evaluateIncidentCandidates(input: {
   }
 
   return candidates;
+}
+
+/**
+ * eBay 21919248, "The price for this item cannot be updated since it is a
+ * part of a sale" (incident #222): the operator's own markdown sale locks
+ * the price. Only the operator can change it (or the sale ends), and the
+ * price sweep retries on every run, so no code change can resolve it.
+ */
+export function isSalePriceLock(reason: string): boolean {
+  return /\[21919248\]/u.test(reason) || /\bpart of a sale\b/iu.test(reason);
 }
 
 /** The sanitized provider rejections ring written by the Trading adapter
@@ -508,7 +537,10 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   const nowUtc = new Date(nowMs).toISOString();
   const snapshot = await getSnapshot();
   const signals = getLedgerSignals(new Date(nowMs - LEDGER_WINDOW_MS).toISOString());
-  const candidates = evaluateIncidentCandidates({ snapshot, signals, nowMs });
+  const candidates = evaluateIncidentCandidates({
+    snapshot, signals, nowMs,
+    providerRejections: (dependencies.getProviderRejections ?? readProviderRejections)(),
+  });
   const publishRun = (dependencies.getPublishStatus ?? getPublishAllStatus)();
   if (publishRun.state === 'stopped') {
     candidates.push({
@@ -532,7 +564,9 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   for (const candidate of candidates) {
     const existing = state.incidents.find((incident) => incident.id === candidate.id);
     if (existing) {
-      active.push({ ...existing, ...candidate, lastSeenAtUtc: nowUtc });
+      // operatorOnly follows the latest sighting: a price rejection whose
+      // reason stops being a sale lock must escalate again.
+      active.push({ ...existing, ...candidate, operatorOnly: candidate.operatorOnly, lastSeenAtUtc: nowUtc });
       continue;
     }
     // Oversell exposure must persist across two sightings; everything else
@@ -563,9 +597,9 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
   // Diagnose + escalate new criticals and self-heal publish blocks
   // (bounded: one per cycle to cap spend). A publish block is a warning for
   // the operator (no email, no red banner) but still goes to the fix agent.
-  const escalates = (incident: Incident): boolean =>
-    incident.severity === 'critical'
-    || (incident.code === 'PUBLISH_ITEM_BLOCKED' && incident.operatorOnly !== true);
+  // Anything only the operator can change never goes to the fix agent.
+  const escalates = (incident: Incident): boolean => incident.operatorOnly !== true
+    && (incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED');
   const needsDiagnosis = active.find((incident) =>
     escalates(incident) && incident.diagnosisState === 'none');
   if (needsDiagnosis) {
