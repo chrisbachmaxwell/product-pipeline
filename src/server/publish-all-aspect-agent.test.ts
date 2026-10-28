@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { fitEbayTitle, getPublishAllStatus, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
+import { fitEbayTitle, getPublishAllStatus, refusedMissingAspects, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
 
 const CATALOG_ID = 'shopify-variant:gid://shopify/ProductVariant/55484011184419';
 const REVISION = `sha256:${'b'.repeat(64)}`;
@@ -962,5 +962,139 @@ describe('publish-all eBay server error on create (incident #212)', () => {
     expect(saves).toHaveLength(0);
     expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
     expect(getPublishAllStatus().items[0]!.status).toBe('skipped');
+  });
+});
+
+describe('publish-all item specific eBay names at publish (incident #235)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const typeMissing = 'A user error has occurred. The item specific Type is missing. Add Type to this listing, '
+    + 'enter a valid value, and then try again.';
+  const refusal = { json: {
+    command: 'dispatch-create', status: 'dispatch-failed-confirmed-missing',
+    offerId: null, listingId: null, providerDispatchReported: true,
+    dispatchFailureStage: 'publish_offer', dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+    dispatchFailureHttpStatusFamily: 'http_4xx', dispatchFailureHttpStatusCode: 400,
+    dispatchFailureEbayErrorIds: [25002], dispatchFailureEbayErrorMessages: [typeMissing],
+  } };
+
+  it('reads the aspect names out of eBay\'s refusal', () => {
+    expect(refusedMissingAspects(refusal.json)).toEqual(['Type']);
+    expect(refusedMissingAspects({ dispatchFailureEbayErrorMessages: [
+      'The item specific Focal Length is missing.', 'The item specific Type is missing.', 'The item specific type is missing.',
+    ] })).toEqual(['Focal Length', 'Type']);
+    expect(refusedMissingAspects({ dispatchFailureEbayErrorMessages: ['A user error has occurred.'] })).toEqual([]);
+    expect(refusedMissingAspects({})).toEqual([]);
+  });
+
+  it('writes the named aspect into a new revision and publishes it in the same run', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const asked: unknown[] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      fillAspects: async (request) => { asked.push(request.missing); return { filled: { Type: ['Extension Tube'] }, unresolved: [] }; },
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return argv.includes(REVISION)
+          ? refusal
+          : { json: { status: 'dispatched-and-reconciled', listingId: '147000000235' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(asked).toEqual([[{ name: 'Type', mode: 'FREE_TEXT', values: [] }]]);
+    expect(saves).toHaveLength(1);
+    expect(JSON.parse((saves[0] as { draft: { itemSpecifics: string } }).draft.itemSpecifics))
+      .toEqual({ Brand: ['Canon'], Type: ['Extension Tube'] });
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'preflight-create', 'dispatch-create', 'preflight-create', 'dispatch-create']);
+    expect(calls[3]).toContain(SAVED);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item).toMatchObject({ status: 'published', listingId: '147000000235' });
+    expect(item.reason).toContain('Type = Extension Tube');
+  });
+
+  it('repairs only once: a second refusal fails with eBay\'s reason', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      fillAspects: async () => ({ filled: { Type: ['Does not apply'] }, unresolved: [] }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return refusal;
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(2);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('failed');
+    expect(item.reason).toBe(`eBay refused the listing: ${typeMissing}`);
+  });
+
+  it('never re-sends a value eBay already refused', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const base = dependencies({}, saves, calls);
+    const { run } = startPublishAllRun('test', {
+      ...base,
+      getCategoryAspects: noMissingAspects,
+      draftService: {
+        get: async (id) => {
+          const dto = await base.draftService!.get(id);
+          return { ...dto, sections: { ...dto.sections, content: {
+            itemSpecifics: { draft: JSON.stringify({ Brand: ['Canon'], type: ['Does not apply'] }), shopify: null },
+          } } };
+        },
+        save: base.draftService!.save,
+      },
+      fillAspects: async () => ({ filled: { Type: ['Does not apply'] }, unresolved: [] }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        return refusal;
+      },
+    });
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
+    expect(getPublishAllStatus().items[0]!.status).toBe('failed');
+  });
+
+  it('fills the learned aspect at the gate for a later item in the same category', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const asked: string[][] = [];
+    let dispatches = 0;
+    const { run } = startPublishAllRun('test', dependencies({
+      getSnapshot: async () => ({ rows: [
+        { id: CATALOG_ID, readyToList: true, shopify: { sku: 'HASSTUB32-U001', title: 'Hasselblad Extension Tube 32' } },
+        { id: `${CATALOG_ID}9`, readyToList: true, shopify: { sku: 'HASSTUB16-U002', title: 'Hasselblad Extension Tube 16' } },
+      ] }),
+      getCategoryAspects: noMissingAspects,
+      fillAspects: async (request) => {
+        asked.push(request.missing.map((aspect) => aspect.name));
+        return { filled: { Type: ['Extension Tube'] }, unresolved: [] };
+      },
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        dispatches += 1;
+        return dispatches === 1
+          ? refusal
+          : { json: { status: 'dispatched-and-reconciled', listingId: `14700000023${dispatches}` } };
+      },
+    }, saves, calls));
+    await run;
+    // First item: repaired after the refusal. Second item: filled at the gate, no refusal.
+    expect(asked).toEqual([['Type'], ['Type']]);
+    expect(dispatches).toBe(3);
+    expect(getPublishAllStatus().items.map((item) => item.status)).toEqual(['published', 'published']);
   });
 });

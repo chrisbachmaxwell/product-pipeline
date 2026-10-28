@@ -92,6 +92,32 @@ export function providerFailure(json: Record<string, unknown>): { transient: boo
   return { transient, detail };
 }
 
+const REFUSED_ASPECT = /\bitem specific (.{1,65}?) is missing\b/giu;
+
+/**
+ * Incident #235: eBay refused a create with "The item specific Type is
+ * missing" although the required-aspect gate had passed. The gate trusts the
+ * Taxonomy API's `aspectRequired` flag, and that flag is not the whole of
+ * what eBay enforces at publish (or the taxonomy read was unavailable and the
+ * advisory gate stood aside). The refusal itself names the aspect, so it is
+ * the authority: returns each aspect eBay said is missing, deduped.
+ */
+export function refusedMissingAspects(json: Record<string, unknown>): string[] {
+  const messages = Array.isArray(json.dispatchFailureEbayErrorMessages)
+    ? json.dispatchFailureEbayErrorMessages.filter((message): message is string => typeof message === 'string')
+    : [];
+  const names: string[] = [];
+  for (const message of messages) {
+    for (const match of message.matchAll(REFUSED_ASPECT)) {
+      const name = match[1]!.trim();
+      if (name.length > 0 && !names.some((seen) => seen.toLowerCase() === name.toLowerCase())) {
+        names.push(name);
+      }
+    }
+  }
+  return names;
+}
+
 /** One publish at a time process-wide — shared with the one-item route. */
 let publishLockHeld = false;
 export function tryAcquirePublishLock(): boolean {
@@ -649,6 +675,10 @@ export function startPublishAllRun(
 
       let consecutiveUnknown = 0;
       let catalogDown = false;
+      // Aspects eBay's own refusal named as missing for a category (incident
+      // #235), so the gate fills them for later items in that category
+      // before a ceremony instead of burning one intent per item.
+      const learnedRequired = new Map<string, string[]>();
       for (const [index, row] of ready.entries()) {
         const sku = row.shopify.sku;
         const title = row.shopify.title;
@@ -785,12 +815,21 @@ export function startPublishAllRun(
             ?? dto.sections.content.itemSpecifics.shopify;
           if (categoryId !== null) {
             const taxonomy = await getCategoryAspects(categoryId);
-            if (taxonomy.available) {
+            const learned = learnedRequired.get(categoryId) ?? [];
+            if (taxonomy.available || learned.length > 0) {
               const existing = specificsRaw
                 ? JSON.parse(specificsRaw) as Record<string, string[]> : {};
               const present = new Set(Object.keys(existing).map((name) => name.toLowerCase()));
-              const missingAspects = taxonomy.aspects
-                .filter((aspect) => aspect.required && !present.has(aspect.name.toLowerCase()));
+              const known = taxonomy.available ? taxonomy.aspects : [];
+              const learnedKeys = new Set(learned.map((name) => name.toLowerCase()));
+              const missingAspects = [
+                ...known.filter((aspect) => (aspect.required || learnedKeys.has(aspect.name.toLowerCase()))
+                  && !present.has(aspect.name.toLowerCase())),
+                ...learned
+                  .filter((name) => !present.has(name.toLowerCase())
+                    && !known.some((aspect) => aspect.name.toLowerCase() === name.toLowerCase()))
+                  .map((name) => ({ name, required: true, mode: undefined, values: undefined })),
+              ];
               let missing = missingAspects.map((aspect) => aspect.name);
               if (missing.length > 0 && fillAspects !== null) {
                 const description = dto.sections.content.description;
@@ -993,6 +1032,65 @@ export function startPublishAllRun(
             return false;
           }
         };
+        // Incident #235: eBay refused the create because it names an item
+        // specific missing that the gate did not ask for. The agent writes
+        // exactly those aspects (a true value, or "Does not apply" per L93)
+        // into a NEW draft revision, so the retry is a new manifest and a
+        // new intent. A value eBay already refused is never re-sent.
+        const repairRefusedAspects = async (names: readonly string[]): Promise<boolean> => {
+          if (fillAspects === null) return false;
+          try {
+            const dto = await draftService.get(row.id);
+            const categoryId = dto.sections.listing.category.draft
+              ?? dto.sections.listing.category.shopify;
+            if (categoryId === null) return false;
+            const learned = learnedRequired.get(categoryId) ?? [];
+            for (const name of names) {
+              if (!learned.some((seen) => seen.toLowerCase() === name.toLowerCase())) learned.push(name);
+            }
+            learnedRequired.set(categoryId, learned);
+            const specificsRaw = dto.sections.content.itemSpecifics.draft
+              ?? dto.sections.content.itemSpecifics.shopify;
+            const existing = specificsRaw
+              ? JSON.parse(specificsRaw) as Record<string, string[]> : {};
+            const taxonomy = await getCategoryAspects(categoryId).catch(() => null);
+            const description = dto.sections.content.description;
+            const result = await fillAspects({
+              title: dto.sections.listing.title.draft ?? title,
+              description: description?.draft ?? description?.shopify ?? null,
+              categoryId,
+              existing,
+              missing: names.map((name) => {
+                const known = taxonomy?.available
+                  ? taxonomy.aspects.find((aspect) => aspect.name.toLowerCase() === name.toLowerCase())
+                  : undefined;
+                return { name: known?.name ?? name, mode: known?.mode ?? 'FREE_TEXT', values: known?.values ?? [] };
+              }),
+            });
+            const next: Record<string, string[]> = { ...existing };
+            const written: Array<[string, string[]]> = [];
+            for (const [name, values] of Object.entries(result.filled)) {
+              const prior = Object.keys(next).find((key) => key.toLowerCase() === name.toLowerCase());
+              if (prior !== undefined && JSON.stringify(next[prior]) === JSON.stringify(values)) continue;
+              if (prior !== undefined) delete next[prior];
+              next[name] = values;
+              written.push([name, values]);
+            }
+            if (written.length === 0) return false;
+            const payload = draftPayload(dto, { itemSpecifics: JSON.stringify(next) });
+            (payload as { catalogId: unknown }).catalogId = row.id;
+            const saved = await draftService.save(payload, 'publish-all-aspect-agent');
+            revisionDigest = saved.revision.revisionDigest;
+            const note = written.map(([name, values]) => `${name} = ${values.join(', ')}`).join('; ');
+            agentNote = agentNote
+              ? `${agentNote.replace(/\.$/, '')}; ${note}.`
+              : `Item specifics written by the agent: ${note}.`;
+            info(`[Publish All] aspect agent filled ${written.length} eBay named for ${sku}`);
+            return true;
+          } catch {
+            return false;
+          }
+        };
         let dispatched: Awaited<ReturnType<StepRunner>> = { json: null };
         let deniedCode: string | null = null;
         let dispatchStatus = 'no-summary';
@@ -1009,7 +1107,9 @@ export function startPublishAllRun(
         // leftovers are cleared gets ONE more attempt after a pause, from a
         // refreshed revision; a replay denial with nothing open on the
         // ledger is refreshed the same way (below).
-        for (let providerTry = 0; providerTry < 2; providerTry += 1) {
+        let transientRetried = false;
+        let aspectRepairTried = false;
+        for (let providerTry = 0; providerTry < 3; providerTry += 1) {
           for (let pass = 0; pass < 2; pass += 1) {
             step('Pausing 40s before publishing (Shopify rate limit)');
             await sleep(40_000);
@@ -1073,9 +1173,17 @@ export function startPublishAllRun(
           if (published || deniedCode !== null || dispatched.json === null) break;
           const failure = providerFailure(dispatched.json);
           warn(`[Publish All] create for ${sku} failed at ${failure.detail}`);
-          if (!failure.transient) break;
-          providerFailureNote = failure.detail;
-          if (providerTry > 0) break;
+          const refusedAspects = failure.transient || aspectRepairTried
+            ? [] : refusedMissingAspects(dispatched.json);
+          if (failure.transient) {
+            providerFailureNote = failure.detail;
+            if (transientRetried) break;
+            transientRetried = true;
+          } else if (refusedAspects.length > 0) {
+            aspectRepairTried = true;
+          } else {
+            break;
+          }
           // Clear what the failed attempt left on eBay first. A retry needs
           // proof the attempt is closed: the ceremony confirmed nothing was
           // created, or the reconcile chain is armed and the ledger holds no
@@ -1094,9 +1202,15 @@ export function startPublishAllRun(
             || findUnresolvedCreate(sku) !== null) {
             break;
           }
-          step('eBay had a temporary server error — retrying in 2 minutes');
-          await sleep(120_000);
-          if (!await refreshRevision('publish-all-provider-retry')) break;
+          if (failure.transient) {
+            step('eBay had a temporary server error — retrying in 2 minutes');
+            await sleep(120_000);
+            if (!await refreshRevision('publish-all-provider-retry')) break;
+          } else {
+            step(`eBay asked for ${refusedAspects.join(', ')} — the agent is writing it, then retrying`);
+            if (!await repairRefusedAspects(refusedAspects)) break;
+            await sleep(60_000);
+          }
           const again = await runPreflight();
           if (again.manifestDigest === null) {
             ({ skipReason, stop } = again);

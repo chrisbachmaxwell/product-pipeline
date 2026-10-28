@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-28: Publish-All Writes the Item Specific eBay Names in a Refusal (L123, incident #235)
+
+When a create is refused with "The item specific X is missing", Publish-All now treats eBay's named aspect as required: once the failed attempt is cleaned up and the ledger holds no open create, the item-specifics agent writes exactly those aspects (a true value, or "Does not apply" per L93) into a new draft revision, and the item is re-preflighted and dispatched once more in the same run. A value eBay already refused is never re-sent, and the repair happens at most once per item. The named aspect is also remembered for the rest of the run, so later items in the same category get it at the pre-publish gate instead of burning an intent. No ceremony, approval, manifest or provider adapter changed.
+
 ### 2026-10-23: Exact-Absent eBay Collection Ghosts No Longer Block Publishing (L122)
 
 The live catalog now verifies only a bounded set of positive-stock Shopify SKUs that eBay's bulk Inventory collection calls artifacts despite having no active listing or offer. When the exact Inventory-item endpoint independently returns not-found, that stale collection row is removed before catalog projection; exact presence, malformed responses and read failures all keep the warning fail-closed. Probes are capped at 20 per capture with four in flight. This makes the already-cleaned `3043370-U017` eligible to become **Ready to list** without weakening catalog completeness or performing a provider write.
