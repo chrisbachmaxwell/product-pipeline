@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { fitEbayTitle, getPublishAllStatus, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
+import { fitEbayTitle, getPublishAllStatus, OPERATOR_DATA_SKIP_REASONS, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
+import { publishBlockCandidates } from './incident-watchdog.js';
 
 const CATALOG_ID = 'shopify-variant:gid://shopify/ProductVariant/55484011184419';
 const REVISION = `sha256:${'b'.repeat(64)}`;
@@ -962,5 +963,30 @@ describe('publish-all eBay server error on create (incident #212)', () => {
     expect(saves).toHaveLength(0);
     expect(calls.map((argv) => argv[1])).toEqual(['preflight-create', 'dispatch-create']);
     expect(getPublishAllStatus().items[0]!.status).toBe('skipped');
+  });
+});
+
+// Incident #236: eBay's Inventory API refuses `/` in a SKU and the L116
+// alias codec has not shipped, so the item is skipped before any ceremony
+// with a reason the watchdog classes as operator-only store data.
+describe('publish-all SKU eBay refuses (incident #236)', () => {
+  it('skips a slash SKU before any save or ceremony, as operator-only store data', async () => {
+    arm();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const base = dependencies({}, saves, calls);
+    const { run } = startPublishAllRun('test', {
+      ...base,
+      getSnapshot: async () => ({ rows: [{
+        id: CATALOG_ID, readyToList: true, shopify: { sku: 'ILCE6400/B-U641', title: 'Sony a6400 Body' },
+      }] }),
+    });
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item).toMatchObject({ sku: 'ILCE6400/B-U641', status: 'skipped' });
+    expect(OPERATOR_DATA_SKIP_REASONS).toContain(item.reason);
+    expect(publishBlockCandidates([item])[0]).toMatchObject({ operatorOnly: true });
   });
 });

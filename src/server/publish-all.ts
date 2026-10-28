@@ -256,13 +256,23 @@ function excludedSkus(): ReadonlySet<string> {
 const EBAY_TITLE_MAX = 80;
 const NO_SHOPIFY_PHOTOS = 'The item has no photos in Shopify — add at least one there and it will publish next run.';
 const NO_SHOPIFY_TITLE = 'The item has no title in Shopify — add one there and it will publish next run.';
+/**
+ * Incident #236: eBay's Inventory API refuses `/` and spaces in a SKU, and
+ * ProductPipeline cannot list such an item under an eBay-safe alias until
+ * the L116 cross-path identity codec ships (store v3 migration, ceremonies,
+ * order import). No incident-sized code change can publish it, so the skip
+ * is store data: a SKU without those characters publishes on the next run.
+ */
+const UNSAFE_EBAY_SKU = 'The SKU has a slash, space or other character eBay does not accept, and ProductPipeline '
+  + 'cannot list it under a different eBay SKU yet. To list it, change the SKU in Shopify to one with only '
+  + 'letters, digits, dot, dash or underscore that no other product uses; the next run publishes it.';
 
 /**
  * Skip reasons that are verified store data only the operator can change
  * (incident #194). No code change can publish these items, so the watchdog
  * shows them to the operator but does not send them to the fix agent.
  */
-export const OPERATOR_DATA_SKIP_REASONS: readonly string[] = Object.freeze([NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE]);
+export const OPERATOR_DATA_SKIP_REASONS: readonly string[] = Object.freeze([NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE, UNSAFE_EBAY_SKU]);
 
 /**
  * Fit a store title into eBay's 80 characters (incident #180). The create
@@ -656,7 +666,7 @@ export function startPublishAllRun(
         status.currentSku = sku;
         step('Preparing the draft');
         if (!SKU_GRAMMAR.test(sku)) {
-          record({ sku, title, status: 'skipped', reason: 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).' });
+          record({ sku, title, status: 'skipped', reason: UNSAFE_EBAY_SKU });
           continue;
         }
         if (row.readyToListGaps?.includes('condition')) {

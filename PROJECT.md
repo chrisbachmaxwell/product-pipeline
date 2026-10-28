@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-28: A SKU eBay Refuses Is Operator Store Data Until the L116 Alias Ships (L123, incident #236)
+
+Publish-All still skips a Shopify SKU outside eBay's Inventory SKU grammar (here `ILCE6400/B-U641`) before any draft save or ceremony. The skip reason is now one named constant, `UNSAFE_EBAY_SKU`, in `OPERATOR_DATA_SKIP_REASONS`. The watchdog therefore shows it to the operator once and no longer sends it to the fix agent, which cannot ship the protected, cross-path L116 alias slice. The text no longer blames only "slashes or spaces": it names the accepted characters and requires a new SKU that no other product uses. No guard, ceremony, provider path or order-import code changed.
+
 ### 2026-10-23: Exact-Absent eBay Collection Ghosts No Longer Block Publishing (L122)
 
 The live catalog now verifies only a bounded set of positive-stock Shopify SKUs that eBay's bulk Inventory collection calls artifacts despite having no active listing or offer. When the exact Inventory-item endpoint independently returns not-found, that stale collection row is removed before catalog projection; exact presence, malformed responses and read failures all keep the warning fail-closed. Probes are capped at 20 per capture with four in flight. This makes the already-cleaned `3043370-U017` eligible to become **Ready to list** without weakening catalog completeness or performing a provider write.
