@@ -190,7 +190,10 @@ Steps, all fail-closed, in order:
    items and shipping.
 4. Payload build: every line item is resolved by exact SKU via
    `productVariants(first: 1, query: "sku:'<sku>'")`; any unresolvable SKU
-   denies `IMPORT_SKU_UNRESOLVED` before any write. Tags
+   denies `IMPORT_SKU_UNRESOLVED` before any write. A line SKU that is the
+   canonical `PP1_` alias of a Shopify SKU eBay refuses (L116/L124) resolves
+   by its decoded Shopify SKU; if a variant also holds the alias bytes, the
+   line denies `IMPORT_SKU_AMBIGUOUS` before any write. Tags
    `['eBay', 'eBay-<orderId>']`, a note referencing the eBay order id,
    financial status from the eBay payment status, `sourceName: 'ebay'`, and
    `sourceIdentifier: '<orderId>'`.

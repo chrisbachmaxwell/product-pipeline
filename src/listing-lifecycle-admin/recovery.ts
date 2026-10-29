@@ -14,6 +14,7 @@
  */
 import { sha256Digest, type Digest } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import { isEbayTargetSku } from '../shared/sku-alias.js';
 
 /** eBay offer ids and SKUs share the adapter's safe-segment shape. */
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -80,7 +81,7 @@ export function deriveListingCreateRecoveryManifest(input: {
     || !IDENTIFIER_PATTERN.test(input.sourceAttemptId)
     || !DIGEST_PATTERN.test(input.sourceIntentKey)
     || !DIGEST_PATTERN.test(input.sourceApprovalEvidenceDigest)
-    || !SAFE_SEGMENT.test(input.sku) || input.sku.length > 50
+    || !isEbayTargetSku(input.sku) || input.sku.length > 50
     || !SAFE_SEGMENT.test(input.offerId)
     // Prior recovery binding is all-or-nothing and shape-valid.
     || (priorRecoveryJobId === null) !== (priorRecoveryAttemptId === null)
@@ -150,7 +151,7 @@ export function deriveOrphanedArtifactRecoveryManifest(input: {
     || !IDENTIFIER_PATTERN.test(input.sourceAttemptId)
     || !DIGEST_PATTERN.test(input.sourceIntentKey)
     || !DIGEST_PATTERN.test(input.sourceApprovalEvidenceDigest)
-    || !SAFE_SEGMENT.test(input.sku) || input.sku.length > 50
+    || !isEbayTargetSku(input.sku) || input.sku.length > 50
     || !SAFE_SEGMENT.test(input.offerId)
     || !/^[0-9]{1,19}$/.test(input.supersededByListingId)) {
     deny('RECOVER_INPUT_INVALID');

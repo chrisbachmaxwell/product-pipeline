@@ -21,6 +21,7 @@
  * migration-store job under a live one-action approval before calling them.
  */
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
+import { isEbayTargetSku } from '../shared/sku-alias.js';
 
 export { createProductionDispatchTokenProvider };
 
@@ -179,7 +180,7 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
     const parsed = parseJsonObject(response.text);
     const sku = parsed.sku;
     const status = parsed.status;
-    if (typeof sku !== 'string' || !SAFE_SEGMENT.test(sku)
+    if (typeof sku !== 'string' || !isEbayTargetSku(sku)
       || typeof status !== 'string'
       || !OFFER_STATUSES.includes(status as RecoveredOfferStatus)
       || (typeof parsed.offerId === 'string' && parsed.offerId !== offerId)) {
@@ -199,7 +200,7 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
   }
 
   async function countOffersForSku(sku: string): Promise<number> {
-    if (!SAFE_SEGMENT.test(sku)) {
+    if (!isEbayTargetSku(sku)) {
       deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
     }
     const headers = await authorizedHeaders();
@@ -239,7 +240,7 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
   }
 
   async function getInventoryItem(sku: string): Promise<RecoveredInventoryItemState> {
-    if (!SAFE_SEGMENT.test(sku)) {
+    if (!isEbayTargetSku(sku)) {
       deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
     }
     const headers = await authorizedHeaders();
@@ -257,14 +258,14 @@ export function createListingRecoverDispatchAdapter(dependencies: Readonly<{
     }
     const parsed = parseJsonObject(response.text);
     const parsedSku = parsed.sku;
-    if (typeof parsedSku !== 'string' || !SAFE_SEGMENT.test(parsedSku)) {
+    if (typeof parsedSku !== 'string' || !isEbayTargetSku(parsedSku)) {
       return deny('RECOVER_DISPATCH_RESPONSE_INVALID', 'definite_no_effect');
     }
     return Object.freeze({ found: true, sku: parsedSku });
   }
 
   async function deleteInventoryItem(sku: string): Promise<void> {
-    if (!SAFE_SEGMENT.test(sku)) {
+    if (!isEbayTargetSku(sku)) {
       deny('RECOVER_DISPATCH_TARGET_INVALID', 'definite_no_effect');
     }
     const headers = await authorizedHeaders();

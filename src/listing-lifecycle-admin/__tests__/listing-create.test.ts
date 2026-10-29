@@ -29,6 +29,7 @@ import type { ListingWorkspaceDto } from '../../server/listing-workspace-reader.
 import {
   applyListingCreateDescriptionTemplate,
   buildListingCreatePayloads,
+  listingCreateEbaySku,
   classifyCreateOutcome,
   deriveListingCreateManifest,
   ListingLifecycleManifestError,
@@ -838,6 +839,24 @@ describe('listing-lifecycle operator CLI — create', () => {
     expect(() => deriveListingCreateManifest({
       ...world.revision,
       identity: { ...world.revision.identity, rawSku: 'x'.repeat(51) },
+    })).toThrowError(expect.objectContaining({ code: 'CREATE_IDENTITY_MISMATCH' }));
+  });
+
+  it('targets the PP1_ alias for a Shopify SKU eBay refuses (L116, incident #239)', async () => {
+    const world = await createWorld();
+    const derived = deriveListingCreateManifest({
+      ...world.revision,
+      identity: { ...world.revision.identity, rawSku: 'ILCE6400/B-U641' },
+    });
+    // The manifest binds the Shopify SKU; the eBay target is its pure alias.
+    expect(derived.manifest.identity.rawSku).toBe('ILCE6400/B-U641');
+    expect(listingCreateEbaySku('ILCE6400/B-U641')).toBe('PP1_ILCE6400_2FB-U641');
+    expect(buildListingCreatePayloads(derived.manifest).offerPayload.sku)
+      .toBe('PP1_ILCE6400_2FB-U641');
+    // A SKU order import could not resolve has no alias and never creates.
+    expect(() => deriveListingCreateManifest({
+      ...world.revision,
+      identity: { ...world.revision.identity, rawSku: 'A+B' },
     })).toThrowError(expect.objectContaining({ code: 'CREATE_IDENTITY_MISMATCH' }));
   });
 

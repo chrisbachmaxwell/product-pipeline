@@ -343,6 +343,21 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-29: A Slash or Space in a Shopify SKU No Longer Blocks Publishing (L124, incident #239)
+
+Publish All skipped `ILCE6400/B-U641` because eBay's Inventory API refuses `/` (and spaces) in a SKU. This ships the L116 identity alias. `src/shared/sku-alias.ts` maps a Shopify SKU to the eBay SKU a create targets. A SKU eBay already accepts keeps its exact bytes, so no existing listing, job or binding key changes. Any other SKU in order import's grammar (`[A-Za-z0-9._ /-]`) becomes the canonical, reversible `PP1_` + byte-escape alias (`ILCE6400/B-U641` → `PP1_ILCE6400_2FB-U641`), capped at eBay's 50 characters. The `PP1_` prefix is reserved.
+
+The alias is used everywhere at once:
+- The live catalog joins each variant on its eBay SKU. A legacy listing that holds the raw bytes keeps the raw join; raw and alias state together is a collision and needs attention.
+- The draft basis and workspace reader bind it.
+- The create ceremony PUTs, offers, binds its target identity and reconciles on it.
+- Recovery deletes and verifies on it.
+- The price/inventory adapters, sweep target check and quantity binding accept it.
+- Order import decodes it back to the Shopify SKU, denying `IMPORT_SKU_AMBIGUOUS` if a variant also holds the alias bytes.
+- Publish-All, the publish route and the watchdog look up ledger jobs by it.
+
+A SKU with no alias still skips, now as operator-only store data. Not yet covered: listing-control schema v2 still requires `ebay_inventory_sku = raw_sku`, so saving a content draft for an already-aliased Inventory listing fails closed until a v3 store migration ships. Publish, price, quantity, end/relist, recovery and order import do not depend on it. This PR touches protected ceremony paths and needs a human merge.
+
 ### 2026-10-28: Publish-All Writes the Item Specific eBay Names in a Refusal (L123, incident #235)
 
 When a create is refused with "The item specific X is missing", Publish-All now treats eBay's named aspect as required: once the failed attempt is cleaned up and the ledger holds no open create, the item-specifics agent writes exactly those aspects (a true value, or "Does not apply" per L93) into a new draft revision, and the item is re-preflighted and dispatched once more in the same run. A value eBay already refused is never re-sent, and the repair happens at most once per item. The named aspect is also remembered for the rest of the run, so later items in the same category get it at the pre-publish gate instead of burning an intent. No ceremony, approval, manifest or provider adapter changed.

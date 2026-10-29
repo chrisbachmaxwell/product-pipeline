@@ -1,5 +1,6 @@
 import { deriveCondition } from '../shared/condition-tags.js';
 import { hasEbayHoldTag } from '../shared/ebay-hold-tag.js';
+import { ebayInventorySkuFor } from '../shared/sku-alias.js';
 
 export type LiveListingStatus = 'active' | 'not_listed' | 'attention' | 'unknown';
 
@@ -436,13 +437,43 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     ...input.ebayOffers,
   ];
   const nearEbay = nearCollisionSkus(ebaySkuValues);
-  const crossSourceNear = crossSourceNearCollisionShopifySkus(
-    input.shopifyVariants,
-    ebaySkuValues,
-  );
   const activeBySku = groupBy(input.ebayActiveListings, (value) => value.sku);
   const inventoryBySku = groupBy(input.ebayInventoryItems, (value) => value.sku);
   const offersBySku = groupBy(input.ebayOffers, (value) => value.sku);
+  // L116 / incident #239: the eBay SKU a Shopify SKU joins on. A SKU eBay
+  // accepts as-is joins on its own bytes. Any other SKU joins on its canonical
+  // `PP1_` alias (what a ProductPipeline create uses). It joins on its raw
+  // bytes only when a legacy listing holds those bytes and the alias holds
+  // nothing. If both hold eBay state, the row needs attention and is never
+  // ready, so nothing can create a second listing beside either.
+  const ebayPresent = (sku: string): boolean =>
+    activeBySku.has(sku) || inventoryBySku.has(sku) || offersBySku.has(sku);
+  const ebayJoin = new Map<string, { sku: string; aliasCollision: boolean }>();
+  for (const variant of input.shopifyVariants) {
+    if (variant.sku === '' || ebayJoin.has(variant.sku)) continue;
+    const alias = ebayInventorySkuFor(variant.sku);
+    if (alias === null || alias === variant.sku) {
+      ebayJoin.set(variant.sku, { sku: variant.sku, aliasCollision: false });
+      continue;
+    }
+    const rawPresent = ebayPresent(variant.sku);
+    const aliasPresent = ebayPresent(alias);
+    ebayJoin.set(variant.sku, {
+      sku: rawPresent && !aliasPresent ? variant.sku : alias,
+      aliasCollision: rawPresent && aliasPresent,
+    });
+  }
+  const ebaySkuOf = (sku: string): string => ebayJoin.get(sku)?.sku ?? sku;
+  // Compared on both the Shopify bytes and the eBay join SKU, so a case-only
+  // twin of either still flags.
+  const crossSourceNear = crossSourceNearCollisionShopifySkus(
+    [...input.shopifyVariants, ...input.shopifyVariants
+      .filter((variant) => ebaySkuOf(variant.sku) !== variant.sku)
+      .map((variant) => ({ sku: ebaySkuOf(variant.sku) }))],
+    ebaySkuValues,
+  );
+  const ebayNearCollision = (sku: string): boolean => nearEbay.has(ebaySkuOf(sku))
+    || crossSourceNear.has(sku) || crossSourceNear.has(ebaySkuOf(sku));
 
   let missingShopifySkuCount = 0;
   let ambiguousActiveMatchCount = 0;
@@ -461,9 +492,10 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
         && sellableSkuHolders.has(variant.sku))
       && !(soldOut && duplicateShopify.has(variant.sku)
         && soldOutJoinHolder.get(variant.sku) !== variant.variantId);
-    const activeMatches = skuCanJoin ? activeBySku.get(variant.sku) ?? [] : [];
-    const inventoryItems = skuCanJoin ? inventoryBySku.get(variant.sku) ?? [] : [];
-    const offers = skuCanJoin ? offersBySku.get(variant.sku) ?? [] : [];
+    const ebaySku = ebaySkuOf(variant.sku);
+    const activeMatches = skuCanJoin ? activeBySku.get(ebaySku) ?? [] : [];
+    const inventoryItems = skuCanJoin ? inventoryBySku.get(ebaySku) ?? [] : [];
+    const offers = skuCanJoin ? offersBySku.get(ebaySku) ?? [] : [];
     // A sold-out SKU with exactly one live listing has nothing to
     // disambiguate (see soldOutEverywhere): the END target is the exact-SKU
     // listing and no Shopify twin can sell. Every other case keeps its flag.
@@ -471,9 +503,14 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     if (!ambiguityBlocksNothing) {
       if (duplicateShopify.has(variant.sku)) reasons.add('shopify_sku_duplicate');
       if (nearShopify.has(variant.sku)) reasons.add('shopify_sku_near_collision');
-      if (nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku)) {
+      if (ebayNearCollision(variant.sku)) {
         reasons.add('ebay_sku_near_collision');
       }
+    }
+    // Two eBay identities for one Shopify SKU are never "nothing to
+    // disambiguate", even sold out: the other one may still be live.
+    if (ebayJoin.get(variant.sku)?.aliasCollision === true) {
+      reasons.add('ebay_sku_near_collision');
     }
     if (activeMatches.length > 1) {
       reasons.add('ebay_multiple_active_matches');
@@ -571,7 +608,7 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
         price: Object.freeze({ ...variant.price }),
       }),
       ebay: Object.freeze({
-        sku: variant.sku,
+        sku: ebaySku,
         state: lifecycleStatus,
         listingId: activeListing?.listingId ?? null,
         offerId: matchingOffer?.offerId ?? null,
@@ -595,9 +632,12 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
     })];
   });
 
+  // The eBay SKU each Shopify variant joined on (its raw bytes or its alias),
+  // so an aliased listing is never unmatched, while a raw-bytes listing beside
+  // an alias collision still shows as its own row.
   const shopifyRawSkus = new Set(input.shopifyVariants
-    .map((variant) => variant.sku)
-    .filter((sku) => sku !== ''));
+    .filter((variant) => variant.sku !== '')
+    .map((variant) => ebaySkuOf(variant.sku)));
   const unmatchedActiveBySku = groupBy(input.ebayActiveListings.filter((listing) =>
     listing.sku === '' || !shopifyRawSkus.has(listing.sku)), (listing) => listing.sku);
   const unmatchedRows = [...unmatchedActiveBySku.entries()].flatMap(([sku, activeMatches]) => {
@@ -664,7 +704,8 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       duplicateShopifySkuCount: duplicateShopify.size,
       shopifyNearCollisionCount: nearShopify.size,
       ebayNearCollisionCount: new Set(input.shopifyVariants
-        .filter((variant) => nearEbay.has(variant.sku) || crossSourceNear.has(variant.sku))
+        .filter((variant) => variant.sku !== '' && (ebayNearCollision(variant.sku)
+          || ebayJoin.get(variant.sku)?.aliasCollision === true))
         .map((variant) => variant.sku)).size,
       ambiguousActiveMatchCount,
       unpublishedArtifactSkuCount,

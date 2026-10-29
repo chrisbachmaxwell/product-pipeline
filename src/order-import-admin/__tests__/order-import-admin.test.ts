@@ -729,6 +729,54 @@ describe('order-import operator CLI', () => {
     }
   });
 
+  it('resolves a PP1_ alias line to the Shopify SKU it encodes (L116, #239)', async () => {
+    const world = createWorld();
+    await establishOwnership(world);
+    await establishWatermark(world);
+    world.setClock('2026-08-19T18:05:00.000Z');
+    const aliased = (order: Record<string, unknown>) => ({
+      ...order,
+      lineItems: (order.lineItems as Record<string, unknown>[])
+        .map((line) => ({ ...line, sku: 'PP1_ILCE6400_2FB-U641' })),
+    });
+    world.ebayListOrders = [aliased(ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z'))];
+    world.ebayOrderDetails.set(ORDER_ID,
+      aliased(ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z')));
+    world.variantsBySku.set('ILCE6400/B-U641', VARIANT_GID);
+    await world.run(['poll', '--migration-store', world.migrationDatabasePath,
+      '--max-orders', '10']);
+
+    await world.run(['import', '--migration-store', world.migrationDatabasePath,
+      '--order-id', ORDER_ID, '--confirm-lightspeed']);
+    expect(world.lastStdout()).toMatchObject({ command: 'import', status: 'imported-and-reconciled' });
+    expect(world.orderCreateCalls).toHaveLength(1);
+    expect(world.orderCreateCalls[0]!.lineItems).toMatchObject([{ variantId: VARIANT_GID }]);
+  });
+
+  it('denies an alias line when a variant also holds the alias bytes, before any write', async () => {
+    const world = createWorld();
+    await establishOwnership(world);
+    await establishWatermark(world);
+    world.setClock('2026-08-19T18:05:00.000Z');
+    const aliased = (order: Record<string, unknown>) => ({
+      ...order,
+      lineItems: (order.lineItems as Record<string, unknown>[])
+        .map((line) => ({ ...line, sku: 'PP1_ILCE6400_2FB-U641' })),
+    });
+    world.ebayListOrders = [aliased(ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z'))];
+    world.ebayOrderDetails.set(ORDER_ID,
+      aliased(ebayOrderFixture(ORDER_ID, '2026-08-19T18:00:30.000Z')));
+    world.variantsBySku.set('ILCE6400/B-U641', VARIANT_GID);
+    world.variantsBySku.set('PP1_ILCE6400_2FB-U641', 'gid://shopify/ProductVariant/1');
+    await world.run(['poll', '--migration-store', world.migrationDatabasePath,
+      '--max-orders', '10']);
+
+    await world.run(['import', '--migration-store', world.migrationDatabasePath,
+      '--order-id', ORDER_ID, '--confirm-lightspeed']);
+    expect(world.lastStderr()).toMatchObject({ command: 'import', code: 'IMPORT_SKU_AMBIGUOUS' });
+    expect(world.orderCreateCalls).toHaveLength(0);
+  });
+
   it('requires the literal --confirm-lightspeed acknowledgement', async () => {
     const world = createWorld();
     // Commander enforces the required literal flag before the action runs.

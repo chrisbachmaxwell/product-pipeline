@@ -1,3 +1,4 @@
+import { ebaySkuMatchesShopifySku } from '../shared/sku-alias.js';
 import { warn } from '../utils/logger.js';
 import { createListingDefaultsReader } from './listing-defaults.js';
 import {
@@ -171,11 +172,15 @@ function resolveExactFreshRow(
   return row;
 }
 
+/**
+ * The exact eBay SKU of a row: the Shopify SKU's own bytes or its canonical
+ * PP1_ alias (L116). Detail reads and the mapping use it as the eBay target.
+ */
 function exactRawSku(row: LiveListingCatalogRow): string | null {
   const ebaySku = row.ebay.sku;
   if (typeof ebaySku !== 'string' || ebaySku.length === 0 || ebaySku.length > 128
     || ebaySku.trim().length === 0 || /[\u0000-\u001F\u007F]/u.test(ebaySku)) return null;
-  if (row.shopify !== null && row.shopify.sku !== ebaySku) return null;
+  if (row.shopify !== null && !ebaySkuMatchesShopifySku(ebaySku, row.shopify.sku)) return null;
   return ebaySku;
 }
 
