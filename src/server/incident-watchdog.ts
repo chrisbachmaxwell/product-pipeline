@@ -93,6 +93,8 @@ export type WatchdogDependencies = Readonly<{
   stateFile?: string;
   diagnose?: (incident: Incident, context: string) => Promise<string>;
   openIssue?: (incident: Incident) => Promise<string | null>;
+  /** The URL of an already-open GitHub incident issue for this incident, if any. */
+  findOpenIssue?: (incident: Incident) => Promise<string | null>;
   notify?: (incident: Incident) => Promise<void>;
   learningsContext?: () => string;
   getPublishStatus?: () => Pick<ReturnType<typeof getPublishAllStatus>, 'state' | 'stopReason' | 'items'>;
@@ -472,6 +474,49 @@ async function defaultDiagnose(incident: Incident, context: string): Promise<str
   return text.slice(0, 6_000);
 }
 
+/** Hidden body marker so a re-sighted incident finds the issue it already filed. */
+export function incidentIssueMarker(incident: Pick<Incident, 'id'>): string {
+  return `<!-- incident-id: ${encodeURIComponent(incident.id)} -->`;
+}
+
+/**
+ * An open `incident` issue that already covers this incident: the body
+ * carries its id marker, or (issues filed before the marker existed) the
+ * title is identical. #236, #239 and #241 were the same slash-SKU block
+ * filed once per Publish All run.
+ */
+export function matchOpenIncidentIssue(
+  incident: Pick<Incident, 'id' | 'title'>,
+  issues: ReadonlyArray<{ title?: unknown; body?: unknown; html_url?: unknown; pull_request?: unknown }>,
+): string | null {
+  const marker = incidentIssueMarker(incident);
+  const title = `[incident] ${incident.title}`.trim();
+  const match = issues.find((issue) => issue.pull_request === undefined
+    && typeof issue.html_url === 'string'
+    && ((typeof issue.body === 'string' && issue.body.includes(marker))
+      || (typeof issue.title === 'string' && issue.title.trim() === title)));
+  return match ? match.html_url as string : null;
+}
+
+async function defaultFindOpenIssue(incident: Incident): Promise<string | null> {
+  const connections = await import('./connections.js');
+  const resolved = connections.readGithubToken();
+  if (resolved === null) return null;
+  const repo = connections.incidentGithubRepo();
+  const response = await fetch(
+    `https://api.github.com/repos/${repo}/issues?state=open&labels=incident&per_page=100`,
+    {
+      headers: {
+        Authorization: `Bearer ${resolved.token}`,
+        Accept: 'application/vnd.github+json',
+      },
+    },
+  );
+  if (response.status !== 200) return null;
+  const body = await response.json() as unknown;
+  return Array.isArray(body) ? matchOpenIncidentIssue(incident, body) : null;
+}
+
 async function defaultOpenIssue(incident: Incident): Promise<string | null> {
   const connections = await import('./connections.js');
   const resolved = connections.readGithubToken();
@@ -493,7 +538,8 @@ async function defaultOpenIssue(incident: Incident): Promise<string | null> {
         + `## Diagnosis\n\n${incident.diagnosis ?? '_diagnosis unavailable_'}\n\n`
         + '---\nOpened automatically by the incident watchdog (L76). The `incident` '
         + 'label triggers the fix workflow; its PR auto-merges when CI passes and no '
-        + 'protected path changed (L94), otherwise a human merges.',
+        + 'protected path changed (L94), otherwise a human merges.\n'
+        + incidentIssueMarker(incident),
     }),
   });
   if (response.status !== 201) return null;
@@ -542,6 +588,9 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
       parseArgvEnv('PUBLISH_RECONCILE_ARGV') ?? parseArgvEnv('INVENTORY_SWEEP_ARGV'), sinceUtc));
   const diagnose = dependencies.diagnose ?? defaultDiagnose;
   const openIssue = dependencies.openIssue ?? defaultOpenIssue;
+  // An injected openIssue (tests) never pairs with the live GitHub lookup.
+  const findOpenIssue = dependencies.findOpenIssue
+    ?? (dependencies.openIssue ? async () => null : defaultFindOpenIssue);
   const notify = dependencies.notify ?? defaultNotify;
   const learningsContext = dependencies.learningsContext ?? defaultLearningsContext;
 
@@ -615,7 +664,20 @@ export async function runWatchdogOnce(dependencies: WatchdogDependencies = {}): 
     && (incident.severity === 'critical' || incident.code === 'PUBLISH_ITEM_BLOCKED');
   const needsDiagnosis = active.find((incident) =>
     escalates(incident) && incident.diagnosisState === 'none');
+  // A publish block leaves state while the next run is in progress and comes
+  // back as "new" when it finishes, so the same unresolved block was
+  // re-diagnosed and re-filed once per run (#236, #239, #241 — one fix PR
+  // each). Reuse the open issue instead: no diagnosis spend, no new issue.
+  let alreadyFiled: string | null = null;
   if (needsDiagnosis) {
+    alreadyFiled = await findOpenIssue(needsDiagnosis).catch(() => null);
+    if (alreadyFiled !== null) {
+      needsDiagnosis.githubIssueUrl = alreadyFiled;
+      needsDiagnosis.diagnosisState = 'done';
+      info(`[Incidents] ${needsDiagnosis.id} already has an open issue`);
+    }
+  }
+  if (needsDiagnosis && alreadyFiled === null) {
     needsDiagnosis.diagnosisState = 'pending';
     try {
       needsDiagnosis.diagnosis = await diagnose(needsDiagnosis, learningsContext());
