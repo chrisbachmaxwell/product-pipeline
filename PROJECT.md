@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-29: The Incident Watchdog Files a Recurring Publish Block Once, Not Once Per Run (L125, incident #241)
+
+The same slash-SKU block for `ILCE6400/B-U641` was filed three times (#236, #239, #241), and each issue started its own fix agent and PR. The cause is in the watchdog: while a new Publish All run is in progress, the last run's blocked items leave the watchdog state, so when the run finishes the same block is treated as new. It was then diagnosed again and a new GitHub issue was opened, once per run. Before diagnosing, the watchdog now looks for an open `incident` issue that already covers the incident. A match is either the hidden `<!-- incident-id: … -->` marker that new issues carry, or the identical title for older issues. If one exists, the watchdog links it and makes no diagnosis call and opens no issue. Once that issue is closed, a recurrence is filed again as normal. The lookup is one GitHub read; it makes no eBay or Shopify call, and no ceremony, publish or protected path changed. The slash-SKU publish itself is fixed by the full L116 alias in PR #240, which is waiting for a human merge because it changes protected ceremony paths.
+
 ### 2026-10-28: Publish-All Writes the Item Specific eBay Names in a Refusal (L123, incident #235)
 
 When a create is refused with "The item specific X is missing", Publish-All now treats eBay's named aspect as required: once the failed attempt is cleaned up and the ledger holds no open create, the item-specifics agent writes exactly those aspects (a true value, or "Does not apply" per L93) into a new draft revision, and the item is re-preflighted and dispatched once more in the same run. A value eBay already refused is never re-sent, and the repair happens at most once per item. The named aspect is also remembered for the rest of the run, so later items in the same category get it at the pre-publish gate instead of burning an intent. No ceremony, approval, manifest or provider adapter changed.

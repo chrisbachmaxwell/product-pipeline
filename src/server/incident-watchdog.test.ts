@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateIncidentCandidates,
   getIncidents,
+  incidentIssueMarker,
+  matchOpenIncidentIssue,
   publishBlockCandidates,
   runWatchdogOnce,
   type Incident,
@@ -188,6 +190,57 @@ describe('runWatchdogOnce', () => {
     expect(getIncidents()[0]!.detail).toContain('only you can change');
     expect(diagnosed).toBe(0);
     expect(issues).toHaveLength(0);
+  });
+
+  it('files a recurring publish block once, not once per Publish All run (#236/#239/#241)', async () => {
+    const stateFile = tempStateFile();
+    const filed: Array<{ title: string; body: string; html_url: string }> = [];
+    let diagnosed = 0;
+    let runState: 'finished' | 'running' = 'finished';
+    const reason = 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).';
+    const dependencies = {
+      stateFile,
+      getSnapshot: async () => ({ observedAtUtc: FRESH, rows: [] }),
+      getLedgerSignals: () => ({ oldestUnresolvedOrder: null, unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [], repeatedPriceFailures: [] }),
+      getPublishStatus: () => (runState === 'running'
+        ? { state: 'running' as const, stopReason: null, items: [] }
+        : { state: 'finished' as const, stopReason: null, items: [{ sku: 'ILCE6400/B-U641', title: 'X', status: 'skipped' as const, reason }] }),
+      diagnose: async () => { diagnosed += 1; return 'WHAT HAPPENED: slash SKU'; },
+      findOpenIssue: async (incident: Incident) => matchOpenIncidentIssue(incident, filed),
+      openIssue: async (incident: Incident) => {
+        const html_url = `https://github.com/x/y/issues/${236 + filed.length}`;
+        filed.push({ title: `[incident] ${incident.title}`, body: `...\n${incidentIssueMarker(incident)}`, html_url });
+        return html_url;
+      },
+      notify: async () => undefined,
+      learningsContext: () => '',
+    };
+    await runWatchdogOnce({ ...dependencies, now: () => NOW });
+    runState = 'running';                       // the next run drops the block from state
+    await runWatchdogOnce({ ...dependencies, now: () => NOW + 5 * 60_000 });
+    expect(getIncidents()).toEqual([]);
+    runState = 'finished';                      // ...and the same block comes back
+    await runWatchdogOnce({ ...dependencies, now: () => NOW + 10 * 60_000 });
+    expect(filed).toHaveLength(1);
+    expect(diagnosed).toBe(1);
+    expect(getIncidents()[0]).toMatchObject({
+      code: 'PUBLISH_ITEM_BLOCKED', diagnosisState: 'done', githubIssueUrl: 'https://github.com/x/y/issues/236',
+    });
+  });
+
+  it('matches an open incident issue by marker or legacy exact title, never a PR or another incident', () => {
+    const incident = { id: 'PUBLISH_ITEM_BLOCKED:The SKU <sku>', title: 'Publish All could not publish A/B: x' };
+    expect(matchOpenIncidentIssue(incident, [
+      { title: 'other', body: `b\n${incidentIssueMarker(incident)}`, html_url: 'u1' },
+    ])).toBe('u1');
+    expect(matchOpenIncidentIssue(incident, [
+      { title: '[incident] Publish All could not publish A/B: x ', body: null, html_url: 'u2' },
+    ])).toBe('u2');
+    expect(matchOpenIncidentIssue(incident, [
+      { title: '[incident] Publish All could not publish A/B: x', body: '', html_url: 'u3', pull_request: {} },
+      { title: '[incident] Publish All could not publish C/D: x', body: incidentIssueMarker({ id: 'OTHER' }), html_url: 'u4' },
+    ])).toBeNull();
+    expect(incidentIssueMarker({ id: 'a --> b' })).not.toContain('a -->');
   });
 
   it('clears incidents when the condition resolves and stays quiet unarmed', async () => {
