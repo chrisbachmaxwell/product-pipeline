@@ -17,6 +17,7 @@
  * migration-store job under a live one-action approval before calling it.
  */
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
+import { isEbayTargetSku } from '../shared/sku-alias.js';
 
 export { createProductionDispatchTokenProvider };
 
@@ -24,7 +25,6 @@ const EBAY_BULK_UPDATE_URL = 'https://api.ebay.com/sell/inventory/v1/bulk_update
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 20_000;
-const SAFE_SKU = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXACT_OFFER_ID = /^[0-9]{1,19}$/;
 const PRICE_AMOUNT = /^[0-9]{1,10}(\.[0-9]{1,2})?$/;
 const CURRENCY = /^[A-Z]{3}$/;
@@ -103,7 +103,7 @@ export function buildBulkUpdateBody(
   field: 'price' | 'quantity',
   input: AlignPriceInput | AlignQuantityInput,
 ): string {
-  if (!SAFE_SKU.test(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
+  if (!isEbayTargetSku(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
     deny('ALIGN_DISPATCH_TARGET_INVALID');
   }
   let request: Record<string, unknown>;
@@ -249,7 +249,7 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
   }
 
   async function withdrawOffer(input: Readonly<{ sku: string; offerId: string }>): Promise<void> {
-    if (!SAFE_SKU.test(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
+    if (!isEbayTargetSku(input.sku) || !EXACT_OFFER_ID.test(input.offerId)) {
       deny('ALIGN_DISPATCH_TARGET_INVALID');
     }
     const response = await boundedPostTo(
@@ -292,7 +292,7 @@ export function createPriceInventoryDispatchAdapter(dependencies: Readonly<{
   }
 
   async function getOfferBySku(sku: string): Promise<{ offerId: string; status: string } | null> {
-    if (!SAFE_SKU.test(sku)) deny('ALIGN_DISPATCH_TARGET_INVALID');
+    if (!isEbayTargetSku(sku)) deny('ALIGN_DISPATCH_TARGET_INVALID');
     const response = await boundedGetFrom(
       'https://api.ebay.com/sell/inventory/v1/offer?sku=' + encodeURIComponent(sku),
     );

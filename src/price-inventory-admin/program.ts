@@ -199,7 +199,9 @@ function createMonotonicClock(now: () => Date): () => string {
 
 function assertExactTarget(basis: ListingDraftBasis, options: ExactTargetOptions): void {
   const identity = basis.identity;
-  if (identity.rawSku !== options.sku
+  // The sweep names a row by its eBay SKU, which for a Shopify SKU eBay
+  // refuses is the canonical PP1_ alias the identity carries (L116).
+  if ((identity.rawSku !== options.sku && identity.ebayInventorySku !== options.sku)
     || identity.ebayListingId !== options.listingId
     || !exactOfferIdMatches(identity.ebayOfferId, options.offerId)) {
     deny('REALIGN_EXACT_TARGET_MISMATCH');
@@ -295,8 +297,8 @@ function alignmentIdentityInputs(identity: ListingIdentity, field: AlignmentFiel
       target: {
         ...ebayBase,
         kind: 'inventory_sku',
-        bindingKey: `ebay-inventory-sku:${identity.rawSku}`,
-        externalId: identity.rawSku,
+        bindingKey: `ebay-inventory-sku:${identity.ebayInventorySku ?? identity.rawSku}`,
+        externalId: identity.ebayInventorySku ?? identity.rawSku,
       },
     };
   }

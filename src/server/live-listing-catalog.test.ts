@@ -254,6 +254,84 @@ describe('live listing catalog truth reducer', () => {
     expect(built.coverage.join.zeroStockActiveShopifyCount).toBe(1);
   });
 
+  describe('a Shopify SKU eBay refuses joins on its PP1_ alias (L116, incident #239)', () => {
+    const RAW = 'ILCE6400/B-U641';
+    const ALIAS = 'PP1_ILCE6400_2FB-U641';
+
+    it('is ready to list with the alias as its eBay SKU', () => {
+      const built = snapshot({ variants: [variant({ sku: RAW })] });
+      expect(built.rows).toHaveLength(1);
+      expect(built.rows[0]).toMatchObject({
+        lifecycleStatus: 'not_listed',
+        readyToList: true,
+        shopify: { sku: RAW },
+        ebay: { sku: ALIAS },
+      });
+    });
+
+    it('owns the listing its alias created, so it is active and never relisted or unmatched', () => {
+      const built = snapshot({
+        variants: [variant({ sku: RAW })],
+        active: [active('100', ALIAS)],
+        items: [item(ALIAS)],
+        offers: [offer({ sku: ALIAS })],
+      });
+      expect(built.rows).toHaveLength(1);
+      expect(built.rows[0]).toMatchObject({
+        lifecycleStatus: 'active',
+        readyToList: false,
+        ebay: { sku: ALIAS, listingId: '100', offerId: 'OFFER-1', unpublishedArtifactCount: 0 },
+      });
+      expect(built.coverage.join.unmatchedEbayListingCount).toBe(0);
+    });
+
+    it('treats alias residue as an artifact, so Publish-All cannot create a duplicate', () => {
+      const built = snapshot({ variants: [variant({ sku: RAW })], items: [item(ALIAS)] });
+      expect(built.rows[0]).toMatchObject({
+        lifecycleStatus: 'attention',
+        readyToList: false,
+        ebay: { sku: ALIAS, inventoryItemCount: 1 },
+      });
+      expect(built.rows[0]!.audit.attentionReasons).toContain('ebay_unpublished_artifact');
+    });
+
+    it('keeps a legacy listing that holds the raw bytes on the raw join', () => {
+      const built = snapshot({ variants: [variant({ sku: RAW })], active: [active('200', RAW)] });
+      expect(built.rows).toHaveLength(1);
+      expect(built.rows[0]).toMatchObject({
+        lifecycleStatus: 'active',
+        ebay: { sku: RAW, listingId: '200' },
+      });
+    });
+
+    it('needs attention when both the raw bytes and the alias hold eBay state', () => {
+      const built = snapshot({
+        variants: [variant({ sku: RAW })],
+        active: [active('200', RAW), active('100', ALIAS)],
+      });
+      const row = built.rows.find((candidate) => candidate.shopify?.sku === RAW)!;
+      expect(row).toMatchObject({ lifecycleStatus: 'attention', readyToList: false });
+      expect(row.audit.attentionReasons).toContain('ebay_sku_near_collision');
+      // The raw-bytes listing stays visible as its own unmatched row.
+      expect(built.rows.some((candidate) => candidate.shopify === null
+        && candidate.ebay.listingId === '200')).toBe(true);
+    });
+
+    it('flags the collision even when the item is sold out with one live listing', () => {
+      const built = snapshot({
+        variants: [variant({ sku: RAW, available: 0 })],
+        active: [active('200', RAW), active('100', ALIAS)],
+      });
+      const row = built.rows.find((candidate) => candidate.shopify?.sku === RAW)!;
+      expect(row.audit.attentionReasons).toContain('ebay_sku_near_collision');
+    });
+
+    it('leaves a SKU with no alias on its raw bytes', () => {
+      const built = snapshot({ variants: [variant({ sku: 'A+B' })], active: [active('300', 'A+B')] });
+      expect(built.rows[0]).toMatchObject({ lifecycleStatus: 'active', ebay: { sku: 'A+B' } });
+    });
+  });
+
   it('marks ANY active in-stock unlisted row readyToList — no tag required', () => {
     // Operator's rule (2026-09-10): if an item goes active in Shopify it
     // should be on eBay. The earlier `ready`-tag gate is gone.

@@ -37,6 +37,7 @@ import {
   type ListingRevision,
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import { ebayInventorySkuFor } from '../shared/sku-alias.js';
 import {
   deriveListingDraftBasis,
   ListingDraftServiceError,
@@ -50,6 +51,7 @@ import {
   buildListingCreatePayloads,
   classifyCreateOutcome,
   classifyEndOutcome,
+  listingCreateEbaySku,
   deriveListingCreateManifest,
   deriveListingEndManifest,
   ListingLifecycleManifestError,
@@ -213,10 +215,13 @@ function sourceVariantIdentity(shopifyVariantGid: string): ExternalIdentityInput
 /**
  * The migration store requires a create_ebay_listing target of kind
  * `inventory_sku` (see assertActionIdentityShape): the target is registered
- * with the planned eBay inventory-item SKU — the raw SKU the Inventory/Offer
- * model will bind — because no listing or offer id exists yet.
+ * with the planned eBay inventory-item SKU because no listing or offer id
+ * exists yet. That SKU is the Shopify SKU's own bytes when eBay accepts them,
+ * otherwise its canonical PP1_ alias (L116); direct SKUs keep exactly the
+ * binding key they always had.
  */
-function createTargetIdentity(sku: string): ExternalIdentityInput {
+function createTargetIdentity(rawSku: string): ExternalIdentityInput {
+  const sku = listingCreateEbaySku(rawSku);
   return {
     platform: 'ebay',
     kind: 'inventory_sku',
@@ -638,7 +643,7 @@ function isCollectionOnlyInventoryGhost(
     && workspace.evidence.externalWritesPerformed === 0
     && row.audit.verified === true
     && row.shopify?.sku === sku
-    && row.ebay.sku === sku
+    && row.ebay.sku === ebayInventorySkuFor(sku)
     && row.ebay.listingId === null
     && row.ebay.offerId === null
     && row.ebay.activeMatchCount === 0
@@ -1057,6 +1062,7 @@ export function buildListingLifecycleAdminProgram(
           const payloads = buildListingCreatePayloads(target.derived.manifest);
           const adapter = createCreateAdapter();
           const sku = target.basis.identity.rawSku;
+          const ebaySku = listingCreateEbaySku(sku);
 
           ceremony.markDispatching();
           let dispatchFailed = false;
@@ -1074,7 +1080,7 @@ export function buildListingLifecycleAdminProgram(
           try {
             dispatchFailureStage = 'put_inventory_item';
             externalCommerceWritesAttempted = 1;
-            await adapter.putInventoryItem(sku, payloads.inventoryItemPayload);
+            await adapter.putInventoryItem(ebaySku, payloads.inventoryItemPayload);
             dispatchFailureStage = 'create_offer';
             externalCommerceWritesAttempted = 2;
             offerId = await adapter.createOffer(payloads.offerPayload);
@@ -1624,7 +1630,7 @@ export function buildListingLifecycleAdminProgram(
             sourceAttemptId: options.attemptId,
             sourceIntentKey: options.intentKey,
             sourceApprovalEvidenceDigest: options.evidenceDigest,
-            sku: options.sku,
+            sku: ebayInventorySkuFor(options.sku) ?? options.sku,
             offerId: options.offerId,
             priorRecoveryJobId: options.priorRecoveryJobId ?? null,
             priorRecoveryAttemptId: options.priorRecoveryAttemptId ?? null,
@@ -1704,13 +1710,13 @@ export function buildListingLifecycleAdminProgram(
           const adapter = createRecoverAdapter();
           const itemOnly = options.offerId === 'none';
           if (itemOnly) {
-            if (await adapter.countOffersForSku(options.sku) !== 0) {
+            if (await adapter.countOffersForSku(recovery.manifest.sku) !== 0) {
               deny('RECOVER_OFFER_PRESENT_FOR_ITEM_ONLY');
             }
           } else {
             const offerState = await adapter.getOffer(options.offerId);
             if (!offerState.found) deny('RECOVER_OFFER_NOT_FOUND');
-            if (offerState.sku !== options.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
+            if (offerState.sku !== recovery.manifest.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
             if (offerState.status === 'PUBLISHED') deny('RECOVER_OFFER_PUBLISHED');
             if (offerState.status !== 'UNPUBLISHED') deny('RECOVER_OFFER_STATE_MISMATCH');
           }
@@ -1752,9 +1758,9 @@ export function buildListingLifecycleAdminProgram(
             }
             dispatchFailureStage = 'delete_inventory_item';
             externalCommerceWritesAttempted = itemOnly ? 1 : 2;
-            await adapter.deleteInventoryItem(options.sku);
+            await adapter.deleteInventoryItem(recovery.manifest.sku);
             dispatchFailureStage = 'verify_inventory_absent';
-            const itemAfter = await adapter.getInventoryItem(options.sku);
+            const itemAfter = await adapter.getInventoryItem(recovery.manifest.sku);
             if (itemAfter.found) {
               throw new ListingLifecycleAdminError('RECOVER_INVENTORY_ITEM_STILL_PRESENT');
             }
@@ -1894,7 +1900,7 @@ export function buildListingLifecycleAdminProgram(
           sourceAttemptId: options.attemptId,
           sourceIntentKey: options.intentKey,
           sourceApprovalEvidenceDigest: options.evidenceDigest,
-          sku: options.sku,
+          sku: ebayInventorySkuFor(options.sku) ?? options.sku,
           offerId: options.offerId,
           priorRecoveryJobId: options.priorRecoveryJobId ?? null,
           priorRecoveryAttemptId: options.priorRecoveryAttemptId ?? null,
@@ -1958,9 +1964,9 @@ export function buildListingLifecycleAdminProgram(
           // capture's clean not-listed state.
           const adapter = createRecoverAdapter();
           const offerGone = options.offerId === 'none'
-            ? await adapter.countOffersForSku(options.sku) === 0
+            ? await adapter.countOffersForSku(recovery.manifest.sku) === 0
             : !(await adapter.getOffer(options.offerId)).found;
-          const itemState = await adapter.getInventoryItem(options.sku);
+          const itemState = await adapter.getInventoryItem(recovery.manifest.sku);
           const providerRemovalVerified = offerGone && !itemState.found;
 
           const startedAtUtc = clock();
@@ -2268,7 +2274,7 @@ export function buildListingLifecycleAdminProgram(
           sourceAttemptId: options.attemptId,
           sourceIntentKey: options.intentKey,
           sourceApprovalEvidenceDigest: options.evidenceDigest,
-          sku: options.sku,
+          sku: ebayInventorySkuFor(options.sku) ?? options.sku,
           offerId: options.offerId,
           supersededByListingId: options.supersededByListingId,
         });
@@ -2311,7 +2317,7 @@ export function buildListingLifecycleAdminProgram(
           const adapter = createRecoverAdapter();
           const offerState = await adapter.getOffer(options.offerId);
           if (!offerState.found) deny('RECOVER_OFFER_NOT_FOUND');
-          if (offerState.sku !== options.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
+          if (offerState.sku !== recovery.manifest.sku) deny('RECOVER_OFFER_SKU_MISMATCH');
           if (offerState.listingId === options.supersededByListingId) {
             deny('RECOVER_ORPHAN_OFFER_BOUND_TO_LIVE_LISTING');
           }
@@ -2352,9 +2358,9 @@ export function buildListingLifecycleAdminProgram(
             }
             dispatchFailureStage = 'delete_inventory_item';
             externalCommerceWritesAttempted = 2;
-            await adapter.deleteInventoryItem(options.sku);
+            await adapter.deleteInventoryItem(recovery.manifest.sku);
             dispatchFailureStage = 'verify_inventory_absent';
-            const itemAfter = await adapter.getInventoryItem(options.sku);
+            const itemAfter = await adapter.getInventoryItem(recovery.manifest.sku);
             if (itemAfter.found) {
               throw new ListingLifecycleAdminError('RECOVER_INVENTORY_ITEM_STILL_PRESENT');
             }
@@ -2459,7 +2465,7 @@ export function buildListingLifecycleAdminProgram(
           sourceAttemptId: options.attemptId,
           sourceIntentKey: options.intentKey,
           sourceApprovalEvidenceDigest: options.evidenceDigest,
-          sku: options.sku,
+          sku: ebayInventorySkuFor(options.sku) ?? options.sku,
           offerId: options.offerId,
           supersededByListingId: options.supersededByListingId,
         });
@@ -2516,7 +2522,7 @@ export function buildListingLifecycleAdminProgram(
           }
           const adapter = createRecoverAdapter();
           const offerState = await adapter.getOffer(options.offerId);
-          const itemState = await adapter.getInventoryItem(options.sku);
+          const itemState = await adapter.getInventoryItem(recovery.manifest.sku);
           const providerRemovalVerified = !offerState.found && !itemState.found;
           const startedAtUtc = clock();
           const freshDto = await readWorkspace(options.catalogId);

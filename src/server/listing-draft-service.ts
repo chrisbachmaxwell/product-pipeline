@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ebaySkuMatchesShopifySku } from '../shared/sku-alias.js';
 import { isAllowlistedListingHtml, sanitizeListingHtml } from '../shared/listing-html.js';
 import { deriveCameraAspects, deriveLensAspects } from './camera-aspect-derivation.js';
 import {
@@ -443,7 +444,9 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     || !/^gid:\/\/shopify\/Product\/[1-9][0-9]*$/.test(shopify.productId)
     || !/^gid:\/\/shopify\/ProductVariant\/[1-9][0-9]*$/.test(shopify.variantId)
     || !/^[\x20-\x7e]{1,128}$/.test(shopify.sku) || shopify.sku.trim() !== shopify.sku
-    || shopify.sku !== row.ebay.sku || shopify.sku.length > 128
+    // row.ebay.sku is the eBay SKU this Shopify SKU joins on: its own bytes
+    // or its canonical PP1_ alias (L116).
+    || !ebaySkuMatchesShopifySku(row.ebay.sku, shopify.sku) || shopify.sku.length > 128
     || row.audit.verified !== true || row.audit.evidenceState !== 'live_verified'
     || row.audit.currentRemoteStateVerified !== true || row.audit.unresolvedCount !== 0
     || row.audit.attentionReasons.length !== 0 || (!active && !notListed)
@@ -457,7 +460,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     || detail.identity.marketplaceId !== LISTING_DRAFT_SCOPE.ebayMarketplaceId
     || detail.identity.shopifyProductId !== shopify.productId
     || detail.identity.shopifyVariantId !== shopify.variantId
-    || detail.identity.sku !== shopify.sku
+    || detail.identity.sku !== row.ebay.sku
     || detail.identity.listingId !== row.ebay.listingId
     || detail.identity.offerId !== row.ebay.offerId
     || !detail.management.exactBindings.seller || !detail.management.exactBindings.listing
@@ -470,14 +473,14 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     unavailable();
   }
   if (managementModel === 'inventory_api' && (!detail
-    || workspace.mapping.inventorySku !== shopify.sku
+    || workspace.mapping.inventorySku !== row.ebay.sku
     || row.ebay.inventoryItemCount !== 1 || row.ebay.offerCount !== 1
     || detail.management.model !== 'inventory_offer'
     || detail.management.controlApi !== 'inventory'
     || !detail.management.exactBindings.inventoryItem || !detail.management.exactBindings.offer
     || !detail.management.exactBindings.offerToListing
-    || detail.management.inventoryItem?.sku !== shopify.sku
-    || detail.management.offer?.sku !== shopify.sku
+    || detail.management.inventoryItem?.sku !== row.ebay.sku
+    || detail.management.offer?.sku !== row.ebay.sku
     || detail.management.offer.offerId !== row.ebay.offerId
     || detail.management.offer.marketplaceId !== LISTING_DRAFT_SCOPE.ebayMarketplaceId)) unavailable();
   if (managementModel === 'trading_api' && (!detail
@@ -494,7 +497,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     ebaySellerId: LISTING_DRAFT_SCOPE.ebaySellerId,
     ebayMarketplaceId: LISTING_DRAFT_SCOPE.ebayMarketplaceId,
     managementModel,
-    ebayInventorySku: managementModel === 'inventory_api' ? shopify.sku : null,
+    ebayInventorySku: managementModel === 'inventory_api' ? row.ebay.sku : null,
     ebayOfferId: row.ebay.offerId,
     ebayListingId: row.ebay.listingId,
   });

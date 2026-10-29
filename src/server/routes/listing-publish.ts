@@ -7,6 +7,7 @@ import {
   findUnresolvedListingCreateRecoveryFromArgv,
 } from '../migration-state-reader.js';
 import { apiPrincipal } from '../middleware/auth.js';
+import { ebayInventorySkuFor } from '../../shared/sku-alias.js';
 import { releasePublishLock, tryAcquirePublishLock } from '../publish-all.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from '../order-import-trigger.js';
 
@@ -94,9 +95,13 @@ export function createListingPublishRouter(dependencies: Readonly<{
   // create job for a SKU. Not a provider write and mounts no writer; every
   // write in the retry still happens inside the armed ceremony CLIs above.
   const lookupUnresolvedCreate = dependencies.lookupUnresolvedCreate
-    ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+    // The ledger binds a create to its eBay SKU (the PP1_ alias for a SKU
+    // eBay refuses, L116), so look it up by that SKU.
+    ?? ((sku: string) => findUnresolvedListingCreateFromArgv(
+      reconcileArgv, ebayInventorySkuFor(sku) ?? sku));
   const lookupUnresolvedRecovery = dependencies.lookupUnresolvedRecovery
-    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(reconcileArgv, sku));
+    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(
+      reconcileArgv, ebayInventorySkuFor(sku) ?? sku));
   const sleep = dependencies.sleep
     ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {

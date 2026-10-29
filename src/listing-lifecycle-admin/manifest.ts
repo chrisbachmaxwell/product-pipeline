@@ -28,6 +28,11 @@ import {
   type ListingRevision,
 } from '../listing-control-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import {
+  EBAY_INVENTORY_SKU_MAX_LENGTH,
+  ebayInventorySkuFor,
+  ebaySkuMatchesShopifySku,
+} from '../shared/sku-alias.js';
 import type { ListingDraftBasis } from '../server/listing-draft-service.js';
 import {
   LISTING_DESCRIPTION_TEMPLATE_VERSION,
@@ -323,7 +328,7 @@ export function deriveListingCreateManifest(
   const images = parseImageList(requireProposed(revision, 'images'));
   const description = requireProposed(revision, 'description');
   const aspects = parseItemSpecifics(requireProposed(revision, 'item_specifics'));
-  if (revision.identity.rawSku.length > 50) deny('CREATE_IDENTITY_MISMATCH');
+  listingCreateEbaySku(revision.identity.rawSku);
   if (title.length > 80) deny('CREATE_REQUIRED_FIELD_MISSING', 'title');
 
   const priceSource = revisionField(revision, 'price')?.sourceValue ?? null;
@@ -539,7 +544,7 @@ export function buildListingCreatePayloads(manifest: ListingCreateManifest): Lis
     inventoryItemPayload.conditionDescription = proposed.conditionDescription;
   }
   const offerPayload: Record<string, unknown> = {
-    sku: manifest.identity.rawSku,
+    sku: listingCreateEbaySku(manifest.identity.rawSku),
     marketplaceId: manifest.scope.ebayMarketplaceId,
     format: 'FIXED_PRICE',
     availableQuantity: proposed.quantity,
@@ -654,7 +659,26 @@ function outcome(workspace: ListingWorkspaceDto, kind: LifecycleOutcomeKind): Li
   });
 }
 
-function captureBound(workspace: ListingWorkspaceDto, sku: string): boolean {
+/**
+ * The eBay Inventory SKU a ProductPipeline create targets for a Shopify SKU
+ * (L116, incident #239): the SKU itself when eBay accepts it as-is, otherwise
+ * its canonical PP1_ alias. The manifest binds the raw SKU and this mapping is
+ * a pure function of it, so the approved manifest fixes the eBay target too.
+ */
+export function listingCreateEbaySku(rawSku: string): string {
+  const sku = ebayInventorySkuFor(rawSku);
+  if (sku === null || sku.length > EBAY_INVENTORY_SKU_MAX_LENGTH) {
+    return deny('CREATE_IDENTITY_MISMATCH');
+  }
+  return sku;
+}
+
+/**
+ * The capture is bound to the exact Shopify SKU and to an eBay SKU it owns.
+ * A create binds the exact eBay SKU it targeted; an end may also bind a
+ * legacy listing that kept the raw bytes.
+ */
+function captureBound(workspace: ListingWorkspaceDto, sku: string, ebaySku?: string): boolean {
   const row = workspace.catalog;
   return workspace.schemaVersion === 1
     && workspace.evidence.freshness === 'live'
@@ -662,7 +686,9 @@ function captureBound(workspace: ListingWorkspaceDto, sku: string): boolean {
     && row.audit.verified === true
     && row.shopify !== null
     && row.shopify.sku === sku
-    && row.ebay.sku === sku;
+    && (ebaySku === undefined
+      ? ebaySkuMatchesShopifySku(row.ebay.sku, sku)
+      : row.ebay.sku === ebaySku);
 }
 
 export function classifyCreateOutcome(input: {
@@ -672,7 +698,10 @@ export function classifyCreateOutcome(input: {
   expectedDescriptionHtml: string | null;
 }): LifecycleOutcome {
   const { workspace } = input;
-  if (!captureBound(workspace, input.sku)) return outcome(workspace, 'unverified');
+  const ebaySku = ebayInventorySkuFor(input.sku);
+  if (ebaySku === null || !captureBound(workspace, input.sku, ebaySku)) {
+    return outcome(workspace, 'unverified');
+  }
   const row = workspace.catalog;
   if (row.lifecycleStatus === 'active'
     && row.ebay.listingId !== null

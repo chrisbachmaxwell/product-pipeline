@@ -193,4 +193,21 @@ describe('listing-create dispatch outcome classification', () => {
     );
     expect(fetchCalls).toBe(0);
   });
+
+  it('PUTs a canonical PP1_ alias and still refuses a non-canonical one (L116, #239)', async () => {
+    const urls: string[] = [];
+    const dispatch = adapter(async (url) => {
+      urls.push(String(url));
+      return new Response(null, { status: 204 });
+    });
+    await dispatch.putInventoryItem('PP1_ILCE6400_2FB-U641', payload);
+    expect(urls).toEqual([
+      'https://api.ebay.com/sell/inventory/v1/inventory_item/PP1_ILCE6400_2FB-U641',
+    ]);
+    await expectFailure(
+      dispatch.putInventoryItem('PP1_ILCE6400_2fB-U641', payload),
+      'definite_no_effect',
+    );
+    expect(urls).toHaveLength(1);
+  });
 });

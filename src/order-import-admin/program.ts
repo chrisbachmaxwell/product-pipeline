@@ -33,6 +33,7 @@ import {
   type MigrationStore,
 } from '../migration-store/index.js';
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
+import { decodeEbaySkuAlias } from '../shared/sku-alias.js';
 import {
   createEbayOrderReadAdapter,
   createProductionOrderReadTokenProvider,
@@ -1060,10 +1061,21 @@ export function buildOrderImportAdminProgram(
           }> = [];
           for (const line of fresh.lineItems) {
             if (line.sku === null) deny('IMPORT_SKU_UNRESOLVED');
-            const variantGid = await shopify.findVariantGidBySku(line.sku as string);
+            // A listing ProductPipeline created for a Shopify SKU eBay refuses
+            // (a `/` or space) sells under its canonical PP1_ alias (L116).
+            // Only that exact canonical form decodes. If a Shopify variant
+            // also holds the alias bytes themselves, the line is ambiguous
+            // and denies before any write.
+            const decodedSku = decodeEbaySkuAlias(line.sku as string);
+            if (decodedSku !== null
+              && await shopify.findVariantGidBySku(line.sku as string) !== null) {
+              deny('IMPORT_SKU_AMBIGUOUS');
+            }
+            const shopifySku = decodedSku ?? (line.sku as string);
+            const variantGid = await shopify.findVariantGidBySku(shopifySku);
             if (variantGid === null) deny('IMPORT_SKU_UNRESOLVED');
             resolvedLines.push({
-              sku: line.sku as string,
+              sku: shopifySku,
               variantGid: variantGid as string,
               quantity: line.quantity,
               cost: line.cost === null ? null : { ...line.cost },

@@ -20,6 +20,7 @@ import { info, warn } from '../utils/logger.js';
 import { sendIncidentEmail } from './incident-email.js';
 import { getPublishAllStatus, OPERATOR_DATA_SKIP_REASONS } from './publish-all.js';
 import { lastOrderImportFailure } from './order-import-trigger.js';
+import { ebaySkuMatchesShopifySku } from '../shared/sku-alias.js';
 import {
   readIncidentLedgerSignalsFromArgv,
   type IncidentLedgerSignals,
@@ -240,7 +241,10 @@ export function evaluateIncidentCandidates(input: {
     // orphaned ledger job is bookkeeping, not an incident (L83: the
     // Hektor sold before its stale job could close; the close ceremony
     // itself requires a capture row that no longer exists).
-    const rowExists = snapshot.rows.some((row) => row.shopify?.sku === create.sku);
+    // The ledger names the eBay SKU, which for a SKU eBay refuses is the
+    // canonical PP1_ alias of the Shopify SKU (L116).
+    const rowExists = snapshot.rows.some((row) => row.shopify != null
+      && ebaySkuMatchesShopifySku(create.sku, row.shopify.sku));
     if (rowExists && Number.isFinite(ageMs) && ageMs > UNRESOLVED_CREATE_AGE_MS) {
       candidates.push({
         id: `UNRESOLVED_CREATE_AGING:${create.sku}`,

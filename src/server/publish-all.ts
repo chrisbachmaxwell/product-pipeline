@@ -41,8 +41,8 @@ import {
   readIncidentLedgerSignalsFromArgv,
 } from './migration-state-reader.js';
 import { createProcessStepRunner, substituteArgv, type StepRunner } from './order-import-trigger.js';
+import { decodeEbaySkuAlias, ebayInventorySkuFor } from '../shared/sku-alias.js';
 
-const SKU_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_ITEMS = 30;
@@ -282,13 +282,21 @@ function excludedSkus(): ReadonlySet<string> {
 const EBAY_TITLE_MAX = 80;
 const NO_SHOPIFY_PHOTOS = 'The item has no photos in Shopify — add at least one there and it will publish next run.';
 const NO_SHOPIFY_TITLE = 'The item has no title in Shopify — add one there and it will publish next run.';
+// A `/` or space no longer blocks a publish: the create targets the SKU's
+// canonical PP1_ eBay alias (L116, incident #239). Only a SKU with no alias
+// still skips: a character order import cannot resolve, or an alias over
+// eBay's 50 characters.
+const SKU_NOT_EBAY_SAFE = 'The SKU cannot be used on eBay — rename it in Shopify using only letters, digits, '
+  + 'spaces and . - / (at most 50 characters once eBay-encoded) and it will publish next run.';
 
 /**
  * Skip reasons that are verified store data only the operator can change
  * (incident #194). No code change can publish these items, so the watchdog
  * shows them to the operator but does not send them to the fix agent.
  */
-export const OPERATOR_DATA_SKIP_REASONS: readonly string[] = Object.freeze([NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE]);
+export const OPERATOR_DATA_SKIP_REASONS: readonly string[] = Object.freeze([
+  NO_SHOPIFY_PHOTOS, NO_SHOPIFY_TITLE, SKU_NOT_EBAY_SAFE,
+]);
 
 /**
  * Fit a store title into eBay's 80 characters (incident #180). The create
@@ -466,12 +474,14 @@ export function startPublishAllRun(
     const cutoff = Date.now() - UNRESOLVED_CREATE_STUCK_MS;
     return new Set((signals?.unresolvedCreates ?? [])
       .filter((create) => Date.parse(create.reservedAtUtc) < cutoff)
-      .map((create) => create.sku));
+      .map((create) => decodeEbaySkuAlias(create.sku) ?? create.sku));
   });
   const findUnresolvedCreate = dependencies.findUnresolvedCreate
-    ?? ((sku: string) => findUnresolvedListingCreateFromArgv(reconcileArgv, sku));
+    ?? ((sku: string) => findUnresolvedListingCreateFromArgv(
+      reconcileArgv, ebayInventorySkuFor(sku) ?? sku));
   const findUnresolvedRecovery = dependencies.findUnresolvedRecovery
-    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(reconcileArgv, sku));
+    ?? ((sku: string) => findUnresolvedListingCreateRecoveryFromArgv(
+      reconcileArgv, ebayInventorySkuFor(sku) ?? sku));
   const latestRevisionDigest = dependencies.latestRevisionDigest ?? ((catalogId: string) => {
     const databasePath = process.env.LISTING_CONTROL_DATABASE_PATH;
     if (typeof databasePath !== 'string' || databasePath.length === 0) return null;
@@ -685,8 +695,8 @@ export function startPublishAllRun(
         const isLast = index === ready.length - 1;
         status.currentSku = sku;
         step('Preparing the draft');
-        if (!SKU_GRAMMAR.test(sku)) {
-          record({ sku, title, status: 'skipped', reason: 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).' });
+        if (ebayInventorySkuFor(sku) === null) {
+          record({ sku, title, status: 'skipped', reason: SKU_NOT_EBAY_SAFE });
           continue;
         }
         if (row.readyToListGaps?.includes('condition')) {

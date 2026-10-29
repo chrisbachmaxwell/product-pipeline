@@ -18,6 +18,7 @@
  * migration-store job under a live one-action approval before calling them.
  */
 import { createProductionDispatchTokenProvider } from '../listing-revise-admin/dispatch-adapter.js';
+import { isEbayTargetSku } from '../shared/sku-alias.js';
 
 export { createProductionDispatchTokenProvider };
 
@@ -246,7 +247,8 @@ export function createListingCreateDispatchAdapter(dependencies: Readonly<{
   }
 
   async function putInventoryItem(sku: string, payload: Record<string, unknown>): Promise<void> {
-    if (!SAFE_SEGMENT.test(sku)) deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
+    // A direct SKU or its canonical PP1_ alias (L116); never raw `/` or space.
+    if (!isEbayTargetSku(sku)) deny('CREATE_DISPATCH_TARGET_INVALID', 'definite_no_effect');
     const body = boundedBody(payload);
     const headers = await authorizedHeaders();
     const response = await boundedRequest(
