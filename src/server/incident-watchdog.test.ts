@@ -243,6 +243,28 @@ describe('runWatchdogOnce', () => {
     expect(incidentIssueMarker({ id: 'a --> b' })).not.toContain('a -->');
   });
 
+  it('matches a publish block to an unmarked legacy issue for another SKU with the same cause (#243 vs #241)', () => {
+    const reason = 'The SKU contains characters eBay refuses — rename it in Shopify (no slashes or spaces).';
+    const [incident] = publishBlockCandidates([{ sku: 'ILCE-7CR/S-U046', status: 'skipped', reason }]);
+    const legacy = {
+      title: '[incident] Publish All could not publish ILCE6400/B-U641: The SKU contains characters eBay refuses — rename it in Shopify .',
+      body: '**Code:** PUBLISH_ITEM_BLOCKED\n...\nOpened automatically by the incident watchdog (L76).',
+      html_url: 'https://github.com/x/y/issues/241',
+    };
+    expect(matchOpenIncidentIssue(incident!, [legacy])).toBe(legacy.html_url);
+    // A different cause, a marked issue for another id, or a non-publish
+    // incident whose title happens to share the tail never match.
+    const [other] = publishBlockCandidates([{ sku: 'ILCE-7CR/S-U046', status: 'skipped', reason: 'No photos in Shopify' }]);
+    expect(matchOpenIncidentIssue(other!, [legacy])).toBeNull();
+    expect(matchOpenIncidentIssue(incident!, [
+      { ...legacy, body: `b\n${incidentIssueMarker({ id: 'PUBLISH_ITEM_BLOCKED:something else' })}` },
+    ])).toBeNull();
+    expect(matchOpenIncidentIssue(
+      { id: 'SOLD_ITEM_BUYABLE:X', title: 'SOLD ITEM STILL BUYABLE ON EBAY: X' },
+      [{ ...legacy, title: '[incident] Publish All could not publish A: SOLD ITEM STILL BUYABLE ON EBAY: X' }],
+    )).toBeNull();
+  });
+
   it('clears incidents when the condition resolves and stays quiet unarmed', async () => {
     const stateFile = tempStateFile();
     let rows = [row('LEICA-1', 0, '147000000001')];

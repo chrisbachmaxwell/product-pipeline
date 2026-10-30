@@ -484,6 +484,12 @@ export function incidentIssueMarker(incident: Pick<Incident, 'id'>): string {
  * carries its id marker, or (issues filed before the marker existed) the
  * title is identical. #236, #239 and #241 were the same slash-SKU block
  * filed once per Publish All run.
+ *
+ * A publish block's id is its root cause with the SKU stripped, but its
+ * title names the SKU. So for an unmarked issue a publish block also matches
+ * on the cause the title ends with: #243 (ILCE-7CR/S-U046) was the same
+ * slash-SKU cause as the unmarked #241 (ILCE6400/B-U641) and was filed
+ * again. An issue that carries any marker is matched by marker only.
  */
 export function matchOpenIncidentIssue(
   incident: Pick<Incident, 'id' | 'title'>,
@@ -491,12 +497,26 @@ export function matchOpenIncidentIssue(
 ): string | null {
   const marker = incidentIssueMarker(incident);
   const title = `[incident] ${incident.title}`.trim();
-  const match = issues.find((issue) => issue.pull_request === undefined
-    && typeof issue.html_url === 'string'
-    && ((typeof issue.body === 'string' && issue.body.includes(marker))
-      || (typeof issue.title === 'string' && issue.title.trim() === title)));
+  const publishCause = incident.id.startsWith(PUBLISH_BLOCK_ID_PREFIX)
+    ? incident.id.slice(PUBLISH_BLOCK_ID_PREFIX.length)
+    : null;
+  const legacyTitleMatches = (issueTitle: string): boolean => issueTitle === title
+    || (publishCause !== null && publishCause.length > 0
+      && issueTitle.startsWith(PUBLISH_BLOCK_TITLE_PREFIX)
+      && issueTitle.endsWith(`: ${publishCause}`));
+  const match = issues.find((issue) => {
+    if (issue.pull_request !== undefined || typeof issue.html_url !== 'string') return false;
+    const body = typeof issue.body === 'string' ? issue.body : '';
+    if (body.includes(marker)) return true;
+    return !body.includes('<!-- incident-id: ')
+      && typeof issue.title === 'string'
+      && legacyTitleMatches(issue.title.trim());
+  });
   return match ? match.html_url as string : null;
 }
+
+const PUBLISH_BLOCK_ID_PREFIX = 'PUBLISH_ITEM_BLOCKED:';
+const PUBLISH_BLOCK_TITLE_PREFIX = '[incident] Publish All could not publish ';
 
 async function defaultFindOpenIssue(incident: Incident): Promise<string | null> {
   const connections = await import('./connections.js');
