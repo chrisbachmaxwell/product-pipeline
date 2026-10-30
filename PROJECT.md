@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-10-30: The Incident Watchdog Matches Legacy Publish-Block Issues by Cause, Not SKU (L126, incident #243)
+
+`ILCE-7CR/S-U046` was filed as a new incident (#243) although the same slash-SKU cause was already open as #236/#239/#241 for `ILCE6400/B-U641`. Those older issues were filed before L125 added the `incident-id` body marker, and the title fallback required the exact title, which includes the SKU. `matchOpenIncidentIssue` now also matches a publish-block incident to an unmarked open issue whose `Publish All could not publish …` title ends with the same root cause. An issue with a marker is matched by marker only. Regression test: `src/server/incident-watchdog.test.ts`. The publish path itself is unchanged. Slash SKUs still need the L116 alias (PR #240, protected paths, human merge).
+
 ### 2026-10-29: The Incident Watchdog Files a Recurring Publish Block Once, Not Once Per Run (L125, incident #241)
 
 The same slash-SKU block for `ILCE6400/B-U641` was filed three times (#236, #239, #241), and each issue started its own fix agent and PR. The cause is in the watchdog: while a new Publish All run is in progress, the last run's blocked items leave the watchdog state, so when the run finishes the same block is treated as new. It was then diagnosed again and a new GitHub issue was opened, once per run. Before diagnosing, the watchdog now looks for an open `incident` issue that already covers the incident. A match is either the hidden `<!-- incident-id: … -->` marker that new issues carry, or the identical title for older issues. If one exists, the watchdog links it and makes no diagnosis call and opens no issue. Once that issue is closed, a recurrence is filed again as normal. The lookup is one GitHub read; it makes no eBay or Shopify call, and no ceremony, publish or protected path changed. The slash-SKU publish itself is fixed by the full L116 alias in PR #240, which is waiting for a human merge because it changes protected ceremony paths.
