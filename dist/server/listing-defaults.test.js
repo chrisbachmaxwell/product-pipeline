@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { categoryQueryFromTitle, conditionFromTags, createListingDefaultsReader, } from './listing-defaults.js';
 describe('condition from the store condition tag', () => {
     it('maps every grade on the store chart to its eBay condition id', () => {
+        expect(conditionFromTags(['condition-new'])?.id).toBe('1000');
         expect(conditionFromTags(['condition-like-new-minus'])?.id).toBe('2750');
         expect(conditionFromTags(['condition-like-new'])?.id).toBe('2750');
         expect(conditionFromTags(['condition-excellent-plus'])?.id).toBe('3000');
@@ -18,6 +19,18 @@ describe('condition from the store condition tag', () => {
         expect(excellent?.description).toContain('75–90%');
         const poor = conditionFromTags(['condition-poor']);
         expect(poor?.description).toContain('still fully operational');
+    });
+    it('omits the optional condition note for genuinely new products', () => {
+        expect(conditionFromTags(['condition-new'])).toEqual({
+            id: '1000',
+            description: null,
+        });
+    });
+    it('lets condition-new replace a retained used-grade tag regardless of tag order', () => {
+        expect(conditionFromTags(['condition-excellent', 'condition-new']))
+            .toEqual({ id: '1000', description: null });
+        expect(conditionFromTags(['condition-new', 'condition-excellent']))
+            .toEqual({ id: '1000', description: null });
     });
     it('returns null with no tag, an unknown grade, or no tags at all', () => {
         expect(conditionFromTags(['lens', 'canon'])).toBeNull();
@@ -52,6 +65,23 @@ describe('assembled defaults', () => {
         expect(defaults.conditionDescription).toContain('75–90%');
         expect(defaults.categoryId).toBe('30059');
         expect(defaults.categoryName).toBe('Viewfinders');
+    });
+    it('defaults condition-new products to eBay New without a used-grade note', async () => {
+        const read = createListingDefaultsReader({
+            getSnapshot: async () => snapshot,
+            getSweepObservations: () => observations,
+            searchCategories: async () => ({
+                categories: [{ id: '31388', name: 'Other Camera Accessories', usedByStore: false }],
+            }),
+        });
+        const defaults = await read({
+            title: 'Brand New Camera Accessory',
+            productTags: ['condition-new'],
+        });
+        expect(defaults).toMatchObject({
+            conditionId: '1000',
+            conditionDescription: null,
+        });
     });
     it('caches category suggestions per cleaned title', async () => {
         let calls = 0;
@@ -105,6 +135,10 @@ describe('title-marker condition fallback (2026-09-17)', () => {
     it('a FOR PARTS title outranks any tag — never sell parts as functional', () => {
         expect(deriveCondition(['condition-good'], 'Something *FOR PARTS* (#1) *USED*'))
             .toMatchObject({ id: '7000' });
+    });
+    it('maps the explicit new tag to eBay New when the title has no used marker', () => {
+        expect(deriveCondition(['condition-new'], 'Brand New Camera Accessory'))
+            .toEqual({ id: '1000', description: null });
     });
     it('returns null with no tag and no title marker', () => {
         expect(deriveCondition([], 'Pipeline Test')).toBeNull();

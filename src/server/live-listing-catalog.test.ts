@@ -268,6 +268,18 @@ describe('live listing catalog truth reducer', () => {
     expect(built.summary.readyToList).toBe(2);
   });
 
+  it('recognizes condition-new as a complete eBay condition for a ready product', () => {
+    const built = snapshot({ variants: [variant({
+      title: 'Brand New Camera Accessory',
+      productTags: ['condition-new'],
+    })] });
+    expect(built.rows[0]).toMatchObject({
+      lifecycleStatus: 'not_listed',
+      readyToList: true,
+    });
+    expect(built.rows[0]).not.toHaveProperty('readyToListGaps');
+  });
+
   it('keeps a no-ebay tagged product out of the ready queue until the tag is removed', () => {
     const held = snapshot({ variants: [variant({ productTags: ['lens', 'no-ebay'] })] });
     expect(held.rows[0]).toMatchObject({ lifecycleStatus: 'not_listed', readyToList: false, heldFromEbay: true });

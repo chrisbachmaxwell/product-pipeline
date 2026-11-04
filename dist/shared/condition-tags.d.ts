@@ -6,20 +6,19 @@
  * ready row whose tags map to nothing here cannot auto-fill a condition
  * and will fail create preflight until the operator tags it or picks one.
  */
-export declare const CONDITION_BY_TAG: Readonly<Record<string, {
+export type DerivedCondition = Readonly<{
     id: string;
-    description: string;
-}>>;
-export declare function conditionFromTags(productTags: readonly string[] | undefined): {
-    id: string;
-    description: string;
-} | null;
+    description: string | null;
+}>;
+export declare const CONDITION_BY_TAG: Readonly<Record<string, DerivedCondition>>;
+export declare function conditionFromTags(productTags: readonly string[] | undefined): DerivedCondition | null;
 /**
  * Title-marker fallback for products the team activated without a
  * condition-… tag (operator ask 2026-09-17: "figure out why and make
- * changes… but get them all up"). Every listing in this store is used gear
- * and titles carry the store's own markers ("*USED*", "*FOR PARTS*"), so a
- * missing tag never needs to block publishing:
+ * changes… but get them all up"). Used-gear titles carry the store's own
+ * markers ("*USED*", "*FOR PARTS*"), so a missing tag does not need to block
+ * publishing for those items. Genuinely new products use the explicit
+ * `condition-new` tag instead of a title inference:
  *
  * - "FOR PARTS" maps to eBay 7000 (parts/repair) with the grading chart's
  *   parts language.
@@ -31,10 +30,7 @@ export declare function conditionFromTags(productTags: readonly string[] | undef
  *
  * Tags always win: this is consulted only when no condition-… tag maps.
  */
-export declare function conditionFromTitle(title: string | null | undefined): {
-    id: string;
-    description: string;
-} | null;
+export declare function conditionFromTitle(title: string | null | undefined): DerivedCondition | null;
 /**
  * Tag first, title-marker fallback second — with two safety rules on top:
  * a *FOR PARTS* title outranks any tag (never sell a parts item as
@@ -42,7 +38,4 @@ export declare function conditionFromTitle(title: string | null | undefined): {
  * grade language stays in the description. The one derivation both the
  * draft auto-defaults and the ready-queue completeness flag must share.
  */
-export declare function deriveCondition(productTags: readonly string[] | undefined, title: string | null | undefined): {
-    id: string;
-    description: string;
-} | null;
+export declare function deriveCondition(productTags: readonly string[] | undefined, title: string | null | undefined): DerivedCondition | null;

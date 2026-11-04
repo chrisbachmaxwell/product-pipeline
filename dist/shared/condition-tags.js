@@ -1,12 +1,11 @@
-/**
- * The store's condition-… tag vocabulary mapped to eBay condition ids and
- * the published grading chart's buyer-facing language. Single source of
- * truth for BOTH the draft auto-defaults (listing-defaults.ts) and the
- * catalog's ready-queue completeness flag (live-listing-catalog.ts) — a
- * ready row whose tags map to nothing here cannot auto-fill a condition
- * and will fail create preflight until the operator tags it or picks one.
- */
 export const CONDITION_BY_TAG = Object.freeze({
+    new: {
+        id: '1000',
+        // The canonical eBay condition says everything required. Omitting the
+        // optional note avoids making packaging or seal claims the tag does not
+        // encode and keeps used-gear grading language off genuinely new items.
+        description: null,
+    },
     'like-new': {
         id: '2750',
         description: 'Like New Minus: looks like it just came out of the original box — '
@@ -52,22 +51,31 @@ export const CONDITION_BY_TAG = Object.freeze({
     },
 });
 export function conditionFromTags(productTags) {
+    let firstMapped = null;
     for (const tag of productTags ?? []) {
         if (!tag.startsWith('condition-'))
             continue;
         const grade = tag.slice('condition-'.length).trim();
         const mapped = CONDITION_BY_TAG[grade];
-        if (mapped)
+        if (!mapped)
+            continue;
+        // A new product can retain an older grading tag during catalog entry,
+        // and Shopify does not promise a business-significant tag order. The
+        // explicit new-product signal therefore wins over used-grade tags. The
+        // FOR PARTS title guard in deriveCondition still outranks every tag.
+        if (grade === 'new')
             return mapped;
+        firstMapped ??= mapped;
     }
-    return null;
+    return firstMapped;
 }
 /**
  * Title-marker fallback for products the team activated without a
  * condition-… tag (operator ask 2026-09-17: "figure out why and make
- * changes… but get them all up"). Every listing in this store is used gear
- * and titles carry the store's own markers ("*USED*", "*FOR PARTS*"), so a
- * missing tag never needs to block publishing:
+ * changes… but get them all up"). Used-gear titles carry the store's own
+ * markers ("*USED*", "*FOR PARTS*"), so a missing tag does not need to block
+ * publishing for those items. Genuinely new products use the explicit
+ * `condition-new` tag instead of a title inference:
  *
  * - "FOR PARTS" maps to eBay 7000 (parts/repair) with the grading chart's
  *   parts language.
