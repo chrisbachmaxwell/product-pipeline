@@ -335,8 +335,126 @@ function fittedTitleOverride(dto: Awaited<ReturnType<DraftServiceLike['get']>>):
   return fitEbayTitle(inherited);
 }
 
+/**
+ * eBay's Inventory API Product.description limit, including markup. The
+ * create manifest (L30, `MAX_INVENTORY_PRODUCT_DESCRIPTION_LENGTH`) binds the
+ * exact approved draft description to that field and refuses a longer one
+ * as `CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE`. Kept local because the
+ * server never imports a ceremony package; a test pins the two together.
+ */
+export const EBAY_INVENTORY_DESCRIPTION_MAX = 4_000;
+const DESCRIPTION_BLOCK_TAGS = new Set(['p', 'div', 'ul', 'ol', 'li', 'h2', 'h3']);
+const DESCRIPTION_VOID_TAGS = new Set(['br']);
+const DESCRIPTION_ELLIPSIS = '…';
+
+/**
+ * Fit an allowlisted listing description into eBay's 4,000 characters
+ * (incident #248). The draft inherits the Shopify description verbatim and
+ * the create manifest refuses a longer one, so every long store description
+ * skipped on every run. A description that already fits is returned
+ * unchanged. A longer one is first compacted without losing any visible
+ * text (attribute-free `<span>` wrappers, `&nbsp;`, whitespace runs, empty
+ * elements, long `<br>` runs). If it still does not fit, it is cut at the
+ * last whole block (paragraph, list item, heading) that fits, and every
+ * element still open is closed so the markup stays balanced; only when no
+ * block boundary keeps at least half the limit is it cut at the last whole
+ * word with an ellipsis. Never cuts inside a tag or an entity. Returns null
+ * when there is no usable text at all.
+ */
+export function fitEbayDescription(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const max = EBAY_INVENTORY_DESCRIPTION_MAX;
+  if (raw.trim().length === 0) return null;
+  if (raw.length <= max && raw.trim() === raw) return raw;
+  let html = raw
+    .replace(/<\/?span>/gu, '')
+    .replace(/<br ?\/?>/gu, '<br>')
+    .replace(/&nbsp;|&#160;| /gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*(<\/?(?:p|div|ul|ol|li|h2|h3)>|<br>)\s*/gu, '$1')
+    .replace(/(?:<br>){3,}/gu, '<br><br>');
+  for (let previous = ''; previous !== html;) {
+    previous = html;
+    html = html.replace(/<(p|div|b|strong|i|em|u|ul|ol|li|h2|h3)>\s*<\/\1>/gu, '')
+      .replace(/(?:<br>)+(<\/(?:p|div|li|h2|h3)>|$)/gu, '$1')
+      .replace(/^(?:<br>)+/u, '')
+      .trim();
+  }
+  html = html.trim();
+  if (html.length === 0) return null;
+  if (html.length <= max) return html;
+
+  // Walk the markup once, remembering every safe cut point together with the
+  // closing tags it would need.
+  const stack: string[] = [];
+  const closers = (): string => stack.slice().reverse().map((name) => `</${name}>`).join('');
+  const best: { block: string | null; word: string | null } = { block: null, word: null };
+  const consider = (cutAt: number, word: boolean): void => {
+    const head = html.slice(0, cutAt).replace(/\s+$/u, '');
+    const candidate = `${head}${word ? DESCRIPTION_ELLIPSIS : ''}${closers()}`;
+    if (candidate.length > max || head.length === 0) return;
+    if (word) best.word = candidate; else best.block = candidate;
+  };
+  const tagPattern = /<(\/?)([a-z0-9]+)[^>]*>/giu;
+  let cursor = 0;
+  for (let match = tagPattern.exec(html); match !== null; match = tagPattern.exec(html)) {
+    // Word boundaries in the text before this tag.
+    const text = html.slice(cursor, match.index);
+    for (let space = text.indexOf(' '); space !== -1; space = text.indexOf(' ', space + 1)) {
+      if (cursor + space > max) break;
+      consider(cursor + space, true);
+    }
+    if (match.index > max) break;
+    const name = match[2]!.toLowerCase();
+    const end = match.index + match[0].length;
+    if (match[1] === '/') {
+      const open = stack.lastIndexOf(name);
+      if (open !== -1) stack.length = open;
+      if (DESCRIPTION_BLOCK_TAGS.has(name)) consider(end, false);
+    } else if (DESCRIPTION_VOID_TAGS.has(name)) {
+      consider(end, false);
+    } else {
+      stack.push(name);
+    }
+    cursor = end;
+  }
+  if (cursor <= max) {
+    const tail = html.slice(cursor);
+    for (let space = tail.indexOf(' '); space !== -1 && cursor + space <= max; space = tail.indexOf(' ', space + 1)) {
+      consider(cursor + space, true);
+    }
+  }
+  const chosen = best.block !== null && best.block.length >= max / 2
+    ? best.block
+    : best.word ?? best.block;
+  if (chosen === null) return null;
+  let fitted = chosen.trim();
+  for (let previous = ''; previous !== fitted;) {
+    previous = fitted;
+    fitted = fitted.replace(/<(p|div|b|strong|i|em|u|ul|ol|li|h2|h3|a)(?: [^>]*)?>\s*<\/\1>/gu, '')
+      .replace(/(?:<br>)+(<\/(?:p|div|li|h2|h3)>|$)/gu, '$1').trim();
+  }
+  return fitted.length > 0 && fitted.length <= max ? fitted : null;
+}
+
+/**
+ * The shortened description Publish-All must carry in ANY draft save it
+ * makes when the item inherits an over-long store description, or null when
+ * none is needed (an operator description exists, or the store one fits).
+ * Same lesson as the title (incident #182): a fit that only one save
+ * carries is undone by the next save that writes "inherit".
+ */
+function fittedDescriptionOverride(dto: Awaited<ReturnType<DraftServiceLike['get']>>): string | null {
+  const description = dto.sections.content.description;
+  if (!description || description.draft !== null) return null;
+  const inherited = description.shopify;
+  if (typeof inherited !== 'string' || inherited.length <= EBAY_INVENTORY_DESCRIPTION_MAX) return null;
+  return fitEbayDescription(inherited);
+}
+
 function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrides: {
   conditionDescription?: string | null;
+  description?: string;
   itemSpecifics?: string;
   title?: string;
 }): Record<string, unknown> {
@@ -368,7 +486,7 @@ function draftPayload(dto: Awaited<ReturnType<DraftServiceLike['get']>>, overrid
       conditionDescription: overrides.conditionDescription !== undefined
         ? overrides.conditionDescription
         : dto.sections.listing.conditionDescription.draft,
-      description: content.description?.draft ?? null,
+      description: overrides.description ?? content.description?.draft ?? fittedDescriptionOverride(dto),
       images: content.images?.draft ?? null,
       itemSpecifics: specifics,
       fulfillmentPolicyId: delivery?.fulfillmentPolicyId?.draft ?? null,
@@ -780,6 +898,41 @@ export function startPublishAllRun(
           if (!isLast) await sleep(15_000);
           continue;
         }
+        // DESCRIPTION FIT (incident #248): the create manifest binds the
+        // approved description to eBay's 4,000-character Inventory
+        // Product.description (L30) and preflight refused a longer one as
+        // CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE on every run — no
+        // repair existed, unlike the title. A long description (inherited or
+        // an override) is fitted into a NEW local draft revision before any
+        // ceremony, tried twice from a fresh read, so the manifest binds the
+        // fitted text and nothing over-long is ever sent.
+        let descriptionNote: string | null = null;
+        const fitDescription = async (): Promise<boolean> => {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              const dto = await draftService.get(row.id);
+              const leaf = dto.sections.content.description;
+              const current = leaf?.draft ?? leaf?.shopify ?? null;
+              if (current === null || current.length <= EBAY_INVENTORY_DESCRIPTION_MAX) return false;
+              const fitted = fitEbayDescription(current);
+              if (fitted === null || fitted === current) return false;
+              step('Shortening the description to fit eBay');
+              const payload = draftPayload(dto, { description: fitted });
+              (payload as { catalogId: unknown }).catalogId = row.id;
+              const saved = await draftService.save(payload, 'publish-all-description-fit');
+              revisionDigest = saved.revision.revisionDigest;
+              descriptionNote = `Description shortened from ${current.length} to ${fitted.length} characters to fit eBay's ${EBAY_INVENTORY_DESCRIPTION_MAX.toLocaleString('en-US')}-character limit.`;
+              info(`[Publish All] shortened the ${current.length}-character description for ${sku} to fit eBay`);
+              return true;
+            } catch (error) {
+              const code = error instanceof Error && 'code' in error
+                ? String((error as { code: unknown }).code) : 'unavailable';
+              warn(`[Publish All] description fit for ${sku} was refused (${code})${attempt === 0 ? '; retrying' : ''}`);
+            }
+          }
+          return false;
+        };
+        await fitDescription();
         // eBay requires at least one photo. The store sweep counts each
         // product's media, so a product with none skips here, before any
         // ceremony, with the one fix that works (an operator photo override
@@ -883,6 +1036,7 @@ export function startPublishAllRun(
           let skipReason: string | null = null;
           let stop: string | null = null;
           let refreshed = false;
+          let descriptionRepaired = false;
           for (let attempt = 0; attempt < 3; attempt += 1) {
             if (attempt > 0) {
               step('eBay check hit a temporary error — retrying in 90s');
@@ -970,6 +1124,17 @@ export function startPublishAllRun(
             }
             if (code === 'CREATE_TARGET_ALREADY_LISTED') {
               skipReason = 'Already listed on eBay.';
+              break;
+            }
+            // Incident #248: the stored revision's description is over
+            // eBay's Inventory limit (the pre-ceremony fit was refused, or
+            // the revision changed since). Fit it once into a new revision.
+            if (code === 'CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE') {
+              if (!descriptionRepaired) {
+                descriptionRepaired = true;
+                if (await fitDescription()) continue;
+              }
+              skipReason = `The description is longer than eBay's ${EBAY_INVENTORY_DESCRIPTION_MAX.toLocaleString('en-US')}-character limit and could not be shortened automatically — it retries next run; if this repeats, open the item and shorten the description.`;
               break;
             }
             if ((preflight.json === null || code === 'LISTING_LIFECYCLE_DENIED') && attempt < 2) {
@@ -1234,7 +1399,8 @@ export function startPublishAllRun(
           continue;
         }
         if (published && listingId !== null) {
-          record({ sku, title, status: 'published', listingId, ...(agentNote ? { reason: agentNote } : {}) });
+          const notes = [agentNote, descriptionNote].filter((note): note is string => note !== null);
+          record({ sku, title, status: 'published', listingId, ...(notes.length > 0 ? { reason: notes.join(' ') } : {}) });
           info(`[Publish All] ${sku} live as ${listingId}`);
         } else if (dispatched.json?.code === 'CREATE_INTENT_ALREADY_RECORDED') {
           record({ sku, title, status: 'skipped', reason: 'A previous attempt already used this draft — open the item and publish from there.' });
