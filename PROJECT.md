@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-09-29. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-11-04. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-11-04: `condition-new` Publishes as eBay New (L127)
+
+The shared Shopify-condition mapper now recognizes the exact product tag `condition-new` as eBay condition `1000 / NEW`. It deliberately supplies no optional condition description, avoiding used-grade text and unsupported packaging or seal claims. The explicit new tag wins over a retained used-grade tag, while the existing `FOR PARTS` title safety rule still wins over every tag. Regression coverage follows the value through draft defaults, live-catalog readiness, the create manifest, and the final eBay Inventory payload. A new Help article documents the operator workflow. This is repository behavior only: no Shopify/eBay write, ceremony, approval, responsibility, price, quantity, inventory, order, or deployment boundary changed.
 
 ### 2026-10-30: The Incident Watchdog Matches Legacy Publish-Block Issues by Cause, Not SKU (L126, incident #243)
 

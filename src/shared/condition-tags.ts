@@ -6,7 +6,19 @@
  * ready row whose tags map to nothing here cannot auto-fill a condition
  * and will fail create preflight until the operator tags it or picks one.
  */
-export const CONDITION_BY_TAG: Readonly<Record<string, { id: string; description: string }>> = Object.freeze({
+export type DerivedCondition = Readonly<{
+  id: string;
+  description: string | null;
+}>;
+
+export const CONDITION_BY_TAG: Readonly<Record<string, DerivedCondition>> = Object.freeze({
+  new: {
+    id: '1000',
+    // The canonical eBay condition says everything required. Omitting the
+    // optional note avoids making packaging or seal claims the tag does not
+    // encode and keeps used-gear grading language off genuinely new items.
+    description: null,
+  },
   'like-new': {
     id: '2750',
     description: 'Like New Minus: looks like it just came out of the original box — '
@@ -54,22 +66,30 @@ export const CONDITION_BY_TAG: Readonly<Record<string, { id: string; description
 
 export function conditionFromTags(
   productTags: readonly string[] | undefined,
-): { id: string; description: string } | null {
+): DerivedCondition | null {
+  let firstMapped: DerivedCondition | null = null;
   for (const tag of productTags ?? []) {
     if (!tag.startsWith('condition-')) continue;
     const grade = tag.slice('condition-'.length).trim();
     const mapped = CONDITION_BY_TAG[grade];
-    if (mapped) return mapped;
+    if (!mapped) continue;
+    // A new product can retain an older grading tag during catalog entry,
+    // and Shopify does not promise a business-significant tag order. The
+    // explicit new-product signal therefore wins over used-grade tags. The
+    // FOR PARTS title guard in deriveCondition still outranks every tag.
+    if (grade === 'new') return mapped;
+    firstMapped ??= mapped;
   }
-  return null;
+  return firstMapped;
 }
 
 /**
  * Title-marker fallback for products the team activated without a
  * condition-… tag (operator ask 2026-09-17: "figure out why and make
- * changes… but get them all up"). Every listing in this store is used gear
- * and titles carry the store's own markers ("*USED*", "*FOR PARTS*"), so a
- * missing tag never needs to block publishing:
+ * changes… but get them all up"). Used-gear titles carry the store's own
+ * markers ("*USED*", "*FOR PARTS*"), so a missing tag does not need to block
+ * publishing for those items. Genuinely new products use the explicit
+ * `condition-new` tag instead of a title inference:
  *
  * - "FOR PARTS" maps to eBay 7000 (parts/repair) with the grading chart's
  *   parts language.
@@ -83,7 +103,7 @@ export function conditionFromTags(
  */
 export function conditionFromTitle(
   title: string | null | undefined,
-): { id: string; description: string } | null {
+): DerivedCondition | null {
   if (typeof title !== 'string') return null;
   if (/\bFOR PARTS\b/i.test(title)) return CONDITION_BY_TAG.ugly!;
   if (/\bOPEN BOX\b/i.test(title)) {
@@ -135,7 +155,7 @@ const EBAY_SAFE_CONDITION_ID: Readonly<Record<string, string>> = Object.freeze({
 export function deriveCondition(
   productTags: readonly string[] | undefined,
   title: string | null | undefined,
-): { id: string; description: string } | null {
+): DerivedCondition | null {
   if (typeof title === 'string' && /\bFOR PARTS\b/i.test(title)) {
     return CONDITION_BY_TAG.ugly!;
   }

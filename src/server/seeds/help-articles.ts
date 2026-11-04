@@ -251,6 +251,20 @@ Saving does not change eBay. Apply, approval, and publishing are not available i
 Select **Edit** to draft a condition ID or condition description, preview the difference, and select **Save draft**. A condition description is optional and may clarify only the item's physical condition. Use **Omit optional field** to explicitly remove a prior proposal; **Use current value** restores inheritance. The saved value remains local; eBay is not changed and no approval or publish action is available.`,
   },
   {
+    question: 'How do I list a genuinely new product as New on eBay?',
+    category: 'eBay',
+    sort_order: 3,
+    answer: `Add the Shopify product tag \`condition-new\` before publishing.
+
+1. Open the product in Shopify and confirm it is genuinely new and unused.
+2. Add the exact product tag \`condition-new\` and save the product.
+3. Open ProductPipeline **Listings** after the catalog refresh and review the item.
+4. ProductPipeline will default its eBay condition to **1000 — New**. It intentionally leaves the optional condition note empty so it does not invent packaging or seal claims.
+5. Publish through the normal **Publish all ready** or exact-item ceremony. Every existing readiness, draft, approval, dispatch, and reconciliation check still applies.
+
+Do not use \`condition-new\` for open-box, new-old-stock, refurbished, or used products. A **FOR PARTS** title remains the higher-priority safety signal and will not be listed as New.`,
+  },
+  {
     question: 'How does a saved draft reach eBay?',
     category: 'eBay',
     sort_order: 5,

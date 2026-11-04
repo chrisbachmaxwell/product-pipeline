@@ -715,6 +715,20 @@ describe('listing-lifecycle operator CLI — create', () => {
         const payloads = buildListingCreatePayloads(manifest);
         expect(payloads.inventoryItemPayload.condition).toBe('FOR_PARTS_OR_NOT_WORKING');
     });
+    it('serializes eBay condition 1000 as NEW and omits its optional description', async () => {
+        const world = await createWorld({ condition: '1000', conditionDescription: '' });
+        const { manifest } = deriveListingCreateManifest(world.revision);
+        expect(manifest.proposed).toMatchObject({
+            conditionId: '1000',
+            conditionEnum: 'NEW',
+            conditionDescription: null,
+        });
+        expect(buildListingCreatePayloads(manifest).inventoryItemPayload).toMatchObject({
+            condition: 'NEW',
+        });
+        expect(buildListingCreatePayloads(manifest).inventoryItemPayload)
+            .not.toHaveProperty('conditionDescription');
+    });
     it('denies a create SKU above eBay\'s 50-character maximum', async () => {
         const world = await createWorld();
         expect(() => deriveListingCreateManifest({
