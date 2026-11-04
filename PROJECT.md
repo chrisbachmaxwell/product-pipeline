@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-11-04: Condition Tags Match in TIM's Underscore Spelling and Any Case (L127, incident #246)
+
+Publish All skipped six items (`20116-U812`, `20081-U731`, `1761-U755`, `SELP1020G-U971`, `SEL1655G-U391`, `ZVE10M2B-U713`) with "No condition could be determined". `conditionFromTags` looked up the grade by its exact lowercase hyphen key. TIM, the store's grading tagger (`src/services/tim-tagging.ts`), writes `condition-{grade}` with underscores (`condition-excellent_plus`, `condition-like_new_minus`, `condition-good_plus`), and Shopify keeps the case a person typed. None of those mapped. `src/shared/condition-tags.ts` now ignores case, underscores and spaces in the grade. It also adds the chart grades that had no entry: Good Plus (5000, which clamps to 3000), Mint (as Like New) and Open Box (1500). An asterisk-wrapped title marker now counts in any case (`*Used*`). Unknown grades still derive nothing, and `*FOR PARTS*` still outranks every tag. Regression tests: `src/server/listing-defaults.test.ts`. No ceremony, provider adapter or protected path changed, and no provider read was made, so the six products' actual tags were not observed.
+
 ### 2026-10-30: The Incident Watchdog Matches Legacy Publish-Block Issues by Cause, Not SKU (L126, incident #243)
 
 `ILCE-7CR/S-U046` was filed as a new incident (#243) although the same slash-SKU cause was already open as #236/#239/#241 for `ILCE6400/B-U641`. Those older issues were filed before L125 added the `incident-id` body marker, and the title fallback required the exact title, which includes the SKU. `matchOpenIncidentIssue` now also matches a publish-block incident to an unmarked open issue whose `Publish All could not publish …` title ends with the same root cause. An issue with a marker is matched by marker only. Regression test: `src/server/incident-watchdog.test.ts`. The publish path itself is unchanged. Slash SKUs still need the L116 alias (PR #240, protected paths, human merge).

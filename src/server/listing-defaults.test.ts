@@ -26,6 +26,39 @@ describe('condition from the store condition tag', () => {
     expect(poor?.description).toContain('still fully operational');
   });
 
+  it('maps TIM underscore grades and any-case tags (incident #246)', () => {
+    // TIM writes condition-{grade} with the grader's underscore spelling.
+    expect(conditionFromTags(['condition-excellent_plus'])?.id).toBe('3000');
+    expect(conditionFromTags(['condition-like_new_minus'])?.id).toBe('2750');
+    expect(conditionFromTags(['condition-like_new'])?.id).toBe('2750');
+    expect(conditionFromTags(['condition-excellent_minus'])?.id).toBe('4000');
+    expect(conditionFromTags(['condition-very_good'])?.id).toBe('4000');
+    expect(conditionFromTags(['condition-good_plus'])?.id).toBe('5000');
+    expect(conditionFromTags(['condition-good-plus'])?.description).toContain('Good Plus');
+    expect(conditionFromTags(['Condition-Excellent'])?.id).toBe('3000');
+    expect(conditionFromTags([' condition-Like New Minus '])?.id).toBe('2750');
+    expect(conditionFromTags(['condition-mint'])?.id).toBe('2750');
+    expect(conditionFromTags(['condition-open_box'])?.id).toBe('1500');
+  });
+
+  it('the ready-queue derivation no longer leaves TIM-graded rows without a condition', () => {
+    const title = 'Sony E 16-55mm f/2.8 G Lens (#391)';
+    expect(deriveCondition(['lens', 'condition-excellent_plus'], title)).toEqual({
+      id: '3000',
+      description: expect.stringContaining('Excellent Plus'),
+    });
+    // Graded ids still clamp to the eBay-safe id; the grade stays in the text.
+    expect(deriveCondition(['condition-good_plus'], title)?.id).toBe('3000');
+    expect(deriveCondition(['condition-like_new_minus'], title)?.id).toBe('3000');
+    // *FOR PARTS* still outranks every tag.
+    expect(deriveCondition(['condition-excellent_plus'], `${title} *FOR PARTS*`)?.id).toBe('7000');
+    // An asterisk-wrapped marker in any case counts; bare prose does not.
+    expect(deriveCondition([], 'Sony 10-20mm f/4 PZ G *Used*')?.id).toBe('3000');
+    expect(deriveCondition([], 'Barely used Sony 10-20mm f/4 PZ G')).toBeNull();
+    // An unknown grade is still not guessed.
+    expect(deriveCondition(['condition-mystery_grade'], title)).toBeNull();
+  });
+
   it('returns null with no tag, an unknown grade, or no tags at all', () => {
     expect(conditionFromTags(['lens', 'canon'])).toBeNull();
     expect(conditionFromTags(['condition-mystery'])).toBeNull();

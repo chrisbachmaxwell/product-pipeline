@@ -36,6 +36,11 @@ export const CONDITION_BY_TAG: Readonly<Record<string, { id: string; description
     id: '4000',
     description: 'Very Good: visible wear from regular use. Fully functional.',
   },
+  'good-plus': {
+    id: '5000',
+    description: 'Good Plus: visible wear but fully functional. '
+      + '65–75% of original condition.',
+  },
   good: {
     id: '5000',
     description: 'Good: heavy signs of use, fully operational.',
@@ -52,13 +57,45 @@ export const CONDITION_BY_TAG: Readonly<Record<string, { id: string; description
   },
 });
 
+/**
+ * Grade spellings the store's other writers use for the same chart grade
+ * (incident #246). Keys are already normalized by `normalizeConditionGrade`.
+ */
+const GRADE_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  mint: 'like-new',
+  'mint-like-new': 'like-new',
+  'mint-/-like-new': 'like-new',
+});
+
+/** Open box is a store grade too, but not a used grade: eBay 1500. */
+const OPEN_BOX_CONDITION = Object.freeze({
+  id: '1500',
+  description: 'Open box: unused and fully functional; the packaging was '
+    + 'opened. The photographs show the exact item for sale.',
+});
+
+/**
+ * Incident #246: TIM (src/services/tim-tagging.ts) writes `condition-{grade}`
+ * with the grader's underscore spelling (`condition-excellent_plus`,
+ * `condition-like_new_minus`, `condition-good_plus`), and Shopify tags keep
+ * whatever case the operator typed. The exact-key lookup mapped none of
+ * those, so a graded product skipped Publish All with "No condition could be
+ * determined". Case, underscores and spaces are spelling, not grade.
+ */
+function normalizeConditionGrade(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export function conditionFromTags(
   productTags: readonly string[] | undefined,
 ): { id: string; description: string } | null {
-  for (const tag of productTags ?? []) {
+  for (const rawTag of productTags ?? []) {
+    const tag = rawTag.trim().toLowerCase();
     if (!tag.startsWith('condition-')) continue;
-    const grade = tag.slice('condition-'.length).trim();
-    const mapped = CONDITION_BY_TAG[grade];
+    const grade = normalizeConditionGrade(tag.slice('condition-'.length));
+    if (grade === 'open-box') return OPEN_BOX_CONDITION;
+    const mapped = CONDITION_BY_TAG[GRADE_ALIASES[grade] ?? grade];
     if (mapped) return mapped;
   }
   return null;
@@ -86,13 +123,7 @@ export function conditionFromTitle(
 ): { id: string; description: string } | null {
   if (typeof title !== 'string') return null;
   if (/\bFOR PARTS\b/i.test(title)) return CONDITION_BY_TAG.ugly!;
-  if (/\bOPEN BOX\b/i.test(title)) {
-    return {
-      id: '1500',
-      description: 'Open box: unused and fully functional; the packaging was '
-        + 'opened. The photographs show the exact item for sale.',
-    };
-  }
+  if (/\bOPEN BOX\b/i.test(title)) return OPEN_BOX_CONDITION;
   if (/\bNEW OLD STOCK\b/i.test(title)) {
     return {
       id: '1500',
@@ -100,7 +131,9 @@ export function conditionFromTitle(
         + 'storage or shelf wear. The photographs show the exact item for sale.',
     };
   }
-  if (/\bUSED\b/.test(title)) {
+  // The store's marker is "*USED*"; an asterisk-wrapped marker counts in any
+  // case ("*Used*"), while bare prose "used" still does not (incident #246).
+  if (/\bUSED\b/.test(title) || /\*\s*used\s*\*/i.test(title)) {
     return {
       id: '3000',
       description: 'Used: fully functional with signs of use appropriate to its age. '
