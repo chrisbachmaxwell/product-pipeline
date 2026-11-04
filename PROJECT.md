@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-11-04: A Not-Listed Item With an Empty Shopify Body Publishes With Its Title as the Description (L128, incident #249)
+
+Publish All skipped `9781681985701-U318` every run with "eBay requires description and the item does not have it yet". The draft's SOURCE description came only from the Shopify product body. When that body was empty, the create manifest denied `CREATE_REQUIRED_FIELD_MISSING` / `description`, and Publish All's one refresh repair re-read the same empty body. `src/server/listing-draft-service.ts` now has `sourceDescription`: when the store content was actually read, the item is not listed yet, and the body has no text (null, or bare markup like `<p></p>`), the default is the escaped title in one `<p>`. The branded template still wraps it at dispatch. A failed best-effort content read stays null, so preflight still refuses and the item retries. Listed items keep inheriting eBay's description, and an operator override still wins. On the next run the changed source makes the stored draft stale, so the existing rebase/refresh path saves a revision with the fallback. Regression: `src/server/listing-draft-service.test.ts`. No ceremony, manifest, approval, adapter, watchdog, provider write, price, quantity, inventory, order, or ownership behavior changed.
+
 ### 2026-11-04: `condition-new` Publishes as eBay New (L127)
 
 The shared Shopify-condition mapper now recognizes the exact product tag `condition-new` as eBay condition `1000 / NEW`. It deliberately supplies no optional condition description, avoiding used-grade text and unsupported packaging or seal claims. The explicit new tag wins over a retained used-grade tag, while the existing `FOR PARTS` title safety rule still wins over every tag. Regression coverage follows the value through draft defaults, live-catalog readiness, the create manifest, and the final eBay Inventory payload. A new Help article documents the operator workflow. This is repository behavior only: no Shopify/eBay write, ceremony, approval, responsibility, price, quantity, inventory, order, or deployment boundary changed.

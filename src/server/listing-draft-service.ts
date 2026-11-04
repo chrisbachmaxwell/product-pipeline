@@ -400,7 +400,34 @@ function richDescription(value: string | null): string | null {
   if (flat === null) return null;
   return flat.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-function money(value: { value?: string; amount?: string; currency: string } | null): string | null {
+/**
+ * The SOURCE description for a draft. Incident #249 (L128): a Shopify product
+ * with an empty body produced a null description, the create manifest denied
+ * CREATE_REQUIRED_FIELD_MISSING `description`, Publish-All's one refresh
+ * re-read the same empty body, and the item skipped every run with "open the
+ * item to fill it" — manual work Marketplace Connect never needed (it listed
+ * such products with the title as the body). So when the store's content
+ * WAS read (not a failed best-effort read, which stays null and retries) and
+ * the body holds no text, a not-listed item gets the escaped title as a
+ * one-paragraph body. The branded template still wraps it at dispatch, and
+ * the title already passed the 1–80 character gate. Listed items keep null:
+ * their description is inherited from eBay. An operator override still wins.
+ */
+function sourceDescription(
+  content: Readonly<{ descriptionHtml: string | null }> | null,
+  title: string,
+  notListed: boolean,
+): string | null {
+  const rich = richDescription(content?.descriptionHtml ?? null);
+  if (content === null || !notListed) return rich;
+  // A body of bare markup (`<p></p>`, `<br>`) sanitizes to non-empty HTML
+  // with no text; that is as empty to a buyer as no body at all.
+  if (rich !== null && htmlToPlainText(rich) !== null) return rich;
+  const text = title.replace(/\s+/gu, ' ').trim();
+  if (text.length === 0) return null;
+  return `<p>${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
+}
+function money(value:{ value?: string; amount?: string; currency: string } | null): string | null {
   if (!value) return null;
   return json({ amount: value.value ?? value.amount, currency: value.currency });
 }
@@ -521,7 +548,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     //
     // These remain the SOURCE layer, so they are defaults: an operator
     // override still wins for any individual listing.
-    description: richDescription(workspace.shopifyContent?.descriptionHtml ?? null),
+    description: sourceDescription(workspace.shopifyContent ?? null, shopify.title, notListed),
     images: workspace.shopifyContent && workspace.shopifyContent.imageUrls.length > 0
       ? json([...workspace.shopifyContent.imageUrls])
       : null,

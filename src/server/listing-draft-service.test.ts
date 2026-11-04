@@ -204,6 +204,30 @@ describe('local listing draft service', () => {
       });
   });
 
+  it('gives a not-listed item with an empty Shopify body the title as its description (incident #249, L128)', () => {
+    const content = (descriptionHtml: string | null) => ({ descriptionHtml,
+      imageUrls: Object.freeze(['https://cdn.shopify.com/a.jpg']), brand: null, mpn: null, upc: null });
+    const describe = (ws: ListingWorkspaceDto) => LISTING_DRAFT_SERVICE_TESTING.fieldsForRevision(
+      LISTING_DRAFT_SERVICE_TESTING.eligibleBasis(ws), {})
+      .find((field) => field.field === 'description');
+    const notListed = (descriptionHtml: string | null, title = 'Book <Guide> & Notes') => ({
+      ...workspace({ listed: false, title }), shopifyContent: content(descriptionHtml) });
+
+    for (const empty of [null, '<p></p>', '<p> <br> </p>']) {
+      expect(describe(notListed(empty))).toMatchObject({
+        proposedValue: '<p>Book &lt;Guide&gt; &amp; Notes</p>', proposedSource: 'source' });
+    }
+    // A real body always wins over the fallback.
+    expect(describe(notListed('<p>Real body</p>'))).toMatchObject({ proposedValue: '<p>Real body</p>' });
+    // A failed (best-effort) content read stays null so preflight still refuses and retries.
+    expect(describe({ ...workspace({ listed: false }), shopifyContent: null }))
+      .toMatchObject({ proposedValue: null });
+    // Listed items keep inheriting eBay's description, never the fallback.
+    const listed = describe({ ...workspace(), shopifyContent: content(null) });
+    expect(listed?.sourceValue ?? null).toBeNull();
+    expect(listed).toMatchObject({ proposedSource: 'observed' });
+  });
+
   it('distinguishes explicit condition-description omission from non-null inheritance', () => {
     const basis = LISTING_DRAFT_SERVICE_TESTING.eligibleBasis(workspace());
     expect(LISTING_DRAFT_SERVICE_TESTING.fieldsForRevision(basis, {})
