@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-11-04: Publish-All Fits Over-Long Descriptions Into eBay's 4,000-Character Limit (L128, incident #248)
+
+Preflight refused two items on every run with `CREATE_INVENTORY_PRODUCT_DESCRIPTION_TOO_LARGE`: the create manifest binds the approved draft description to eBay's 4,000-character Inventory `Product.description` (L30), and the draft inherited longer Shopify descriptions with no repair path. Publish-All now fits such a description before any ceremony. It does a lossless markup compaction first and then cuts at the last whole paragraph, list item or heading, keeping the markup balanced and allowlisted. The fit is saved as a new local draft revision (`publish-all-description-fit`), carried by every later Publish-All save, and retried once if preflight still refuses with this code. The published row says how much was shortened. Regression: `src/server/publish-all-description-fit.test.ts` (real draft service and store). No ceremony, manifest, adapter, approval, provider write, or protected path changed.
+
 ### 2026-11-04: `condition-new` Publishes as eBay New (L127)
 
 The shared Shopify-condition mapper now recognizes the exact product tag `condition-new` as eBay condition `1000 / NEW`. It deliberately supplies no optional condition description, avoiding used-grade text and unsupported packaging or seal claims. The explicit new tag wins over a retained used-grade tag, while the existing `FOR PARTS` title safety rule still wins over every tag. Regression coverage follows the value through draft defaults, live-catalog readiness, the create manifest, and the final eBay Inventory payload. A new Help article documents the operator workflow. This is repository behavior only: no Shopify/eBay write, ceremony, approval, responsibility, price, quantity, inventory, order, or deployment boundary changed.
