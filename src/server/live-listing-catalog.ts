@@ -782,6 +782,42 @@ export function projectLiveListingCatalogPage(
   });
 }
 
+/**
+ * Incident #252 (L129): a sold-out row whose ONLY catalog flag is leftover
+ * eBay Inventory residue, beside exactly one live listing. The residue
+ * (a stray Inventory item or unpublished/stale Offer for the same SKU) is
+ * real and stays flagged, and that keeps the row out of every revise and
+ * create path. But it does not make the END target ambiguous: the exact-SKU
+ * live listing is the only buyable thing on eBay, and Shopify can no longer
+ * sell the item. Before this, the flag made the row 'attention', and the
+ * --end-at-zero sweep scans only 'active' rows. So the sell-out guard never
+ * tried to END the listing while the watchdog paged OVERSELL_EXPOSURE.
+ *
+ * The predicate is deliberately narrower than "has a live listing at zero":
+ * - the single attention reason is `ebay_unpublished_artifact` (any
+ *   SKU-ambiguity flag means a twin may still sell, which the operator must
+ *   decide, per L104);
+ * - Shopify stock is KNOWN and <= 0 (null stays a data problem);
+ * - exactly one live listing joins on the exact raw SKU.
+ * Selection only. The END-only basis (`deriveSellOutEndBasis`) re-verifies
+ * the live eBay detail, and the sweep permits nothing but the END call.
+ */
+export function isSellOutEndOnlyRow(row: Pick<LiveListingCatalogRow,
+  'lifecycleStatus' | 'shopify' | 'ebay' | 'audit'>): boolean {
+  const reasons = row.audit?.attentionReasons ?? [];
+  return row.lifecycleStatus === 'attention'
+    && reasons.length === 1
+    && reasons[0] === 'ebay_unpublished_artifact'
+    && row.shopify !== null
+    && row.shopify.sku !== ''
+    && row.shopify.sku === row.ebay.sku
+    && row.shopify.available !== null
+    && Number.isSafeInteger(row.shopify.available)
+    && row.shopify.available <= 0
+    && row.ebay.listingId !== null
+    && row.ebay.activeMatchCount === 1;
+}
+
 export const LIVE_LISTING_CATALOG_TESTING = Object.freeze({
   duplicateExactSkus,
   nearCollisionSkus,

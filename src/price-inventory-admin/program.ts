@@ -37,12 +37,16 @@ import { sha256Digest, type ListingIdentity } from '../listing-control-store/ind
 import { LISTING_DRAFT_SCOPE } from '../listing-control-config.js';
 import {
   deriveListingDraftBasis,
+  deriveSellOutEndBasis,
   type ListingDraftBasis,
 } from '../server/listing-draft-service.js';
 import { readListingWorkspace } from '../server/listing-workspace-reader.js';
 import type { ListingWorkspaceDto } from '../server/listing-workspace-reader.js';
 import { getLiveListingCatalogSnapshot } from '../server/live-listing-catalog-source.js';
-import type { LiveListingCatalogSnapshot } from '../server/live-listing-catalog.js';
+import {
+  isSellOutEndOnlyRow,
+  type LiveListingCatalogSnapshot,
+} from '../server/live-listing-catalog.js';
 import {
   openQuantityBeliefStore,
   type QuantityBeliefStore,
@@ -215,6 +219,27 @@ async function deriveExactTarget(
   const basis = deriveListingDraftBasis(workspaceDto);
   assertExactTarget(basis, options);
   const derived = deriveAlignmentManifest({ basis, field });
+  return { basis, field, derived };
+}
+
+/**
+ * Incident #252 (L129): the exact target for ENDING a sold-out live listing
+ * whose catalog row carries only leftover eBay Inventory residue. It is the
+ * same exact-target derivation over the END-only basis, and it denies any
+ * manifest that is not a quantity alignment to exactly 0. The residue stays
+ * flagged and is never revised, repriced or deleted here.
+ */
+async function deriveSellOutEndTarget(
+  readWorkspace: (catalogId: string) => Promise<ListingWorkspaceDto>,
+  options: ExactTargetOptions,
+): Promise<DerivedTarget> {
+  const field = exactField(options.field);
+  if (field !== 'quantity') deny('SWEEP_SELL_OUT_END_REQUIRES_QUANTITY');
+  const workspaceDto = await readWorkspace(options.catalogId);
+  const basis = deriveSellOutEndBasis(workspaceDto);
+  assertExactTarget(basis, options);
+  const derived = deriveAlignmentManifest({ basis, field });
+  if (parseAlignmentQuantity(derived.manifest.after) !== 0) deny('SWEEP_SELL_OUT_END_NOT_ZERO');
   return { basis, field, derived };
 }
 
@@ -490,6 +515,12 @@ export function buildPriceInventoryAdminProgram(
     clock: () => string;
     /** Sell-out policy: end a Trading listing when the aligned quantity is 0. */
     endAtZero?: boolean;
+    /**
+     * L129: the target came from the END-only basis. Anything other than
+     * the END (a revise of price or quantity) is denied before any store
+     * write or provider call.
+     */
+    endOnly?: boolean;
   }): Promise<Record<string, unknown>> {
     const { store, target, clock } = input;
     // The end path replaces ONLY the provider call. The ownership precheck,
@@ -511,6 +542,7 @@ export function buildPriceInventoryAdminProgram(
     const endListing = input.endAtZero === true
       && target.field === 'quantity'
       && parseAlignmentQuantity(target.derived.manifest.after) === 0;
+    if (input.endOnly === true && !endListing) deny('SWEEP_SELL_OUT_END_ONLY');
     const responsibility = FIELD_RESPONSIBILITY[target.field];
     const action = FIELD_ACTION[target.field];
     const ownership = store.getCurrentOwnership(responsibility);
@@ -1294,8 +1326,15 @@ export function buildPriceInventoryAdminProgram(
           }
 
           const snapshot = await getSnapshot();
+          // L129 (incident #252): with --end-at-zero, a sold-out row whose
+          // only flag is leftover eBay Inventory residue beside exactly one
+          // live listing is selected too. It is the one buyable thing on eBay
+          // for a SKU Shopify can no longer sell. Such a row gets only the
+          // END-only target below, never a revise.
+          const sellOutEndOnly = (row: (typeof snapshot.rows)[number]): boolean =>
+            options.endAtZero === true && field === 'quantity' && isSellOutEndOnlyRow(row);
           const active = (snapshot.rows ?? []).filter((row) =>
-            row.lifecycleStatus === 'active'
+            (row.lifecycleStatus === 'active' || sellOutEndOnly(row))
             && row.ebay.listingId !== null
             && row.ebay.sku !== null
             && row.ebay.sku !== ''
@@ -1332,9 +1371,12 @@ export function buildPriceInventoryAdminProgram(
               offerId: row.ebay.offerId ?? 'none',
               field,
             };
+            const endOnly = sellOutEndOnly(row);
             let target: Awaited<ReturnType<typeof deriveExactTarget>>;
             try {
-              target = await deriveExactTarget(readWorkspace, targetOptions);
+              target = endOnly
+                ? await deriveSellOutEndTarget(readWorkspace, targetOptions)
+                : await deriveExactTarget(readWorkspace, targetOptions);
             } catch (error) {
               // PLAN_NO_DRIFT is the overwhelmingly common case and is not a
               // failure: delta-only means an aligned listing is simply skipped.
@@ -1362,6 +1404,7 @@ export function buildPriceInventoryAdminProgram(
               const result = await dispatchOneAlignment({
                 store, target, catalogId: row.id, clock,
                 endAtZero: options.endAtZero === true,
+                endOnly,
               });
               // A provider-accepted END is remembered so a restock can
               // relist this exact listing automatically. A hint, not

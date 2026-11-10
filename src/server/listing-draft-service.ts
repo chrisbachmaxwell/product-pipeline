@@ -22,6 +22,7 @@ import {
   readListingWorkspace,
   type ListingWorkspaceDto,
 } from './listing-workspace-reader.js';
+import { isSellOutEndOnlyRow } from './live-listing-catalog.js';
 
 /**
  * Derived structurally from the workspace DTO rather than imported from the
@@ -431,12 +432,29 @@ type Basis = Readonly<{
   ebayObservedAtUtc: string;
 }>;
 
-function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
+/**
+ * `sell_out_end` (incident #252, L129) admits exactly one extra shape: a
+ * sold-out row whose only attention reason is leftover eBay Inventory residue
+ * beside exactly one live listing (`isSellOutEndOnlyRow`). Every live-detail
+ * binding check still runs. Only the residue counts are tolerated, because
+ * they cannot change which listing an END targets. The basis exists solely
+ * so the price/inventory sweep can END that listing. The draft workspace,
+ * revise and create paths never ask for this purpose.
+ */
+type BasisPurpose = 'draft' | 'sell_out_end';
+
+function eligibleBasis(workspace: ListingWorkspaceDto, purpose: BasisPurpose = 'draft'): Basis {
   const row = workspace.catalog;
   const shopify = row.shopify;
   if (!shopify) return unavailable();
-  const active = row.lifecycleStatus === 'active' && workspace.mapping.state === 'mapped';
-  const notListed = row.lifecycleStatus === 'not_listed'
+  const sellOutEnd = purpose === 'sell_out_end';
+  if (sellOutEnd && (!isSellOutEndOnlyRow(row) || workspace.mapping.state !== 'attention'
+    || !workspace.ebayDetail || shopify.available === null || shopify.available > 0)) {
+    return unavailable();
+  }
+  const active = sellOutEnd
+    || (row.lifecycleStatus === 'active' && workspace.mapping.state === 'mapped');
+  const notListed = !sellOutEnd && row.lifecycleStatus === 'not_listed'
     && workspace.mapping.state === 'shopify_only';
   if (workspace.schemaVersion !== 1 || workspace.evidence.freshness !== 'live'
     || workspace.evidence.externalWritesPerformed !== 0
@@ -445,8 +463,9 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     || !/^[\x20-\x7e]{1,128}$/.test(shopify.sku) || shopify.sku.trim() !== shopify.sku
     || shopify.sku !== row.ebay.sku || shopify.sku.length > 128
     || row.audit.verified !== true || row.audit.evidenceState !== 'live_verified'
-    || row.audit.currentRemoteStateVerified !== true || row.audit.unresolvedCount !== 0
-    || row.audit.attentionReasons.length !== 0 || (!active && !notListed)
+    || row.audit.currentRemoteStateVerified !== true
+    || (!sellOutEnd && (row.audit.unresolvedCount !== 0 || row.audit.attentionReasons.length !== 0))
+    || (sellOutEnd && row.audit.unresolvedCount !== 1) || (!active && !notListed)
     || (active && !workspace.ebayDetail) || (notListed && workspace.ebayDetail !== null)
     || (notListed && (row.ebay.listingId !== null || row.ebay.offerId !== null
       || row.ebay.activeMatchCount !== 0 || row.ebay.inventoryItemCount !== 0
@@ -466,12 +485,17 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
   const managementModel: ListingIdentity['managementModel'] = workspace.mapping.managementModel === 'inventory_offer'
     ? 'inventory_api'
     : workspace.mapping.managementModel === 'legacy_trading' ? 'trading_api' : 'unmanaged';
-  if (active && (row.ebay.activeMatchCount !== 1 || row.ebay.unpublishedArtifactCount !== 0)) {
+  if (active && (row.ebay.activeMatchCount !== 1
+    || (!sellOutEnd && row.ebay.unpublishedArtifactCount !== 0))) {
     unavailable();
   }
+  // Residue tolerated for sell_out_end only: the bound Offer must still be
+  // the one published for this exact listing (exactBindings.offerToListing),
+  // so withdrawing it ends exactly that listing and nothing else.
   if (managementModel === 'inventory_api' && (!detail
     || workspace.mapping.inventorySku !== shopify.sku
-    || row.ebay.inventoryItemCount !== 1 || row.ebay.offerCount !== 1
+    || row.ebay.inventoryItemCount !== 1
+    || (sellOutEnd ? row.ebay.offerCount < 1 : row.ebay.offerCount !== 1)
     || detail.management.model !== 'inventory_offer'
     || detail.management.controlApi !== 'inventory'
     || !detail.management.exactBindings.inventoryItem || !detail.management.exactBindings.offer
@@ -480,8 +504,10 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     || detail.management.offer?.sku !== shopify.sku
     || detail.management.offer.offerId !== row.ebay.offerId
     || detail.management.offer.marketplaceId !== LISTING_DRAFT_SCOPE.ebayMarketplaceId)) unavailable();
+  // A Trading listing ENDs by its listing id alone, so a stray Inventory item
+  // or unpublished Offer for the same SKU cannot redirect it.
   if (managementModel === 'trading_api' && (!detail
-    || row.ebay.inventoryItemCount !== 0 || row.ebay.offerCount !== 0
+    || (!sellOutEnd && (row.ebay.inventoryItemCount !== 0 || row.ebay.offerCount !== 0))
     || row.ebay.offerId !== null || detail.management.model !== 'legacy_trading'
     || detail.management.controlApi !== 'trading'
     || detail.management.inventoryItem !== null || detail.management.offer !== null
@@ -703,6 +729,17 @@ export type ListingDraftBasis = Basis;
  */
 export function deriveListingDraftBasis(workspaceDto: ListingWorkspaceDto): ListingDraftBasis {
   return eligibleBasis(workspaceDto);
+}
+
+/**
+ * The END-only basis for a sold-out live listing beside leftover eBay
+ * Inventory residue (incident #252, L129; see `isSellOutEndOnlyRow`). Same
+ * identity, normalization and live-detail binding checks as
+ * `deriveListingDraftBasis`. The price/inventory sweep may use it only to
+ * END the listing, and it must deny any manifest whose result is not that END.
+ */
+export function deriveSellOutEndBasis(workspaceDto: ListingWorkspaceDto): ListingDraftBasis {
+  return eligibleBasis(workspaceDto, 'sell_out_end');
 }
 
 export type ListingDraftServiceDependencies = Readonly<{
