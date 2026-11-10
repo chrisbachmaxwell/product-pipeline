@@ -74,8 +74,18 @@ type SnapshotRow = {
  */
 function oversellGuardDetail(row: SnapshotRow): string {
   if (row.lifecycleStatus === undefined) return '';
+  const reasons = row.audit?.attentionReasons ?? [];
+  if (row.lifecycleStatus === 'attention' && reasons.length === 1
+    && reasons[0] === 'ebay_unpublished_artifact') {
+    // L129 (incident #252): the sweep selects this shape for an END-only
+    // target, so a recurrence means the END was refused or skipped.
+    return ' The catalog classifies this row \'attention\' (reasons: ebay_unpublished_artifact),'
+      + ' which the --end-at-zero sweep selects for an END-only target (L129):'
+      + ' look for this SKU\'s skip code in the "[Inventory Alignment]" summary log line'
+      + ' (SWEEP_SELL_OUT_END_* or LISTING_DRAFT_UNAVAILABLE means the live eBay detail'
+      + ' failed the exact-binding checks).';
+  }
   if (row.lifecycleStatus !== 'active') {
-    const reasons = row.audit?.attentionReasons ?? [];
     return ` The catalog classifies this row '${row.lifecycleStatus}'`
       + (reasons.length > 0 ? ` (reasons: ${reasons.join(', ')})` : '')
       + ' — the --end-at-zero sweep selects only \'active\' rows, so it was never '
