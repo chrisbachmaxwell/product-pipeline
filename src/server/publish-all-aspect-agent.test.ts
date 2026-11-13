@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { fitEbayTitle, getPublishAllStatus, refusedMissingAspects, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
+import { fitEbayTitle, getPublishAllStatus, providerFailure, refusedMissingAspects, releasePublishLock, startPublishAllRun, type PublishAllDependencies } from './publish-all.js';
 
 const CATALOG_ID = 'shopify-variant:gid://shopify/ProductVariant/55484011184419';
 const REVISION = `sha256:${'b'.repeat(64)}`;
@@ -1096,5 +1096,118 @@ describe('publish-all item specific eBay names at publish (incident #235)', () =
     expect(asked).toEqual([['Type'], ['Type']]);
     expect(dispatches).toBe(3);
     expect(getPublishAllStatus().items.map((item) => item.status)).toEqual(['published', 'published']);
+  });
+});
+
+describe('publish-all eBay availability lag on publish (incident #254)', () => {
+  const noMissingAspects = async () => ({ available: true, aspects: [{ name: 'Brand', required: true }] });
+  const LAG_MESSAGE = 'Input error. Seller Inventory Service can not publish the data. '
+    + 'Availability not found. Please try again or contact customer support.';
+  const availabilityLag = { json: {
+    command: 'dispatch-create', status: 'dispatched-unresolved',
+    jobId: 'listing-create-job:254', attemptId: 'listing-create-attempt:254',
+    intentKey: `sha256:${'4'.repeat(64)}`, offerId: '247267392254', listingId: null,
+    providerDispatchReported: false,
+    dispatchFailureStage: 'publish_offer', dispatchFailureCode: 'CREATE_DISPATCH_WRITE_FAILED',
+    dispatchFailureOutcomeClass: 'definite_no_effect', dispatchFailureHttpStatusFamily: 'http_4xx',
+    dispatchFailureHttpStatusCode: 400, dispatchFailureEbayErrorIds: [25002],
+    dispatchFailureEbayErrorMessages: [LAG_MESSAGE],
+  } };
+  // The cleanup chain removes the unpublished offer and item the failed
+  // publish left behind; afterwards nothing is open on the ledger.
+  const cleanupStep = (argv: readonly string[]) => {
+    if (argv[1] === 'reconcile-create') return { json: { unresolvedCode: 'CREATE_OFFER_UNPUBLISHED' } };
+    if (argv[1] === 'recover-create') {
+      return { json: { recoveryJobId: 'listing-recovery-job:254', recoveryAttemptId: 'listing-recovery-attempt:254' } };
+    }
+    return { json: { status: 'recovered-and-reconciled' } };
+  };
+
+  it('classifies only a publish-stage "Availability not found" as eBay lag', () => {
+    expect(providerFailure(availabilityLag.json)).toEqual({
+      transient: true, availabilityLag: true,
+      detail: 'publish_offer, HTTP 400, eBay error 25002',
+    });
+    expect(providerFailure({ ...availabilityLag.json, dispatchFailureStage: 'create_offer' }))
+      .toMatchObject({ transient: false, availabilityLag: false });
+    expect(providerFailure({ ...availabilityLag.json, dispatchFailureEbayErrorMessages: ['A user error has occurred.'] }))
+      .toMatchObject({ transient: false, availabilityLag: false });
+  });
+
+  it('clears the leftovers, retries once from a refreshed draft after a pause, then publishes', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const pauses: number[] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      sleep: async (ms) => { pauses.push(ms); },
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        if (argv[1] === 'dispatch-create') {
+          return argv.includes(REVISION)
+            ? availabilityLag
+            : { json: { status: 'dispatched-and-reconciled', listingId: '147000000254' } };
+        }
+        return cleanupStep(argv);
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(1);
+    expect(calls.map((argv) => argv[1])).toEqual([
+      'preflight-create', 'dispatch-create',
+      'reconcile-create', 'recover-create', 'recover-reconcile',
+      'preflight-create', 'dispatch-create']);
+    expect(calls[6]).toContain(SAVED);
+    expect(pauses).toContain(120_000);
+    expect(getPublishAllStatus().items[0]).toMatchObject({ status: 'published', listingId: '147000000254' });
+  });
+
+  it('retries only once and keeps eBay\'s reason when the lag persists', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        if (argv[1] === 'dispatch-create') return availabilityLag;
+        return cleanupStep(argv);
+      },
+    }, saves, calls));
+    await run;
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(2);
+    const item = getPublishAllStatus().items[0]!;
+    expect(item.status).toBe('failed');
+    expect(item.reason).toBe(`eBay refused the listing: ${LAG_MESSAGE}`
+      + ' (publish_offer, HTTP 400, eBay error 25002; it retries next run)');
+  });
+
+  it('never retries while the failed publish is still open on the ledger', async () => {
+    arm();
+    armRecovery();
+    const saves: unknown[] = [];
+    const calls: string[][] = [];
+    const { run } = startPublishAllRun('test', dependencies({
+      getCategoryAspects: noMissingAspects,
+      findUnresolvedCreate: () => ({
+        jobId: 'listing-create-job:254', attemptId: 'listing-create-attempt:254',
+        intentKey: `sha256:${'4'.repeat(64)}`, evidenceDigest: MANIFEST,
+      }),
+      runStep: async (argv) => {
+        calls.push([...argv]);
+        if (argv[1] === 'preflight-create') return { json: { status: 'preview', manifestDigest: MANIFEST } };
+        if (argv[1] === 'dispatch-create') return availabilityLag;
+        return { json: { status: 'dispatched-unresolved' } };
+      },
+    }, saves, calls));
+    await run;
+    expect(saves).toHaveLength(0);
+    expect(calls.filter((argv) => argv[1] === 'dispatch-create')).toHaveLength(1);
+    expect(getPublishAllStatus().items[0]!.status).toBe('failed');
   });
 });

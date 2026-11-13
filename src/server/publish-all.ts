@@ -68,28 +68,51 @@ const DISPATCH_RECHECK_CODES: ReadonlySet<string> = new Set([
 const EBAY_SYSTEM_ERROR_IDS: ReadonlySet<number> = new Set([25001]);
 
 /**
- * Read a failed dispatch-create summary (incident #212). `transient` is an
- * eBay server error (HTTP 5xx, or eBay's system-error id): eBay's own
- * trouble, not a refusal of the payload, so one more attempt may succeed.
- * `detail` names the stage, HTTP status and eBay error ids (digits only,
- * never provider text) for the log and the item reason.
+ * Incident #254: eBay refused a PUBLISH with 25002 "Seller Inventory Service
+ * can not publish the data. Availability not found." The create ceremony
+ * PUTs the inventory item (with its ship-to quantity), POSTs the offer and
+ * publishes it back to back, so the publish can run before eBay's inventory
+ * service has propagated the item's availability. The quantity is
+ * guaranteed (manifest gate: integer >= 1) and the same payload shape
+ * publishes every other item, so this is eBay-side read lag, not a payload
+ * refusal: the item's leftovers are cleared and it gets the same one paused
+ * retry as a server error.
  */
-export function providerFailure(json: Record<string, unknown>): { transient: boolean; detail: string } {
+const AVAILABILITY_LAG = /\bAvailability not found\b/iu;
+
+/**
+ * Read a failed dispatch-create summary (incident #212). `transient` is an
+ * eBay server error (HTTP 5xx, or eBay's system-error id), or eBay's
+ * publish-time availability lag (incident #254): eBay's own trouble, not a
+ * refusal of the payload, so one more attempt may succeed. `availabilityLag`
+ * names the second case. `detail` names the stage, HTTP status and eBay
+ * error ids (digits only, never provider text) for the log and the item
+ * reason.
+ */
+export function providerFailure(json: Record<string, unknown>): {
+  transient: boolean; availabilityLag: boolean; detail: string;
+} {
   const stage = typeof json.dispatchFailureStage === 'string' ? json.dispatchFailureStage : 'unknown stage';
   const httpStatus = typeof json.dispatchFailureHttpStatusCode === 'number'
     ? json.dispatchFailureHttpStatusCode : null;
   const errorIds = Array.isArray(json.dispatchFailureEbayErrorIds)
     ? json.dispatchFailureEbayErrorIds.filter((id): id is number => Number.isSafeInteger(id))
     : [];
+  const messages = Array.isArray(json.dispatchFailureEbayErrorMessages)
+    ? json.dispatchFailureEbayErrorMessages.filter((message): message is string => typeof message === 'string')
+    : [];
+  const availabilityLag = json.dispatchFailureStage === 'publish_offer'
+    && messages.some((message) => AVAILABILITY_LAG.test(message));
   const transient = json.dispatchFailureHttpStatusFamily === 'http_5xx'
     || (httpStatus !== null && httpStatus >= 500 && httpStatus <= 599)
-    || errorIds.some((id) => EBAY_SYSTEM_ERROR_IDS.has(id));
+    || errorIds.some((id) => EBAY_SYSTEM_ERROR_IDS.has(id))
+    || availabilityLag;
   const detail = [
     stage,
     httpStatus === null ? null : `HTTP ${httpStatus}`,
     errorIds.length === 0 ? null : `eBay error ${errorIds.join(', ')}`,
   ].filter((part) => part !== null).join(', ');
-  return { transient, detail };
+  return { transient, availabilityLag, detail };
 }
 
 const REFUSED_ASPECT = /\bitem specific (.{1,65}?) is missing\b/giu;
@@ -1368,7 +1391,9 @@ export function startPublishAllRun(
             break;
           }
           if (failure.transient) {
-            step('eBay had a temporary server error — retrying in 2 minutes');
+            step(failure.availabilityLag
+              ? 'eBay had not caught up with the item\'s stock yet — retrying in 2 minutes'
+              : 'eBay had a temporary server error — retrying in 2 minutes');
             await sleep(120_000);
             if (!await refreshRevision('publish-all-provider-retry')) break;
           } else {
