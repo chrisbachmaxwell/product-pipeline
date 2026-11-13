@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-11-04. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-11-13. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,10 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-11-13: Publish-All Retries eBay's Publish-Time "Availability not found" Once (L129, incident #254)
+
+Publish-All failed `5050C002-U444` with eBay 25002 at the `publish_offer` stage: "Seller Inventory Service can not publish the data. Availability not found." The create ceremony sends the inventory-item PUT (with its ship-to quantity, guaranteed >= 1 by the manifest gate), the offer POST and the publish back to back. eBay's publish can run before its inventory service has propagated the item's availability. Publish-All classified the refusal as a permanent payload error and failed the item. `providerFailure` in `src/server/publish-all.ts` now also treats a publish-stage refusal that names "Availability not found" as transient (`availabilityLag`). Like an eBay server error (L105), the item gets one retry: its unpublished offer and item are cleared through the existing recovery chain, it pauses 2 minutes, and a refreshed draft revision (new manifest, new intent) is re-preflighted and re-dispatched. The same guards apply: no retry while the ledger holds an open create, and only one retry per run. Every other 4xx refusal is still not retried. No ceremony, adapter, manifest, approval or protected path changed. Regression tests: `src/server/publish-all-aspect-agent.test.ts` ("eBay availability lag on publish (incident #254)").
 
 ### 2026-11-04: Publish-All Fits Over-Long Descriptions Into eBay's 4,000-Character Limit (L128, incident #248)
 
