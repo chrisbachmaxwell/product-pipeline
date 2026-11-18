@@ -273,7 +273,13 @@ retried. Never treat an import as a diagnostic or a test.
   genuinely missed order is handled by a human decision, never a replay.
 - **Poll blocked (`POLL_PREVIOUS_PAGE_UNRESOLVED`)**: eligible observations
   from the previous page are still open. Import or dedup-link each one; the
-  next poll advances the durable cursor automatically and resumes.
+  next poll advances the durable cursor automatically and resumes. With the
+  automated trigger armed, an order whose latest import denial is a
+  recoverable pre-intent code (`RETRYABLE_PRE_INTENT_IMPORT_CODES` in
+  `src/server/order-import-trigger.ts`: transient Shopify/eBay reads, SKU
+  grammar/resolution, write scope) is re-imported every cycle, so fixing the
+  cause drains the pipeline with no operator step (#256, L130). Any other
+  denial still needs the operator.
 - **`DEDUP_LINKED_EXISTING`**: the order already exists in Shopify (e.g.
   created by Marketplace Connect before its disable). Nothing to do — the
   link permanently prevents a ProductPipeline duplicate.

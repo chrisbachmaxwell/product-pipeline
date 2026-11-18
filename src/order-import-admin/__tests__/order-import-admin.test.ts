@@ -270,6 +270,7 @@ function createWorld(): World {
     }),
     createShopifyAdapter: () => createShopifyOrderAdapter({
       fetchImpl: shopifyFetch,
+      readRetryPauseMs: 0,
       getAccessToken: async () => 'shopify-offline-test-token',
     }),
     now,
@@ -998,5 +999,87 @@ describe('Shopify order adapter target grammar (L77 / #150)', () => {
     }
     expect(queries).toEqual([]);
     await expect(adapter.findVariantGidBySku(L77_SKU)).resolves.toBeNull();
+  });
+});
+
+// Incident #256 (L130): one throttled Shopify read denied the import of
+// 19-15430-77787 with SHOPIFY_READ_FAILED and froze the strictly-ordered
+// order pipeline. Reads retry an explicit throttle/5xx a bounded number of
+// times; the orderCreate mutation never retries.
+describe('Shopify order adapter transient read retry (#256)', () => {
+  const STUCK_ORDER_ID = '19-15430-77787';
+  const THROTTLED = { errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }] };
+  const EMPTY_ORDERS = { data: { orders: { nodes: [], pageInfo: { hasNextPage: false } } } };
+
+  function scripted(responses: Array<() => Response>) {
+    let calls = 0;
+    const operations: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (String(input) !== SHOPIFY_URL) throw new Error(`unexpected URL: ${String(input)}`);
+      operations.push((JSON.parse(String(init?.body)) as { operationName: string }).operationName);
+      const next = responses[Math.min(calls, responses.length - 1)]!;
+      calls += 1;
+      return next();
+    };
+    const adapter = createShopifyOrderAdapter({
+      fetchImpl,
+      getAccessToken: async () => 'shopify-offline-test-token',
+      readRetryPauseMs: 0,
+    });
+    return { adapter, operations, calls: () => calls };
+  }
+
+  it('retries a THROTTLED 200 and a 429 on the dedup reads, then succeeds', async () => {
+    const fake = scripted([
+      () => jsonResponse(THROTTLED),
+      () => jsonResponse({}, 429),
+      () => jsonResponse(EMPTY_ORDERS),
+    ]);
+    await expect(fake.adapter.findOrderGidsByTag(`eBay-${STUCK_ORDER_ID}`)).resolves.toEqual([]);
+    expect(fake.calls()).toBe(3);
+  });
+
+  it('retries a 503 on the variant lookup', async () => {
+    const fake = scripted([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({ data: { productVariants: { nodes: [] } } }),
+    ]);
+    await expect(fake.adapter.findVariantGidBySku('ABC-U1')).resolves.toBeNull();
+    expect(fake.calls()).toBe(2);
+  });
+
+  it('fails closed after the bounded attempts, and at once on a non-throttle error', async () => {
+    const throttled = scripted([() => jsonResponse(THROTTLED)]);
+    await expect(throttled.adapter.findOrderGidsBySourceIdentifier(STUCK_ORDER_ID))
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(throttled.calls()).toBe(3);
+
+    const mixed = scripted([() => jsonResponse({ errors: [
+      { message: 'Throttled', extensions: { code: 'THROTTLED' } },
+      { message: 'Field does not exist' },
+    ] })]);
+    await expect(mixed.adapter.findOrderGidsByTag(`eBay-${STUCK_ORDER_ID}`))
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(mixed.calls()).toBe(1);
+
+    const forbidden = scripted([() => jsonResponse({}, 403)]);
+    await expect(forbidden.adapter.getInstallationScopes())
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(forbidden.calls()).toBe(1);
+  });
+
+  it('never retries the orderCreate mutation', async () => {
+    const fake = scripted([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({ data: { orderCreate: { order: { id: 'gid://shopify/Order/1' }, userErrors: [] } } }),
+    ]);
+    await expect(fake.adapter.createOrder({})).rejects.toMatchObject({ code: 'SHOPIFY_WRITE_FAILED' });
+    const throttledWrite = scripted([
+      () => jsonResponse(THROTTLED),
+      () => jsonResponse({ data: { orderCreate: { order: { id: 'gid://shopify/Order/1' }, userErrors: [] } } }),
+    ]);
+    await expect(throttledWrite.adapter.createOrder({})).rejects.toMatchObject({ code: 'SHOPIFY_WRITE_FAILED' });
+    expect(fake.calls()).toBe(1);
+    expect(throttledWrite.calls()).toBe(1);
   });
 });
