@@ -320,6 +320,35 @@ describe('ORDER_PIPELINE_BLOCKED (L77)', () => {
   });
 });
 
+describe('order import rate-limit reporting', () => {
+  const fifth = NOW - 40 * 60_000;
+  const order = {
+    orderId: '19-12345-98765', observedAtUtc: new Date(NOW - 35 * 60_000).toISOString(),
+    sourceCreatedMs: NOW - 8 * 3_600_000, fifthLatestIntentMs: fifth,
+  };
+  function evaluate(code: string, lastSeenMs: number, fifthLatestIntentMs: number | null = fifth) {
+    return evaluateIncidentCandidates({
+      snapshot: { observedAtUtc: FRESH, rows: [] },
+      signals: { oldestUnresolvedOrder: { ...order, fifthLatestIntentMs },
+        unresolvedCreates: [], unresolvedFulfillments: [], repeatedEndFailures: [], repeatedPriceFailures: [] },
+      nowMs: NOW,
+      getOrderFailure: () => ({ code, atUtc: new Date(lastSeenMs).toISOString() }),
+    })[0];
+  }
+  it('reports a verified active hourly limit as a queued order', () => {
+    expect(evaluate('MIGRATION_STORE_ORDER_RATE_LIMITED', NOW - 60_000))
+      .toMatchObject({ code: 'ORDER_IMPORT_RATE_WAIT', severity: 'warning' });
+  });
+  it('keeps the critical alarm for missing capacity evidence, a different failure or stopped polling', () => {
+    for (const incident of [
+      evaluate('MIGRATION_STORE_ORDER_RATE_LIMITED', NOW - 60_000, null),
+      evaluate('MIGRATION_STORE_ORDER_RATE_LIMITED', NOW - 12 * 60_000),
+      evaluate('MIGRATION_STORE_ORDER_RATE_LIMITED', NOW - 8 * 60_000, NOW - 67 * 60_000),
+      evaluate('SHOPIFY_READ_FAILED', NOW - 60_000),
+    ]) expect(incident).toMatchObject({ code: 'ORDER_PIPELINE_BLOCKED', severity: 'critical' });
+  });
+});
+
 describe('PRICE_SYNC_REJECTED (L87)', () => {
   it('pages critical when eBay rejects price updates for a live listing', () => {
     const candidates = evaluateIncidentCandidates({

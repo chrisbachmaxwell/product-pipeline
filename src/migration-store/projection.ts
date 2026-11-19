@@ -445,7 +445,12 @@ export type IncidentLedgerSignals = Readonly<{
    * is strictly ordered, so ONE stuck order freezes every order behind it
    * (L77) — this is the single highest-severity signal in the system.
    */
-  oldestUnresolvedOrder: { orderId: string; observedAtUtc: string } | null;
+  oldestUnresolvedOrder: {
+    orderId: string;
+    observedAtUtc: string;
+    sourceCreatedMs?: number;
+    fifthLatestIntentMs?: number | null;
+  } | null;
   /** Unresolved listing-create jobs (no attempt resolution yet). */
   unresolvedCreates: ReadonlyArray<{ sku: string; jobId: string; reservedAtUtc: string }>;
   /** Unresolved fulfillment (tracking push) jobs — a buyer is waiting. */
@@ -518,16 +523,24 @@ export function readIncidentLedgerSignalsReadOnly(input: {
         + 'GROUP BY e.binding_key ORDER BY reservedAtUtc ASC LIMIT 10',
       ).all() as Array<{ binding: string; reservedAtUtc: string }>;
       const stuckOrder = database.prepare(
-        'SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc '
-        + 'FROM order_observations o '
-        + 'LEFT JOIN order_observation_resolutions r ON r.observation_id = o.observation_id '
-        + 'WHERE r.observation_id IS NULL '
-        + 'ORDER BY o.observed_at_utc ASC LIMIT 1',
-      ).get() as { observationId: string; observedAtUtc: string } | undefined;
+        `SELECT o.observation_id AS observationId, o.observed_at_utc AS observedAtUtc,
+           o.source_created_epoch_ms AS sourceCreatedMs,
+           (SELECT i.created_epoch_ms FROM idempotency_intents i
+            WHERE i.scope_key = o.scope_key AND i.action = 'import_shopify_order'
+            ORDER BY i.created_epoch_ms DESC LIMIT 1 OFFSET 4) AS fifthLatestIntentMs
+         FROM order_observations o
+         LEFT JOIN order_observation_resolutions r ON r.observation_id = o.observation_id
+         WHERE r.observation_id IS NULL
+         ORDER BY o.observed_at_utc, o.source_created_epoch_ms, o.observation_id LIMIT 1`,
+      ).get() as {
+        observationId: string; observedAtUtc: string; sourceCreatedMs: number; fifthLatestIntentMs: number | null;
+      } | undefined;
       return Object.freeze({
         oldestUnresolvedOrder: stuckOrder === undefined ? null : Object.freeze({
           orderId: stuckOrder.observationId.replace(/^observation:/, ''),
           observedAtUtc: stuckOrder.observedAtUtc,
+          sourceCreatedMs: stuckOrder.sourceCreatedMs,
+          fifthLatestIntentMs: stuckOrder.fifthLatestIntentMs,
         }),
         unresolvedCreates: unresolved.map((row) => Object.freeze({
           sku: sku(row.binding), jobId: row.jobId, reservedAtUtc: row.reservedAtUtc,

@@ -19,6 +19,7 @@ import {
   sha256Digest,
   type IntegrationScope,
 } from '../../migration-store/index.js';
+import { readIncidentLedgerSignalsReadOnly } from '../../migration-store/projection.js';
 import { LISTING_DRAFT_SCOPE } from '../../listing-control-config.js';
 import { PRODUCT_PIPELINE_SHOPIFY_IDENTITY } from '../../shopify/production-identity.js';
 import {
@@ -473,8 +474,8 @@ describe('order-import operator CLI', () => {
     await establishWatermark(world);
     world.setClock('2026-08-19T18:10:00.000Z');
     const ids = Array.from({ length: 7 }, (_, i) => `19-15430-7770${i}`);
-    for (const id of ids) {
-      const order = ebayOrderFixture(id, '2026-08-19T18:03:00.000Z');
+    for (const id of [...ids].reverse()) {
+      const order = ebayOrderFixture(id, `2026-08-19T18:03:0${ids.indexOf(id)}.000Z`);
       world.ebayListOrders.push(order);
       world.ebayOrderDetails.set(id, order);
     }
@@ -496,6 +497,13 @@ describe('order-import operator CLI', () => {
     await attempt(ids[5]!);
     expect(world.lastStderr().code).toBe('MIGRATION_STORE_ORDER_RATE_LIMITED');
     expect(world.orderCreateCalls).toHaveLength(5);
+    const signal = readIncidentLedgerSignalsReadOnly({
+      databasePath: world.migrationDatabasePath, sinceUtc: BOUNDARY_UTC,
+    })?.oldestUnresolvedOrder;
+    expect(signal).toMatchObject({
+      orderId: ids[5], sourceCreatedMs: Date.parse('2026-08-19T18:03:05.000Z'),
+      fifthLatestIntentMs: expect.any(Number),
+    });
     await poll();
     expect(world.lastStdout().pendingPreIntentOrderIds).toEqual(ids.slice(5));
     world.setClock('2026-08-19T19:13:00.000Z');
