@@ -624,6 +624,9 @@ export function buildOrderImportAdminProgram(
           // Housekeeping: a fully resolved previous page advances the durable
           // cursor; an unresolved one blocks new pages fail-closed.
           const pendingPage = reader.getUnadvancedPage();
+          const pendingPreIntentOrderIds = pendingPage && pendingPage.observedCount > pendingPage.resolvedCount
+            ? reader.getPendingPreIntentOrders(pendingPage.pageId, Date.parse(clock()))
+            : [];
           if (pendingPage) {
             if (pendingPage.observedCount === pendingPage.resolvedCount) {
               const cursor = reader.getCurrentCursor();
@@ -642,6 +645,7 @@ export function buildOrderImportAdminProgram(
                 status: 'blocked',
                 code: 'POLL_PREVIOUS_PAGE_UNRESOLVED',
                 pendingPageId: pendingPage.pageId,
+                pendingPreIntentOrderIds,
                 pendingUnresolvedObservations:
                   pendingPage.observedCount - pendingPage.resolvedCount,
                 skippedAlreadyObserved: skipped.length,
@@ -746,7 +750,8 @@ export function buildOrderImportAdminProgram(
               recordedPermanentlyIneligible: permanentlyIneligible.length,
               skippedAlreadyObserved: skipped.length,
             },
-            eligibleOrders: eligible,
+            eligibleOrders: eligible.sort((a, b) => a.creationDateUtc.localeCompare(b.creationDateUtc)),
+            pendingPreIntentOrderIds,
             permanentlyIneligibleOrders: permanentlyIneligible,
             skipped,
             externalCommerceWritesAttempted: 0,

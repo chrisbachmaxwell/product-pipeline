@@ -20,6 +20,7 @@ function memoryStore(initial: OrderImportFailureEntry[] = []) {
   return { memory, entries: () => entries };
 }
 
+const createdRecently = new Date(Date.now() - 1_000).toISOString();
 const POLL = ['dist/order-import-admin/index.js', 'poll', '--migration-store', '/data/x', '--max-orders', '50'];
 const IMPORT = ['dist/order-import-admin/index.js', 'import', '--migration-store', '/data/x', '--order-id', '{orderId}', '--confirm-lightspeed'];
 const RECONCILE = ['dist/order-import-admin/index.js', 'reconcile', '--migration-store', '/data/x', '--order-id', '{orderId}', '--job-id', '{jobId}', '--attempt-id', '{attemptId}'];
@@ -64,7 +65,7 @@ describe('order import trigger', () => {
 
   it('runs poll -> import -> reconcile for each eligible order with substituted ids', async () => {
     const h = harness({
-      poll: { eligibleOrders: [{ orderId: '03-15157-73729' }] },
+      poll: { eligibleOrders: [{ orderId: '03-15157-73729', creationDateUtc: createdRecently }] },
       importResult: { status: 'dispatched-unresolved', jobId: JOB, attemptId: ATTEMPT },
       reconcile: { status: 'reconciled', outcome: 'resolved_existing' },
     });
@@ -92,7 +93,7 @@ describe('order import trigger', () => {
 
   it('skips reconcile when the import returned malformed job ids', async () => {
     const h = harness({
-      poll: { eligibleOrders: [{ orderId: '03-15157-73729' }] },
+      poll: { eligibleOrders: [{ orderId: '03-15157-73729', creationDateUtc: createdRecently }] },
       importResult: { status: 'dispatched-unresolved', jobId: 'evil', attemptId: ATTEMPT },
     });
     await h.trigger.runCycle('test');
@@ -101,7 +102,7 @@ describe('order import trigger', () => {
 
   it('continues past a denied import to the next order', async () => {
     const h = harness({
-      poll: { eligibleOrders: [{ orderId: '03-15157-73729' }, { orderId: '21-15124-43444' }] },
+      poll: { eligibleOrders: [{ orderId: '03-15157-73729', creationDateUtc: createdRecently }, { orderId: '21-15124-43444', creationDateUtc: createdRecently }] },
       importResult: { status: 'denied', code: 'IMPORT_ALREADY_RESOLVED' },
     });
     await h.trigger.runCycle('test');
@@ -120,7 +121,7 @@ describe('order import trigger', () => {
       const store = memoryStore();
       let importStatus: Record<string, unknown> = { status: 'denied', code: 'SHOPIFY_READ_FAILED' };
       const calls: string[][] = [];
-      let pollJson: Record<string, unknown> = { status: 'polled', eligibleOrders: [{ orderId: STUCK }] };
+      let pollJson: Record<string, unknown> = { status: 'polled', eligibleOrders: [{ orderId: STUCK, creationDateUtc: createdRecently }] };
       const trigger = createOrderImportTrigger({
         pollArgv: POLL, importArgv: IMPORT, reconcileArgv: RECONCILE,
         failureMemory: store.memory,
@@ -142,7 +143,8 @@ describe('order import trigger', () => {
       pollJson = {
         status: 'blocked',
         code: 'POLL_PREVIOUS_PAGE_UNRESOLVED',
-        newOrdersNotRecorded: [{ orderId: NEWER }],
+        pendingPreIntentOrderIds: [STUCK],
+        newOrdersNotRecorded: [{ orderId: NEWER, creationDateUtc: createdRecently }],
       };
       importStatus = { status: 'dispatched-unresolved', jobId: JOB, attemptId: ATTEMPT };
       calls.length = 0;
@@ -164,7 +166,7 @@ describe('order import trigger', () => {
     it('retries the stuck order before newly eligible orders, once each', async () => {
       const store = memoryStore([{ orderId: STUCK, code: 'SHOPIFY_READ_FAILED', atUtc: '2026-11-18T18:57:14.973Z' }]);
       const h = harness({
-        poll: { eligibleOrders: [{ orderId: NEWER }, { orderId: STUCK }] },
+        poll: { eligibleOrders: [{ orderId: NEWER, creationDateUtc: createdRecently }, { orderId: STUCK, creationDateUtc: createdRecently }], pendingPreIntentOrderIds: [STUCK] },
         importResult: { status: 'denied', code: 'SHOPIFY_READ_FAILED' },
       }, store.memory);
       await h.trigger.runCycle('test');
@@ -177,7 +179,7 @@ describe('order import trigger', () => {
         'MIGRATION_STORE_CONFLICT', 'ORDER_IMPORT_DENIED']) {
         expect(RETRYABLE_PRE_INTENT_IMPORT_CODES.has(code)).toBe(false);
         const store = memoryStore([{ orderId: STUCK, code, atUtc: '2026-11-18T18:57:14.973Z' }]);
-        const h = harness({ poll: { eligibleOrders: [] } }, store.memory);
+        const h = harness({ poll: { eligibleOrders: [], pendingPreIntentOrderIds: [STUCK] } }, store.memory);
         await h.trigger.runCycle('test');
         expect(h.calls).toHaveLength(1); // poll only
       }
@@ -186,12 +188,34 @@ describe('order import trigger', () => {
     it('stops retrying once the ceremony answers with a terminal code', async () => {
       const store = memoryStore([{ orderId: STUCK, code: 'SHOPIFY_READ_FAILED', atUtc: '2026-11-18T18:57:14.973Z' }]);
       const h = harness({
-        poll: { eligibleOrders: [] },
+        poll: { eligibleOrders: [], pendingPreIntentOrderIds: [STUCK] },
         importResult: { status: 'denied', code: 'IMPORT_ALREADY_RESOLVED' },
       }, store.memory);
       await h.trigger.runCycle('test');
       await h.trigger.runCycle('test');
       expect(h.calls.filter((argv) => argv[1] === 'import')).toHaveLength(1);
+    });
+
+    it('ignores legacy failure entries outside the active page and a denied poll', async () => {
+      const store = memoryStore([{ orderId: STUCK, code: 'SHOPIFY_READ_FAILED', atUtc: '2026-09-26T00:00:00.000Z' }]);
+      for (const poll of [{ pendingPreIntentOrderIds: [] }, { status: 'denied' }]) {
+        const h = harness({ poll }, store.memory);
+        await h.trigger.runCycle('test');
+        expect(h.calls).toHaveLength(1);
+      }
+    });
+
+    it('defers the rest of a rate-limited page and excludes out-of-window fresh orders', async () => {
+      const h = harness({
+        poll: { eligibleOrders: [
+          { orderId: NEWER, creationDateUtc: '2020-01-01T00:00:00.000Z' },
+          { orderId: NEWER },
+        ], pendingPreIntentOrderIds: [STUCK, '20-00000-00001'] },
+        importResult: { status: 'denied', code: 'MIGRATION_STORE_ORDER_RATE_LIMITED' },
+      });
+      await h.trigger.runCycle('test');
+      expect(h.calls.map((argv) => argv[1])).toEqual(['poll', 'import']);
+      expect(h.calls[1]).toContain(STUCK);
     });
 
     it('does not retry when the poll itself produced no summary', async () => {
@@ -204,7 +228,7 @@ describe('order import trigger', () => {
     it('treats a dedup link as success: no reconcile, memory cleared', async () => {
       const store = memoryStore([{ orderId: STUCK, code: 'SHOPIFY_READ_FAILED', atUtc: '2026-11-18T18:57:14.973Z' }]);
       const h = harness({
-        poll: { eligibleOrders: [] },
+        poll: { eligibleOrders: [], pendingPreIntentOrderIds: [STUCK] },
         importResult: { status: 'DEDUP_LINKED_EXISTING', orderId: STUCK },
       }, store.memory);
       await h.trigger.runCycle('test');

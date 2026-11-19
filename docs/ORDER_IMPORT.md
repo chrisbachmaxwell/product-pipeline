@@ -275,11 +275,12 @@ retried. Never treat an import as a diagnostic or a test.
   from the previous page are still open. Import or dedup-link each one; the
   next poll advances the durable cursor automatically and resumes. With the
   automated trigger armed, an order whose latest import denial is a
-  recoverable pre-intent code (`RETRYABLE_PRE_INTENT_IMPORT_CODES` in
-  `src/server/order-import-trigger.ts`: transient Shopify/eBay reads, SKU
-  grammar/resolution, write scope) is re-imported every cycle, so fixing the
-  cause drains the pipeline with no operator step (#256, L130). Any other
-  denial still needs the operator.
+  recoverable pre-intent code is retried only while its observation is on the
+  current unadvanced page, within 24 hours of eBay creation, eligible after
+  cutover, unresolved, unlinked and without any previous import intent.
+  Unattempted orders deferred by the batch or rate limit remain on that page.
+  The production store admits up to five order intents per rolling hour, at
+  least ten seconds apart. An ambiguous dispatch requires reconciliation.
 - **`DEDUP_LINKED_EXISTING`**: the order already exists in Shopify (e.g.
   created by Marketplace Connect before its disable). Nothing to do — the
   link permanently prevents a ProductPipeline duplicate.

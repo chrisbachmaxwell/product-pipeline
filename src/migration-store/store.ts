@@ -157,6 +157,7 @@ export type MigrationStoreErrorCode =
   | 'ACCOUNT_DRIFT'
   | 'CONFLICT'
   | 'NOT_FOUND'
+  | 'ORDER_RATE_LIMITED'
   | 'WATERMARK_REQUIRED'
   | 'OWNERSHIP_DENIED'
   | 'APPROVAL_DENIED'
@@ -1426,6 +1427,18 @@ class MigrationStoreImpl {
             'WATERMARK_REQUIRED',
             'Order import intent requires an eligible unresolved post-watermark observation',
           );
+        }
+        if (this.scope.ebayEnvironment === 'production') {
+          // Count admissions before any approval or external effect. The immediate
+          // transaction serializes distinct orders and survives process restarts.
+          const recent = this.database.prepare(
+            `SELECT COUNT(*) AS count, MAX(created_epoch_ms) AS latest
+             FROM idempotency_intents WHERE scope_key = ? AND action = 'import_shopify_order'
+               AND created_epoch_ms >= ?`,
+          ).get(this.scopeKey, created.epochMs - 3_600_000) as { count: number; latest: number | null };
+          if (recent.count >= 5 || (recent.latest !== null && created.epochMs - recent.latest < 10_000)) {
+            throw new MigrationStoreError('ORDER_RATE_LIMITED', 'Production order creation rate limit reached');
+          }
         }
       }
       this.database

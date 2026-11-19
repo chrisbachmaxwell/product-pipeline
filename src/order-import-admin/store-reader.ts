@@ -32,6 +32,7 @@ export type OrderImportStateReader = Readonly<{
   ) => Readonly<{ linkId: string; linkKind: string }> | null;
   getCurrentCursor: () => Readonly<{ ordinal: number; cursorValue: string }> | null;
   getUnadvancedPage: () => UnadvancedPageState | null;
+  getPendingPreIntentOrders: (pageId: string, nowMs: number) => string[];
   close: () => void;
 }>;
 
@@ -99,6 +100,23 @@ export function openOrderImportStateReader(input: Readonly<{
          WHERE scope_key = ? ORDER BY ordinal DESC LIMIT 1`,
       ).get(scopeKey) as { ordinal: number; cursorValue: string } | undefined;
       return row ? Object.freeze({ ordinal: row.ordinal, cursorValue: row.cursorValue }) : null;
+    },
+
+    getPendingPreIntentOrders: (pageId: string, nowMs: number) => {
+      const rows = database.prepare(
+        `SELECT o.observation_id AS observationId FROM order_observations o
+         WHERE o.scope_key = ? AND o.page_id = ? AND o.eligible_after_watermark = 1
+           AND o.source_created_epoch_ms BETWEEN ? AND ?
+           AND NOT EXISTS (SELECT 1 FROM cursor_advances c WHERE c.page_id = o.page_id)
+           AND NOT EXISTS (SELECT 1 FROM order_observation_resolutions r WHERE r.observation_id = o.observation_id)
+           AND NOT EXISTS (SELECT 1 FROM order_links l WHERE l.ebay_order_identity_key = o.ebay_order_identity_key)
+           AND NOT EXISTS (SELECT 1 FROM idempotency_intents i
+             WHERE i.scope_key = o.scope_key AND i.action = 'import_shopify_order'
+               AND i.source_identity_key = o.ebay_order_identity_key)
+         ORDER BY o.source_created_epoch_ms, o.observation_id LIMIT 50`,
+      ).all(scopeKey, pageId, nowMs - 24 * 60 * 60_000, nowMs) as Array<{ observationId: string }>;
+      return rows.filter((row) => row.observationId.startsWith('observation:'))
+        .map((row) => row.observationId.slice('observation:'.length));
     },
 
     getUnadvancedPage: (): UnadvancedPageState | null => {

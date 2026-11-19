@@ -125,7 +125,7 @@ type World = {
   lastStderr: () => Record<string, any>;
 };
 
-function createWorld(): World {
+function createWorld(tickIntervalMs = 1_000): World {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'order-import-admin-'));
   fs.chmodSync(root, 0o700);
   roots.push(root);
@@ -137,7 +137,7 @@ function createWorld(): World {
   }).close();
 
   let tickMs = Date.parse('2026-08-19T18:00:00.000Z');
-  const now = (): Date => new Date(tickMs += 1_000);
+  const now = (): Date => new Date(tickMs += tickIntervalMs);
   const setClock = (iso: string): void => {
     tickMs = Math.max(tickMs, Date.parse(iso));
   };
@@ -454,6 +454,7 @@ describe('order-import operator CLI', () => {
     expect(world.lastStdout()).toMatchObject({
       status: 'blocked',
       code: 'POLL_PREVIOUS_PAGE_UNRESOLVED',
+      pendingPreIntentOrderIds: [ORDER_ID],
     });
     expect(world.exitCodes.at(-1)).toBe(1);
 
@@ -464,6 +465,45 @@ describe('order-import operator CLI', () => {
       expect(rawBytes).not.toContain(pii);
       expect(emitted).not.toContain(pii);
     }
+  });
+
+  it('resumes only recent open-page observations without an intent and admits five per rolling hour', async () => {
+    const world = createWorld(1);
+    await establishOwnership(world);
+    await establishWatermark(world);
+    world.setClock('2026-08-19T18:10:00.000Z');
+    const ids = Array.from({ length: 7 }, (_, i) => `19-15430-7770${i}`);
+    for (const id of ids) {
+      const order = ebayOrderFixture(id, '2026-08-19T18:03:00.000Z');
+      world.ebayListOrders.push(order);
+      world.ebayOrderDetails.set(id, order);
+    }
+    world.variantsBySku.set(SKU, VARIANT_GID);
+    const poll = () => world.run(['poll', '--migration-store', world.migrationDatabasePath, '--max-orders', '10']);
+    const attempt = (id: string) => world.run(['import', '--migration-store', world.migrationDatabasePath,
+      '--order-id', id, '--confirm-lightspeed']);
+    await poll();
+    for (let i = 0; i < 5; i++) {
+      world.setClock(`2026-08-19T18:${12 + i}:00.000Z`);
+      await attempt(ids[i]!);
+      expect(world.lastStdout().providerDispatchReported).toBe(true);
+      if (i === 0) {
+        await attempt(ids[1]!);
+        expect(world.lastStderr().code).toBe('MIGRATION_STORE_ORDER_RATE_LIMITED');
+        expect(world.orderCreateCalls).toHaveLength(1);
+      }
+    }
+    await attempt(ids[5]!);
+    expect(world.lastStderr().code).toBe('MIGRATION_STORE_ORDER_RATE_LIMITED');
+    expect(world.orderCreateCalls).toHaveLength(5);
+    await poll();
+    expect(world.lastStdout().pendingPreIntentOrderIds).toEqual(ids.slice(5));
+    world.setClock('2026-08-19T19:13:00.000Z');
+    await attempt(ids[5]!);
+    expect(world.orderCreateCalls).toHaveLength(6);
+    world.setClock('2026-08-20T18:04:00.000Z');
+    await poll();
+    expect(world.lastStdout().pendingPreIntentOrderIds).toEqual([]);
   });
 
   it('imports exactly one order end to end and persists no PII byte', async () => {
