@@ -204,6 +204,7 @@ function createWorld(): World {
       createShopifyAdapter: () => createShopifyOrderAdapter({
         fetchImpl: shopifyFetch,
         getAccessToken: async () => 'shopify-offline-test-token',
+        readRetryPauseMs: 0,
       }),
       now: () => new Date(NOW_UTC),
       io,

@@ -31,6 +31,38 @@ const SAFE_TAG = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;
 // search token (the quote itself stays excluded) and only an exact echo
 // binds the variant.
 const SAFE_SKU = /^[A-Za-z0-9][A-Za-z0-9._ /-]{0,127}$/;
+/**
+ * Incident #256 (L130): one throttled/overloaded Shopify READ denied an
+ * import with SHOPIFY_READ_FAILED, and because the poll is strictly ordered
+ * that froze every paid order behind it. Shopify answers throttling with a
+ * 429 OR a 200 whose errors are all THROTTLED (the L117 / 2026-09-11 lesson
+ * the census and product-content reads already learned). The dedup, variant
+ * and scope READS run before any intent exists and are side-effect free, so
+ * they retry such answers a bounded number of times after a pause. The
+ * orderCreate MUTATION is never retried here: past the dispatch boundary the
+ * outcome is unknown and only reconciliation decides. Anything else, and the
+ * final attempt, still fails closed.
+ */
+export const SHOPIFY_READ_ATTEMPTS = 3;
+const DEFAULT_READ_RETRY_PAUSE_MS = 8_000;
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 504);
+}
+
+function isThrottledBody(text: string): boolean {
+  try {
+    const errors = (JSON.parse(text) as { errors?: unknown }).errors;
+    return Array.isArray(errors) && errors.length > 0 && errors.every((entry) =>
+      entry !== null && typeof entry === 'object'
+      && (entry as { extensions?: { code?: unknown } }).extensions?.code === 'THROTTLED');
+  } catch {
+    return false;
+  }
+}
+
+class RetryableShopifyRead extends Error {}
+
 const ORDER_GID = /^gid:\/\/shopify\/Order\/[^/\s]+$/;
 const VARIANT_GID = /^gid:\/\/shopify\/ProductVariant\/[^/\s]+$/;
 
@@ -122,14 +154,36 @@ const ORDER_CREATE_MUTATION = `mutation OrderImportCreate($order: OrderCreateOrd
 export function createShopifyOrderAdapter(dependencies: Readonly<{
   fetchImpl?: FetchLike;
   getAccessToken: () => Promise<string>;
+  /** Pause between read retries; tests pass 0. */
+  readRetryPauseMs?: number;
 }>): ShopifyOrderAdapter {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const readRetryPauseMs = dependencies.readRetryPauseMs ?? DEFAULT_READ_RETRY_PAUSE_MS;
 
   async function graphql(
     operationName: string,
     query: string,
     variables: Record<string, unknown>,
     failure: 'SHOPIFY_READ_FAILED' | 'SHOPIFY_WRITE_FAILED',
+  ): Promise<Record<string, any>> {
+    // Writes get exactly one attempt; only reads may retry.
+    const attempts = failure === 'SHOPIFY_READ_FAILED' ? SHOPIFY_READ_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await graphqlOnce(operationName, query, variables, failure, attempt < attempts);
+      } catch (error) {
+        if (!(error instanceof RetryableShopifyRead)) throw error;
+        await new Promise((resolve) => { setTimeout(resolve, readRetryPauseMs); });
+      }
+    }
+  }
+
+  async function graphqlOnce(
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>,
+    failure: 'SHOPIFY_READ_FAILED' | 'SHOPIFY_WRITE_FAILED',
+    mayRetry: boolean,
   ): Promise<Record<string, any>> {
     let token = '';
     try {
@@ -145,27 +199,41 @@ export function createShopifyOrderAdapter(dependencies: Readonly<{
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const response = await fetchImpl(SHOPIFY_GRAPHQL_URL, {
-        method: 'POST',
-        headers: {
-          'X-Shopify-Access-Token': token,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body,
-        redirect: 'error',
-        signal: controller.signal,
-      });
+      let response: Response;
+      try {
+        response = await fetchImpl(SHOPIFY_GRAPHQL_URL, {
+          method: 'POST',
+          headers: {
+            'X-Shopify-Access-Token': token,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body,
+          redirect: 'error',
+          signal: controller.signal,
+        });
+      } catch {
+        // Network failure or the 20 s timeout: NOT retried in-process, so a
+        // slow provider cannot stretch one import toward the trigger's
+        // 5-minute kill. The order-import trigger retries the whole
+        // pre-intent import on its next cycle instead (#256).
+        return deny(failure);
+      }
       const declaredLength = Number(response.headers.get('content-length') ?? '0');
       if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) deny(failure);
       const text = await response.text();
       if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) deny(failure);
+      if (mayRetry && (isTransientStatus(response.status)
+        || (response.ok && isThrottledBody(text)))) {
+        throw new RetryableShopifyRead();
+      }
       if (!response.ok) deny(failure);
       const parsed = asRecord(JSON.parse(text), failure);
       if (parsed.errors !== undefined || !parsed.data) deny(failure);
       return asRecord(parsed.data, failure);
     } catch (error) {
       if (error instanceof ShopifyOrderAdapterError) throw error;
+      if (error instanceof RetryableShopifyRead) throw error;
       return deny(failure);
     } finally {
       clearTimeout(timeout);

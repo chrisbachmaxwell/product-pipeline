@@ -125,7 +125,7 @@ type World = {
   lastStderr: () => Record<string, any>;
 };
 
-function createWorld(): World {
+function createWorld(tickIntervalMs = 1_000): World {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'order-import-admin-'));
   fs.chmodSync(root, 0o700);
   roots.push(root);
@@ -137,7 +137,7 @@ function createWorld(): World {
   }).close();
 
   let tickMs = Date.parse('2026-08-19T18:00:00.000Z');
-  const now = (): Date => new Date(tickMs += 1_000);
+  const now = (): Date => new Date(tickMs += tickIntervalMs);
   const setClock = (iso: string): void => {
     tickMs = Math.max(tickMs, Date.parse(iso));
   };
@@ -270,6 +270,7 @@ function createWorld(): World {
     }),
     createShopifyAdapter: () => createShopifyOrderAdapter({
       fetchImpl: shopifyFetch,
+      readRetryPauseMs: 0,
       getAccessToken: async () => 'shopify-offline-test-token',
     }),
     now,
@@ -453,6 +454,7 @@ describe('order-import operator CLI', () => {
     expect(world.lastStdout()).toMatchObject({
       status: 'blocked',
       code: 'POLL_PREVIOUS_PAGE_UNRESOLVED',
+      pendingPreIntentOrderIds: [ORDER_ID],
     });
     expect(world.exitCodes.at(-1)).toBe(1);
 
@@ -463,6 +465,45 @@ describe('order-import operator CLI', () => {
       expect(rawBytes).not.toContain(pii);
       expect(emitted).not.toContain(pii);
     }
+  });
+
+  it('resumes only recent open-page observations without an intent and admits five per rolling hour', async () => {
+    const world = createWorld(1);
+    await establishOwnership(world);
+    await establishWatermark(world);
+    world.setClock('2026-08-19T18:10:00.000Z');
+    const ids = Array.from({ length: 7 }, (_, i) => `19-15430-7770${i}`);
+    for (const id of ids) {
+      const order = ebayOrderFixture(id, '2026-08-19T18:03:00.000Z');
+      world.ebayListOrders.push(order);
+      world.ebayOrderDetails.set(id, order);
+    }
+    world.variantsBySku.set(SKU, VARIANT_GID);
+    const poll = () => world.run(['poll', '--migration-store', world.migrationDatabasePath, '--max-orders', '10']);
+    const attempt = (id: string) => world.run(['import', '--migration-store', world.migrationDatabasePath,
+      '--order-id', id, '--confirm-lightspeed']);
+    await poll();
+    for (let i = 0; i < 5; i++) {
+      world.setClock(`2026-08-19T18:${12 + i}:00.000Z`);
+      await attempt(ids[i]!);
+      expect(world.lastStdout().providerDispatchReported).toBe(true);
+      if (i === 0) {
+        await attempt(ids[1]!);
+        expect(world.lastStderr().code).toBe('MIGRATION_STORE_ORDER_RATE_LIMITED');
+        expect(world.orderCreateCalls).toHaveLength(1);
+      }
+    }
+    await attempt(ids[5]!);
+    expect(world.lastStderr().code).toBe('MIGRATION_STORE_ORDER_RATE_LIMITED');
+    expect(world.orderCreateCalls).toHaveLength(5);
+    await poll();
+    expect(world.lastStdout().pendingPreIntentOrderIds).toEqual(ids.slice(5));
+    world.setClock('2026-08-19T19:13:00.000Z');
+    await attempt(ids[5]!);
+    expect(world.orderCreateCalls).toHaveLength(6);
+    world.setClock('2026-08-20T18:04:00.000Z');
+    await poll();
+    expect(world.lastStdout().pendingPreIntentOrderIds).toEqual([]);
   });
 
   it('imports exactly one order end to end and persists no PII byte', async () => {
@@ -998,5 +1039,87 @@ describe('Shopify order adapter target grammar (L77 / #150)', () => {
     }
     expect(queries).toEqual([]);
     await expect(adapter.findVariantGidBySku(L77_SKU)).resolves.toBeNull();
+  });
+});
+
+// Incident #256 (L130): one throttled Shopify read denied the import of
+// 19-15430-77787 with SHOPIFY_READ_FAILED and froze the strictly-ordered
+// order pipeline. Reads retry an explicit throttle/5xx a bounded number of
+// times; the orderCreate mutation never retries.
+describe('Shopify order adapter transient read retry (#256)', () => {
+  const STUCK_ORDER_ID = '19-15430-77787';
+  const THROTTLED = { errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }] };
+  const EMPTY_ORDERS = { data: { orders: { nodes: [], pageInfo: { hasNextPage: false } } } };
+
+  function scripted(responses: Array<() => Response>) {
+    let calls = 0;
+    const operations: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (String(input) !== SHOPIFY_URL) throw new Error(`unexpected URL: ${String(input)}`);
+      operations.push((JSON.parse(String(init?.body)) as { operationName: string }).operationName);
+      const next = responses[Math.min(calls, responses.length - 1)]!;
+      calls += 1;
+      return next();
+    };
+    const adapter = createShopifyOrderAdapter({
+      fetchImpl,
+      getAccessToken: async () => 'shopify-offline-test-token',
+      readRetryPauseMs: 0,
+    });
+    return { adapter, operations, calls: () => calls };
+  }
+
+  it('retries a THROTTLED 200 and a 429 on the dedup reads, then succeeds', async () => {
+    const fake = scripted([
+      () => jsonResponse(THROTTLED),
+      () => jsonResponse({}, 429),
+      () => jsonResponse(EMPTY_ORDERS),
+    ]);
+    await expect(fake.adapter.findOrderGidsByTag(`eBay-${STUCK_ORDER_ID}`)).resolves.toEqual([]);
+    expect(fake.calls()).toBe(3);
+  });
+
+  it('retries a 503 on the variant lookup', async () => {
+    const fake = scripted([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({ data: { productVariants: { nodes: [] } } }),
+    ]);
+    await expect(fake.adapter.findVariantGidBySku('ABC-U1')).resolves.toBeNull();
+    expect(fake.calls()).toBe(2);
+  });
+
+  it('fails closed after the bounded attempts, and at once on a non-throttle error', async () => {
+    const throttled = scripted([() => jsonResponse(THROTTLED)]);
+    await expect(throttled.adapter.findOrderGidsBySourceIdentifier(STUCK_ORDER_ID))
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(throttled.calls()).toBe(3);
+
+    const mixed = scripted([() => jsonResponse({ errors: [
+      { message: 'Throttled', extensions: { code: 'THROTTLED' } },
+      { message: 'Field does not exist' },
+    ] })]);
+    await expect(mixed.adapter.findOrderGidsByTag(`eBay-${STUCK_ORDER_ID}`))
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(mixed.calls()).toBe(1);
+
+    const forbidden = scripted([() => jsonResponse({}, 403)]);
+    await expect(forbidden.adapter.getInstallationScopes())
+      .rejects.toMatchObject({ code: 'SHOPIFY_READ_FAILED' });
+    expect(forbidden.calls()).toBe(1);
+  });
+
+  it('never retries the orderCreate mutation', async () => {
+    const fake = scripted([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({ data: { orderCreate: { order: { id: 'gid://shopify/Order/1' }, userErrors: [] } } }),
+    ]);
+    await expect(fake.adapter.createOrder({})).rejects.toMatchObject({ code: 'SHOPIFY_WRITE_FAILED' });
+    const throttledWrite = scripted([
+      () => jsonResponse(THROTTLED),
+      () => jsonResponse({ data: { orderCreate: { order: { id: 'gid://shopify/Order/1' }, userErrors: [] } } }),
+    ]);
+    await expect(throttledWrite.adapter.createOrder({})).rejects.toMatchObject({ code: 'SHOPIFY_WRITE_FAILED' });
+    expect(fake.calls()).toBe(1);
+    expect(throttledWrite.calls()).toBe(1);
   });
 });

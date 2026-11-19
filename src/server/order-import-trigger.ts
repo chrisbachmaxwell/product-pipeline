@@ -13,19 +13,54 @@ import { info, warn } from '../utils/logger.js';
  * grep the codebase for it). Order ids and ceremony codes only — no PII.
  */
 const FAILURE_MEMORY_FILE = '/data/product-pipeline/order-import-failures.json';
-const FAILURE_MEMORY_CAP = 20;
+const FAILURE_MEMORY_CAP = 50; // One full bounded poll page.
 
+export type OrderImportFailureEntry = { orderId: string; code: string; atUtc: string };
+
+function readFailureEntries(): OrderImportFailureEntry[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FAILURE_MEMORY_FILE, 'utf8')) as unknown;
+    return Array.isArray(parsed)
+      ? (parsed as unknown[]).filter((entry): entry is OrderImportFailureEntry => {
+        const candidate = entry as Partial<OrderImportFailureEntry> | null;
+        return candidate !== null && typeof candidate === 'object'
+          && typeof candidate.orderId === 'string' && typeof candidate.code === 'string'
+          && typeof candidate.atUtc === 'string';
+      })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeFailureEntries(entries: readonly OrderImportFailureEntry[]): void {
+  fs.mkdirSync(path.dirname(FAILURE_MEMORY_FILE), { recursive: true });
+  fs.writeFileSync(FAILURE_MEMORY_FILE, JSON.stringify(entries.slice(-FAILURE_MEMORY_CAP)));
+}
+
+/**
+ * Latest failure per order (#256): a stuck order is retried every cycle, so
+ * appending would let one order's repeats evict every other order's entry.
+ */
 export function recordOrderImportFailure(orderId: string, code: string): void {
   try {
-    let entries: Array<{ orderId: string; code: string; atUtc: string }> = [];
-    try {
-      const parsed = JSON.parse(fs.readFileSync(FAILURE_MEMORY_FILE, 'utf8')) as unknown;
-      if (Array.isArray(parsed)) entries = parsed as typeof entries;
-    } catch { /* fresh */ }
+    const entries = readFailureEntries().filter((entry) => entry.orderId !== orderId);
     entries.push({ orderId, code: code.slice(0, 80), atUtc: new Date().toISOString() });
-    fs.mkdirSync(path.dirname(FAILURE_MEMORY_FILE), { recursive: true });
-    fs.writeFileSync(FAILURE_MEMORY_FILE, JSON.stringify(entries.slice(-FAILURE_MEMORY_CAP)));
+    writeFailureEntries(entries);
   } catch { /* best effort */ }
+}
+
+/** The order got past the denial (dispatched or dedup-linked): forget it. */
+export function clearOrderImportFailure(orderId: string): void {
+  try {
+    const entries = readFailureEntries();
+    const kept = entries.filter((entry) => entry.orderId !== orderId);
+    if (kept.length !== entries.length) writeFailureEntries(kept);
+  } catch { /* best effort */ }
+}
+
+export function listOrderImportFailures(): OrderImportFailureEntry[] {
+  return readFailureEntries();
 }
 
 export function lastOrderImportFailure(orderId: string): { code: string; atUtc: string } | null {
@@ -65,6 +100,45 @@ export function lastOrderImportFailure(orderId: string): { code: string; atUtc: 
  * {attemptId}) that are substituted only with values matching strict
  * grammars, so nothing the poll returns can smuggle an argument.
  */
+
+/**
+ * Incident #256 (L130): the poll lists an order as eligible ONLY on the poll
+ * that first observes it; afterwards it is "already observed". The trigger
+ * imported only that list, so ONE denied import was never attempted again —
+ * and the strictly-ordered poll blocks every newer page behind the
+ * unresolved observation. A single transient SHOPIFY_READ_FAILED therefore
+ * froze the whole order pipeline until an operator ran import by hand, and
+ * the watchdog's "fix the cause and the pipeline drains automatically" was
+ * false.
+ *
+ * A retry needs the current poll's recent pre-intent observation. A
+ * remembered denial can further restrict that set. Lost failure-file
+ * history cannot make a resolved, stale, or already-attempted order eligible.
+ * Provider mutations are never retried by the HTTP adapter.
+ */
+export const RETRYABLE_PRE_INTENT_IMPORT_CODES: ReadonlySet<string> = new Set([
+  'MIGRATION_STORE_ORDER_RATE_LIMITED',
+  'SHOPIFY_READ_FAILED',
+  'SHOPIFY_AUTHORITY_UNAVAILABLE',
+  'SHOPIFY_TARGET_INVALID',
+  'SHOPIFY_SKU_INVALID',
+  'ORDER_READ_FAILED',
+  'ORDER_READ_AUTHORITY_UNAVAILABLE',
+  'IMPORT_SKU_UNRESOLVED',
+  'IMPORT_SHOPIFY_WRITE_SCOPE_MISSING',
+]);
+
+export type OrderImportFailureMemory = Readonly<{
+  record: (orderId: string, code: string) => void;
+  clear: (orderId: string) => void;
+  list: () => readonly OrderImportFailureEntry[];
+}>;
+
+const fileFailureMemory: OrderImportFailureMemory = Object.freeze({
+  record: recordOrderImportFailure,
+  clear: clearOrderImportFailure,
+  list: listOrderImportFailures,
+});
 
 const ORDER_ID = /^[0-9]{2}-[0-9]{5}-[0-9]{5,8}$/u;
 const JOB_ID = /^order-import-job:[0-9a-f-]{36}$/u;
@@ -157,7 +231,9 @@ export function createOrderImportTrigger(dependencies: Readonly<{
   setTicker?: (callback: () => void, ms: number) => unknown;
   delay?: (ms: number) => Promise<void>;
   now?: () => number;
+  failureMemory?: OrderImportFailureMemory;
 }> = {}) {
+  const failureMemory = dependencies.failureMemory ?? fileFailureMemory;
   const runStep = dependencies.runStep ?? createProcessStepRunner();
   const pollArgv = dependencies.pollArgv !== undefined
     ? dependencies.pollArgv : configuredOrderPollArgv();
@@ -185,16 +261,35 @@ export function createOrderImportTrigger(dependencies: Readonly<{
       const eligible = Array.isArray(poll.json?.eligibleOrders)
         ? (poll.json.eligibleOrders as Array<Record<string, unknown>>)
         : [];
-      const orderIds = eligible
+      const observedNow = now();
+      const freshIds = eligible
+        .filter((entry) => {
+          const created = typeof entry?.creationDateUtc === 'string' ? Date.parse(entry.creationDateUtc) : NaN;
+          return created <= observedNow && created >= observedNow - 24 * 60 * 60_000;
+        })
         .map((entry) => entry?.orderId)
-        .filter((value): value is string => typeof value === 'string' && ORDER_ID.test(value))
-        .slice(0, MAX_IMPORTS_PER_CYCLE);
+        .filter((value): value is string => typeof value === 'string' && ORDER_ID.test(value));
       if (poll.json === null) {
         warn('ORDER_IMPORT_POLL_FAILED: produced no summary');
         return;
       }
+      // Previously denied pre-intent orders first: they are older than
+      // anything this poll just recorded, and while one is unresolved the
+      // poll blocks every newer page (#256). Runs even on a blocked poll.
+      // The old file can contain several entries per ID, including orders
+      // settled months ago. Only the current page can nominate a candidate.
+      const latestFailure = new Map(failureMemory.list().map((entry) => [entry.orderId, entry.code]));
+      const pending = poll.json.pendingPreIntentOrderIds;
+      const retryIds = Array.isArray(pending) ? pending.filter((id): id is string => {
+        if (typeof id !== 'string' || !ORDER_ID.test(id)) return false;
+        const code = latestFailure.get(id);
+        // No recorded failure also covers an unattempted tail of a bounded cycle.
+        return code === undefined || RETRYABLE_PRE_INTENT_IMPORT_CODES.has(code);
+      }) : [];
+      const orderIds = [...new Set([...retryIds, ...freshIds])].slice(0, MAX_IMPORTS_PER_CYCLE);
       if (orderIds.length === 0) return;
-      info(`[Order Import] ${reason}: ${orderIds.length} eligible order(s)`);
+      info(`[Order Import] ${reason}: ${orderIds.length} order(s) to import`
+        + (retryIds.length > 0 ? ` (${retryIds.length} retry of a pre-intent denial)` : ''));
       for (const orderId of orderIds) {
         const imported = await runStep(
           substituteArgv(importArgv as readonly string[], { orderId }),
@@ -203,7 +298,15 @@ export function createOrderImportTrigger(dependencies: Readonly<{
         if (imported.json === null || status === 'denied') {
           const code = typeof imported.json?.code === 'string' ? imported.json.code : 'no-summary';
           warn(`ORDER_IMPORT_FAILED: ${orderId} ${code}`);
-          recordOrderImportFailure(orderId, code);
+          failureMemory.record(orderId, code);
+          if (code === 'MIGRATION_STORE_ORDER_RATE_LIMITED') break;
+          continue;
+        }
+        // Past the denial: the ceremony dispatched or dedup-linked. Never
+        // retry this order again from the trigger; reconcile owns it now.
+        failureMemory.clear(orderId);
+        if (status === 'DEDUP_LINKED_EXISTING') {
+          info(`[Order Import] ${orderId} already in Shopify; linked, no order created`);
           continue;
         }
         const jobId = imported.json.jobId;

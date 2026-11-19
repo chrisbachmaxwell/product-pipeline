@@ -1,6 +1,6 @@
 # ProductPipeline — PROJECT.md
 
-> **Last updated: 2026-11-13. Any agent working on this project MUST update this file before finishing.**
+> **Last updated: 2026-11-18. Any agent working on this project MUST update this file before finishing.**
 >
 > **Current direction:** `PROJECT_BRAIN.md` is the canonical project orientation and safety boundary. This file retains detailed architecture, historical intent, decisions, and changelog context. Where they conflict, follow the brain and verify current source.
 
@@ -342,6 +342,14 @@ Test files: `src/services/__tests__/`
 10. **Complete the parity evidence chain** — Run the reviewed local collector only after exact ephemeral read authority and signing context are supplied; obtain a fresh independently signed Marketplace Connect attestation/export; then translate all three source artifacts into reconciliation v2 with an archival verification context
 
 ## Recent Changes
+
+### 2026-11-19: Recover the active eBay order queue
+
+Production reported seven paid, unfulfilled orders during incident #256. The oldest observation had no import intent, job or link. Both Shopify identity searches and the independent legacy mapping and total/date checks found no match for any of the seven. The production ledger verified ProductPipeline as the single order writer. The retry file also contained a September failure. The scheduler now obtains recovery candidates from the current unadvanced page, limited to unresolved post-cutover orders created in the past 24 hours with no link or import intent. The production store serializes admission to five order intents per rolling hour and one per ten seconds. Deferred orders remain on the page for the next poll.
+
+### 2026-11-18: A Denied Order Import Is Retried Automatically; Shopify Order Reads Retry a Throttle (L130, incident #256)
+
+The watchdog reported eBay order `19-15430-77787` blocking the order pipeline. Its import was denied once with `SHOPIFY_READ_FAILED` at 18:57 UTC and never attempted again. There were two defects. (1) `src/order-import-admin/shopify-order-adapter.ts` failed every Shopify read on its first 429, 5xx or `THROTTLED` 200. The dedup, variant and scope reads now retry those answers up to `SHOPIFY_READ_ATTEMPTS` = 3 times with an 8 s pause (L117 pattern). Network errors and timeouts are not retried in-process, so latency stays bounded. `orderCreate` still gets exactly one attempt. (2) This was the reason the pipeline stayed frozen: the poll lists an order as eligible only on the poll that first observes it, and `src/server/order-import-trigger.ts` imported only that list. A denied import was therefore never retried, and the strictly ordered poll blocked every newer page behind it. Each cycle now re-imports every order whose latest recorded denial is in `RETRYABLE_PRE_INTENT_IMPORT_CODES`, oldest first and ahead of fresh orders, including when the poll is blocked. Every one of those codes is raised before the ceremony creates an intent, so no write exists for the order. The re-run starts with the ceremony's own dedup, eligibility and one-intent guards. The failure memory now keeps the latest failure per order. It is cleared once an import gets past the denial. `DEDUP_LINKED_EXISTING` is no longer misreported as `MALFORMED_JOB_IDS`. Tests: trigger retry and ordering, the non-retryable codes, adapter throttle/5xx retry, the attempt bound, and no retry of the write. Each new test was mutation-checked against the old code. Both files are protected paths, so this PR needs a human merge.
 
 ### 2026-11-13: Publish-All Retries eBay's Publish-Time "Availability not found" Once (L129, incident #254)
 
