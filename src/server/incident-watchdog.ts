@@ -39,7 +39,7 @@ export type Incident = {
   /** Stable fingerprint: code + subject. */
   id: string;
   severity: 'critical' | 'warning';
-  code: 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'PRICE_SYNC_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'PUBLISH_ITEM_BLOCKED' | 'SNAPSHOT_STALE';
+  code: 'ORDER_IMPORT_RATE_WAIT' | 'ORDER_PIPELINE_BLOCKED' | 'OVERSELL_EXPOSURE' | 'END_DISPATCH_REJECTED' | 'PRICE_SYNC_REJECTED' | 'UNRESOLVED_CREATE_AGING' | 'FULFILLMENT_STUCK' | 'PUBLISH_RUN_STOPPED' | 'PUBLISH_ITEM_BLOCKED' | 'SNAPSHOT_STALE';
   sku: string | null;
   title: string;
   detail: string;
@@ -161,6 +161,7 @@ export function evaluateIncidentCandidates(input: {
   nowMs: number;
   /** Test seam; defaults to the adapter's provider-rejections ring. */
   providerRejections?: unknown;
+  getOrderFailure?: typeof lastOrderImportFailure;
 }): Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> {
   const candidates: Array<Pick<Incident, 'id' | 'severity' | 'code' | 'sku' | 'title' | 'detail' | 'operatorOnly'>> = [];
   const { snapshot, signals, nowMs } = input;
@@ -168,13 +169,33 @@ export function evaluateIncidentCandidates(input: {
   const stuckOrder = signals?.oldestUnresolvedOrder ?? null;
   if (stuckOrder !== null) {
     const ageMs = nowMs - Date.parse(stuckOrder.observedAtUtc);
-    if (Number.isFinite(ageMs) && ageMs > 30 * 60_000) {
+    const failure = (input.getOrderFailure ?? lastOrderImportFailure)(stuckOrder.orderId);
+    const failureMs = Date.parse(failure?.atUtc ?? '');
+    const nextAdmissionMs = (stuckOrder.fifthLatestIntentMs ?? NaN) + 3_600_000;
+    // A fresh denial on this order and the five durable admissions must
+    // agree. Allow one watchdog interval for the next scheduled poll.
+    const paced = failure?.code === 'MIGRATION_STORE_ORDER_RATE_LIMITED'
+      && failureMs >= Date.parse(stuckOrder.observedAtUtc) && failureMs <= nowMs
+      && nowMs - failureMs <= 2 * EVALUATION_INTERVAL_MS
+      && failureMs <= nextAdmissionMs && nextAdmissionMs <= nowMs + 3_600_000
+      && nowMs <= nextAdmissionMs + EVALUATION_INTERVAL_MS
+      && (stuckOrder.sourceCreatedMs ?? 0) >= nowMs - 24 * 3_600_000;
+    if (paced) {
+      const minutes = Math.ceil((nextAdmissionMs - nowMs) / 60_000);
+      candidates.push({
+        id: `ORDER_IMPORT_RATE_WAIT:${stuckOrder.orderId}`, code: 'ORDER_IMPORT_RATE_WAIT',
+        severity: 'warning', sku: null, operatorOnly: true,
+        title: minutes > 0
+          ? `eBay orders queued. The hourly import limit opens in about ${minutes} min.`
+          : 'eBay orders queued for the next scheduled import.',
+        detail: 'The importer checks the queue on its regular schedule and admits up to five orders per rolling hour.',
+      });
+    } else if (Number.isFinite(ageMs) && ageMs > 30 * 60_000) {
       const hours = Math.round(ageMs / 3_600_000 * 10) / 10;
       // The recorded denial code turns this from "go read server logs" into
       // a greppable root-cause lead the fix-proposal agent can act on (L80:
       // on 2026-09-25 that code was SHOPIFY_TARGET_INVALID and lived only
       // in logs nobody reads).
-      const failure = lastOrderImportFailure(stuckOrder.orderId);
       candidates.push({
         id: `ORDER_PIPELINE_BLOCKED:${stuckOrder.orderId}`,
         severity: 'critical',

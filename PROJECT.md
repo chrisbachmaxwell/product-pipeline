@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-11-19: Show the scheduled wait for an order import slot
+
+After recovery of the first five orders in incident #256, production showed two eligible orders waiting on the hourly cap. The watchdog now uses the same ordering as the importer for observations received together. A recent rate-limit denial for the head order and five recorded admissions produce a queue warning with the expected wait. Missing evidence, an overdue retry or another failure still raises the critical alarm.
+
 ### 2026-11-19: Recover the active eBay order queue
 
 Production reported seven paid, unfulfilled orders during incident #256. The oldest observation had no import intent, job or link. Both Shopify identity searches and the independent legacy mapping and total/date checks found no match for any of the seven. The production ledger verified ProductPipeline as the single order writer. The retry file also contained a September failure. The scheduler now obtains recovery candidates from the current unadvanced page, limited to unresolved post-cutover orders created in the past 24 hours with no link or import intent. The production store serializes admission to five order intents per rolling hour and one per ten seconds. Deferred orders remain on the page for the next poll.
