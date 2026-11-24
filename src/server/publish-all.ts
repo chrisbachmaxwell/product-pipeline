@@ -548,6 +548,11 @@ function catalogMayRecover(failure: DraftFailure): boolean {
 function draftSkipReason(failure: DraftFailure | null, catalogDown: boolean): string {
   const code = failure?.code ?? 'unavailable';
   const detail = failure?.detail ? `: ${failure.detail}` : '';
+  if (code === 'LISTING_DRAFT_STALE') {
+    // Incident #261: a save by hand would race the same moving facts; the
+    // next run prepares the draft from a fresh read on its own.
+    return `The item's details changed while its draft was being prepared, even after a fresh read (${code}${detail}) — the next run retries it.`;
+  }
   if (code !== 'LISTING_DRAFT_UNAVAILABLE') {
     return `The draft could not be prepared (${code}${detail}) — open the item and save it once.`;
   }
@@ -862,7 +867,18 @@ export function startPublishAllRun(
             prepareFailure = draftFailure(error);
             warn(`[Publish All] draft for ${sku} was refused (${prepareFailure.code}`
               + `${prepareFailure.detail ? `: ${prepareFailure.detail}` : ''})`);
-            if (attempt > 0 || catalogDown || !catalogMayRecover(prepareFailure)) break;
+            if (attempt > 0 || catalogDown) break;
+            // Incident #261: LISTING_DRAFT_STALE here means the item's facts
+            // (store or eBay observation) or its latest revision moved between
+            // the read and the first-draft save — e.g. a webhook refresh or a
+            // concurrent save landed in between. The save compares content
+            // digests, so a fresh read rebases it; prepare once more at once
+            // instead of dead-ending in "open the item and save it once".
+            if (prepareFailure.code === 'LISTING_DRAFT_STALE') {
+              step('Re-reading the item after its details changed');
+              continue;
+            }
+            if (!catalogMayRecover(prepareFailure)) break;
             // Incident #228: the refusal usually follows a census that just
             // failed (throttled or overloaded provider). Re-reading at once
             // hits the same drained rate-limit bucket, so let it refill first.
