@@ -235,6 +235,23 @@ describe('stocked listings operator UI', () => {
     }))).toBe('Leftover eBay draft data to clean up');
   });
 
+  it('accepts a sold-out active row beside leftover eBay data, never a stocked one (L133)', () => {
+    const soldOut = (available: number) => listing({
+      shopify: { ...listing().shopify!, available },
+      ebay: { ...listing().ebay, inventoryItemCount: 1, offerCount: 1, unpublishedArtifactCount: 2 },
+    });
+    const zeroStockCoverage = {
+      ...response().coverage,
+      shopify: { ...response().coverage.shopify, positiveStockVariants: 0, excludedZeroInventory: 1 },
+    };
+    expect(isLiveCatalogResponse(response({
+      data: [soldOut(0)],
+      summary: { ...response().summary, totalInStock: 0 },
+      coverage: zeroStockCoverage,
+    }))).toBe(true);
+    expect(isLiveCatalogResponse(response({ data: [soldOut(1)] }))).toBe(false);
+  });
+
   it('fails closed on malformed, incomplete, empty, or inconsistent catalog responses', () => {
     expect(isLiveCatalogResponse(response())).toBe(true);
     expect(isLiveCatalogResponse(response({ data: [], total: 0 }))).toBe(true);

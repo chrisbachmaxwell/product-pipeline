@@ -527,7 +527,16 @@ export function buildLiveListingCatalogSnapshot(input: Readonly<{
       ? 0
       : inventoryItems.length + offers.length;
     if ((inventoryItems.length > 0 || offers.length > 0) && !artifactsAreExpected) {
-      reasons.add('ebay_unpublished_artifact');
+      // Incident #259 (L133): leftover Inventory data (an item-only residue,
+      // an unpublished or stale offer) beside ONE live listing does not make
+      // that listing ambiguous once the SKU is sold out everywhere -- the
+      // END target is the exact listing id, exactly as ambiguityBlocksNothing
+      // reasons above. Flagging it 'attention' hid a buyable sold-out
+      // listing from the --end-at-zero sweep (which scans only 'active'
+      // rows). The counts stay truthful (unpublishedArtifactCount > 0), and
+      // the reason returns once the listing has ended, so the leftover data
+      // is still cleaned up afterwards.
+      if (!ambiguityBlocksNothing) reasons.add('ebay_unpublished_artifact');
       unpublishedArtifactSkuCount += 1;
     }
 
