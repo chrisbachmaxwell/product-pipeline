@@ -343,6 +343,10 @@ Test files: `src/services/__tests__/`
 
 ## Recent Changes
 
+### 2026-11-24: The Sell-Out Sweep Ends a Live Listing Beside Leftover eBay Inventory Data (L133, incident #259)
+
+The watchdog reported `KFNIKFGFX-UNSN` at 0 in Shopify while eBay listing `147695941538` stayed buyable. The catalog row was `attention` with `ebay_unpublished_artifact`: Inventory API data for the SKU (an item-only residue and/or an offer not bound to the live listing) sat beside the one live listing, and the `--end-at-zero` sweep scans only `active` rows, so it never tried to end the listing. `src/server/live-listing-catalog.ts` now omits that reason when the SKU is sold out everywhere and has exactly one live listing (the same `ambiguityBlocksNothing` condition L104 introduced). The counts are not changed: `inventoryItemCount`, `offerCount` and `unpublishedArtifactCount` still report the leftover data. `src/server/listing-draft-service.ts` (`eligibleBasis`) relaxes only the artifact COUNT checks for an active row with known stock <= 0 and exactly one live listing. Every exact detail binding (seller, listing, SKU, offer, inventory item, lifecycle alignment) is still required. `src/web/operator-ui.ts` accepts that sold-out active shape, so the Listings page does not reject the whole response. A stocked or uncounted row, or one with a sellable twin, keeps the flag. After the listing ends, the reason comes back and the leftover data is still queued for cleanup. Regression: `src/server/sell-out-unpublished-artifact.test.ts` (real catalog → real sweep → `EndFixedPriceItem`) and `src/web/operator-ui.test.ts`. No protected path, ceremony, or provider call was changed.
+
 ### 2026-11-19: Show the scheduled wait for an order import slot
 
 After recovery of the first five orders in incident #256, production showed two eligible orders waiting on the hourly cap. The watchdog now uses the same ordering as the importer for observations received together. A recent rate-limit denial for the head order and five recorded admissions produce a queue warning with the expected wait. Missing evidence, an overdue retry or another failure still raises the critical alarm.

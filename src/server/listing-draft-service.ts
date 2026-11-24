@@ -436,6 +436,14 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
   const shopify = row.shopify;
   if (!shopify) return unavailable();
   const active = row.lifecycleStatus === 'active' && workspace.mapping.state === 'mapped';
+  // Incident #259 (L133): the catalog keeps a sold-out row with exactly one
+  // live listing 'active' even when leftover Inventory data sits beside it,
+  // so the --end-at-zero sweep can end that listing. Only the artifact COUNT
+  // checks relax for it; every exact binding (seller, listing, SKU, offer,
+  // inventory item, lifecycle) below is still required, and a row with stock
+  // (or uncounted stock) keeps the strict shape.
+  const soldOutLiveListing = active && shopify.available !== null && shopify.available <= 0
+    && row.ebay.activeMatchCount === 1;
   const notListed = row.lifecycleStatus === 'not_listed'
     && workspace.mapping.state === 'shopify_only';
   if (workspace.schemaVersion !== 1 || workspace.evidence.freshness !== 'live'
@@ -466,12 +474,13 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
   const managementModel: ListingIdentity['managementModel'] = workspace.mapping.managementModel === 'inventory_offer'
     ? 'inventory_api'
     : workspace.mapping.managementModel === 'legacy_trading' ? 'trading_api' : 'unmanaged';
-  if (active && (row.ebay.activeMatchCount !== 1 || row.ebay.unpublishedArtifactCount !== 0)) {
+  if (active && (row.ebay.activeMatchCount !== 1
+    || (row.ebay.unpublishedArtifactCount !== 0 && !soldOutLiveListing))) {
     unavailable();
   }
   if (managementModel === 'inventory_api' && (!detail
     || workspace.mapping.inventorySku !== shopify.sku
-    || row.ebay.inventoryItemCount !== 1 || row.ebay.offerCount !== 1
+    || (!soldOutLiveListing && (row.ebay.inventoryItemCount !== 1 || row.ebay.offerCount !== 1))
     || detail.management.model !== 'inventory_offer'
     || detail.management.controlApi !== 'inventory'
     || !detail.management.exactBindings.inventoryItem || !detail.management.exactBindings.offer
@@ -481,7 +490,7 @@ function eligibleBasis(workspace: ListingWorkspaceDto): Basis {
     || detail.management.offer.offerId !== row.ebay.offerId
     || detail.management.offer.marketplaceId !== LISTING_DRAFT_SCOPE.ebayMarketplaceId)) unavailable();
   if (managementModel === 'trading_api' && (!detail
-    || row.ebay.inventoryItemCount !== 0 || row.ebay.offerCount !== 0
+    || (!soldOutLiveListing && (row.ebay.inventoryItemCount !== 0 || row.ebay.offerCount !== 0))
     || row.ebay.offerId !== null || detail.management.model !== 'legacy_trading'
     || detail.management.controlApi !== 'trading'
     || detail.management.inventoryItem !== null || detail.management.offer !== null

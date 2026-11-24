@@ -232,9 +232,16 @@ export const isLiveCatalogResponse = (
           listing.ebay.offerCount === 1 &&
           typeof listing.ebay.offerId === 'string' &&
           listing.ebay.offerId.length > 0);
+      // L133: a sold-out row keeps its one live listing 'active' (so the
+      // sell-out sweep ends it) even with leftover eBay Inventory data.
+      const soldOutWithLeftovers =
+        listing.shopify !== null &&
+        typeof listing.shopify.available === 'number' &&
+        listing.shopify.available <= 0 &&
+        listing.ebay.unpublishedArtifactCount > 0;
       return listing.ebay.activeMatchCount === 1 &&
-        validArtifactShape &&
-        listing.ebay.unpublishedArtifactCount === 0 &&
+        (soldOutWithLeftovers ||
+          (validArtifactShape && listing.ebay.unpublishedArtifactCount === 0)) &&
         verifiedEbayListingUrl(listing.ebay.listingId, listing.ebay.url) !== null &&
         listing.audit.unresolvedCount === 0 &&
         listing.audit.attentionReasons.length === 0;
